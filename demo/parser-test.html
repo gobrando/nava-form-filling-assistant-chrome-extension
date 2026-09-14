@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Local document parser fixture</title>
+    <style>
+      body { max-width: 800px; margin: 40px auto; padding: 0 20px; font: 15px/1.5 system-ui, sans-serif; }
+      pre { overflow: auto; padding: 16px; border: 1px solid #ddd; border-radius: 8px; background: #f7f7f7; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body data-status="loading">
+    <h1>Local document parser fixture</h1>
+    <p id="status">Parsing…</p>
+    <pre id="result"></pre>
+    <script src="../shared/form-engine.js"></script>
+    <script src="../vendor/fflate.min.js"></script>
+    <script src="../sidepanel/document-parser.js?v=3"></script>
+    <script src="parser-test.js?v=3"></script>
+  </body>
+</html>

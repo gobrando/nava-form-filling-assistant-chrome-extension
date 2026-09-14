@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Form-Filling Assistant</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" role="img">
+          <path d="M6 4.75h9.2a2.8 2.8 0 0 1 2.8 2.8v8.9a2.8 2.8 0 0 1-2.8 2.8H6a2 2 0 0 1-2-2V6.75a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" stroke-width="1.8"/>
+          <path d="m8 13.9 6.9-6.9 2.1 2.1-6.9 6.9-3 .9.9-3Z" fill="currentColor"/>
+        </svg>
+      </div>
+      <div class="app-title">Form-Filling Assistant</div>
+      <button class="icon-button" type="button" data-action="close" aria-label="Close assistant">×</button>
+    </header>
+
+    <main id="app" class="app-main" aria-live="polite"></main>
+
+    <footer class="app-footer">
+      <span class="privacy-dot" aria-hidden="true"></span>
+      Client data stays in this browser session. The assistant never submits.
+    </footer>
+
+    <script src="../shared/form-engine.js?v=0.2.0"></script>
+    <script src="../vendor/fflate.min.js?v=0.2.0"></script>
+    <script src="document-parser.js?v=0.2.0"></script>
+    <script src="sidepanel.js?v=0.2.0b"></script>
+  </body>
+</html>

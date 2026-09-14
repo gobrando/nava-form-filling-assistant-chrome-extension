@@ -1,0 +1,342 @@
+(function installDocumentParser(root) {
+  'use strict';
+
+  const engine = root.NavaFormEngine;
+  const MAX_FILE_BYTES = 15 * 1024 * 1024;
+  const MAX_PDF_PAGES = 60;
+  const MAX_TEXT_CHARS = 750000;
+  const SENSITIVE_KEYS = new Set(['ssn', 'ein']);
+
+  const LABEL_RULES = [
+    [/^(first|given) name$/, 'firstName'],
+    [/^(middle|additional) name$/, 'middleName'],
+    [/^(last|family) name$|^surname$/, 'lastName'],
+    [/^(applicant|client|customer|owner|contact|full|legal) name$|^name$/, 'fullName'],
+    [/^(date of birth|birth date|dob)$/, 'dateOfBirth'],
+    [/^(social security number|social security|ssn)$/, 'ssn'],
+    [/^(email|email address|e mail)$/, 'email'],
+    [/^(phone|phone number|telephone|mobile|mobile phone|cell phone)$/, 'phone'],
+    [/^(street address|home address|residential address|address|address line 1)$/, 'addressLine1'],
+    [/^(address line 2|apartment|apt|unit|suite)$/, 'addressLine2'],
+    [/^city$/, 'city'],
+    [/^(state|province)$/, 'state'],
+    [/^county$/, 'county'],
+    [/^(zip|zip code|postal code)$/, 'postalCode'],
+    [/^country$/, 'country'],
+    [/^(gender|sex)$/, 'gender'],
+    [/^(ethnicity|race ethnicity|race and ethnicity)$/, 'ethnicity'],
+    [/^(primary language|preferred language|language)$/, 'primaryLanguage'],
+    [/^marital status$/, 'maritalStatus'],
+    [/^(immigration status|citizenship status)$/, 'immigrationStatus'],
+    [/^(housing status|homelessness status)$/, 'housingStatus'],
+    [/^household size$/, 'householdSize'],
+    [/^(monthly household income|monthly income|gross monthly income|annual income)$/, 'income'],
+    [/^(business legal name|legal business name|business name|company name|legal entity name)$/, 'businessName'],
+    [/^(doing business as|dba|trade name|fictitious business name)$/, 'dba'],
+    [/^(employer identification number|federal employer identification number|federal tax id|business tax id|ein)$/, 'ein'],
+    [/^(business type|entity type|legal structure)$/, 'businessType'],
+    [/^(business address|company address|business street address|business address line 1)$/, 'businessAddressLine1'],
+    [/^(business address line 2|business suite|business unit)$/, 'businessAddressLine2'],
+    [/^business city$/, 'businessCity'],
+    [/^business state$/, 'businessState'],
+    [/^(business zip|business zip code|business postal code)$/, 'businessPostalCode'],
+    [/^(business phone|company phone)$/, 'businessPhone'],
+    [/^(business email|company email)$/, 'businessEmail'],
+    [/^(formation date|date of formation|incorporation date)$/, 'incorporationDate'],
+    [/^(state of formation|state of incorporation|formation state)$/, 'stateOfFormation'],
+  ];
+
+  function clean(value) {
+    return String(value ?? '')
+      .replace(/\u0000/g, '')
+      .replace(/[\t ]+/g, ' ')
+      .replace(/^\s*[-–—:|]+\s*|\s*[-–—:|]+\s*$/g, '')
+      .trim();
+  }
+
+  function mask(value, key) {
+    if (!SENSITIVE_KEYS.has(key)) return String(value);
+    const digits = String(value).replace(/\D/g, '');
+    return digits.length >= 4 ? `••••${digits.slice(-4)}` : '••••';
+  }
+
+  function safeEvidence(value, key) {
+    const snippet = clean(value).slice(0, 140);
+    return SENSITIVE_KEYS.has(key) ? snippet.replace(/[\dXx*•-]{4,}/g, mask(snippet, key)) : snippet;
+  }
+
+  function keyForLabel(label) {
+    const normalized = engine.normalize(label);
+    const match = LABEL_RULES.find(([pattern]) => pattern.test(normalized));
+    return match?.[1] || null;
+  }
+
+  function validValue(key, value) {
+    const text = clean(value);
+    if (!text || text.length > 240) return false;
+    if (key === 'email' || key === 'businessEmail') return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text);
+    if (key === 'ssn') return /^\d{3}[- ]?\d{2}[- ]?\d{4}$/.test(text);
+    if (key === 'ein') return /^\d{2}[- ]?\d{7}$/.test(text);
+    if (['postalCode', 'businessPostalCode'].includes(key)) return /^\d{5}(?:-\d{4})?$/.test(text);
+    if (['dateOfBirth', 'incorporationDate'].includes(key)) return /\d/.test(text) && text.length <= 32;
+    return true;
+  }
+
+  function splitPersonName(value) {
+    const parts = clean(value).split(/\s+/).filter(Boolean);
+    if (parts.length < 2 || parts.length > 5) return {};
+    return {
+      firstName: parts[0],
+      middleName: parts.length > 2 ? parts.slice(1, -1).join(' ') : undefined,
+      lastName: parts.at(-1),
+    };
+  }
+
+  function extractFieldsFromText(rawText) {
+    const text = String(rawText || '').slice(0, MAX_TEXT_CHARS).replace(/\r/g, '');
+    const lines = text.split('\n').map(clean).filter(Boolean);
+    const fields = new Map();
+
+    function add(key, value, confidence, evidence) {
+      const cleaned = clean(value);
+      if (!key || !validValue(key, cleaned)) return;
+      const current = fields.get(key);
+      const rank = { low: 1, medium: 2, high: 3 };
+      if (current && rank[current.confidence] >= rank[confidence]) return;
+      fields.set(key, {
+        key,
+        label: engine.LABELS[key] || key,
+        value: cleaned,
+        displayValue: mask(cleaned, key),
+        confidence,
+        evidence: safeEvidence(evidence || cleaned, key),
+        sensitive: SENSITIVE_KEYS.has(key),
+      });
+    }
+
+    lines.forEach((line, index) => {
+      const pair = line.match(/^(.{2,64}?)(?:\s*[:#]\s*|\s{2,})(.{1,240})$/);
+      if (pair) {
+        const key = keyForLabel(pair[1]);
+        if (key) add(key, pair[2], 'high', line);
+      }
+
+      const standaloneKey = keyForLabel(line.replace(/[?:]$/, ''));
+      if (standaloneKey && lines[index + 1] && !keyForLabel(lines[index + 1])) {
+        add(standaloneKey, lines[index + 1], 'medium', `${line}: ${lines[index + 1]}`);
+      }
+    });
+
+    const emailMatches = [...text.matchAll(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi)];
+    if (emailMatches[0] && !fields.has('businessEmail')) add('email', emailMatches[0][0], 'medium', emailMatches[0][0]);
+
+    for (const line of lines) {
+      if (!/fax/i.test(line)) {
+        const phone = line.match(/(?:phone|telephone|mobile|cell)?\s*[:#-]?\s*(\+?1?[\s.-]?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4})\b/i);
+        if (phone) {
+          add(/business|company/i.test(line) ? 'businessPhone' : 'phone', phone[1], /phone|telephone|mobile|cell/i.test(line) ? 'high' : 'medium', line);
+          break;
+        }
+      }
+    }
+
+    const labeledSsn = text.match(/(?:social security(?: number)?|\bssn\b)\s*[:#-]?\s*(\d{3}[- ]?\d{2}[- ]?\d{4})/i);
+    if (labeledSsn) add('ssn', labeledSsn[1], 'high', labeledSsn[0]);
+    const labeledEin = text.match(/(?:employer identification(?: number)?|federal (?:employer )?(?:tax )?id|\bein\b)\s*[:#-]?\s*(\d{2}[- ]?\d{7})/i);
+    if (labeledEin) add('ein', labeledEin[1], 'high', labeledEin[0]);
+
+    const cityStateZip = lines.map((line) => ({ line, match: line.match(/^([A-Za-z .'-]{2,60}),?\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)$/) })).find((item) => item.match);
+    if (cityStateZip) {
+      const business = fields.has('businessName') && !fields.has('fullName');
+      add(business ? 'businessCity' : 'city', cityStateZip.match[1], 'medium', cityStateZip.line);
+      add(business ? 'businessState' : 'state', cityStateZip.match[2], 'medium', cityStateZip.line);
+      add(business ? 'businessPostalCode' : 'postalCode', cityStateZip.match[3], 'medium', cityStateZip.line);
+    }
+
+    const streetLine = lines.find((line) => /^\d{1,8}\s+[A-Za-z0-9 .'-]+\s(?:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|court|ct|way|parkway|pkwy)\b/i.test(line));
+    if (streetLine) {
+      add(fields.has('businessName') && !fields.has('fullName') ? 'businessAddressLine1' : 'addressLine1', streetLine, 'medium', streetLine);
+    }
+
+    if (fields.has('fullName')) {
+      const parts = splitPersonName(fields.get('fullName').value);
+      if (parts.firstName) add('firstName', parts.firstName, 'medium', `Split from labeled name: ${fields.get('fullName').value}`);
+      if (parts.middleName) add('middleName', parts.middleName, 'medium', `Split from labeled name: ${fields.get('fullName').value}`);
+      if (parts.lastName) add('lastName', parts.lastName, 'medium', `Split from labeled name: ${fields.get('fullName').value}`);
+    }
+
+    return [...fields.values()];
+  }
+
+  function extractFieldsFromObject(object) {
+    const canonical = engine.canonicalizeParticipant(object || {});
+    const derivedKeys = new Set(['fullName', 'mailingDifferent']);
+    return Object.entries(canonical.values)
+      .filter(([key, value]) => value !== undefined && value !== null && value !== '' && !derivedKeys.has(key))
+      .map(([key, value]) => ({
+        key,
+        label: engine.LABELS[key] || key,
+        value: String(value),
+        displayValue: mask(value, key),
+        confidence: 'high',
+        evidence: `Labeled JSON field for ${engine.LABELS[key] || key}`,
+        sensitive: SENSITIVE_KEYS.has(key),
+      }));
+  }
+
+  function parseDelimitedRows(text, delimiter) {
+    const rows = [];
+    let row = [];
+    let value = '';
+    let quoted = false;
+    for (let index = 0; index < text.length; index += 1) {
+      const character = text[index];
+      if (character === '"') {
+        if (quoted && text[index + 1] === '"') {
+          value += '"';
+          index += 1;
+        } else {
+          quoted = !quoted;
+        }
+      } else if (character === delimiter && !quoted) {
+        row.push(clean(value));
+        value = '';
+      } else if ((character === '\n' || character === '\r') && !quoted) {
+        if (character === '\r' && text[index + 1] === '\n') index += 1;
+        row.push(clean(value));
+        if (row.some(Boolean)) rows.push(row);
+        row = [];
+        value = '';
+      } else {
+        value += character;
+      }
+    }
+    row.push(clean(value));
+    if (row.some(Boolean)) rows.push(row);
+    return rows;
+  }
+
+  function delimitedToLabeledText(text, delimiter) {
+    const rows = parseDelimitedRows(String(text || ''), delimiter);
+    if (!rows.length) return '';
+    const header = rows[0];
+    const knownHeaders = header.filter((label) => keyForLabel(label)).length;
+    const secondRowHasLabels = rows[1]?.some((label) => keyForLabel(label));
+    if (rows.length > 1 && knownHeaders >= Math.ceil(header.length / 2) && !secondRowHasLabels && header.length === rows[1].length) {
+      return header.map((label, index) => `${label}: ${rows[1][index] || ''}`).join('\n');
+    }
+    return rows
+      .filter((row) => row.length >= 2 && keyForLabel(row[0]))
+      .map((row) => `${row[0]}: ${row.slice(1).join(delimiter === '\t' ? ' ' : ', ')}`)
+      .join('\n');
+  }
+
+  function assetUrl(relativePath) {
+    if (root.chrome?.runtime?.id) return root.chrome.runtime.getURL(relativePath.replace(/^\.\.\//, ''));
+    return new URL(relativePath, location.href).href;
+  }
+
+  async function extractPdfText(arrayBuffer) {
+    const pdfjs = await import(assetUrl('../vendor/pdf.min.mjs'));
+    pdfjs.GlobalWorkerOptions.workerSrc = assetUrl('../vendor/pdf.worker.min.mjs');
+    const task = pdfjs.getDocument({
+      data: new Uint8Array(arrayBuffer),
+      isEvalSupported: false,
+      useWorkerFetch: false,
+    });
+    const pdf = await task.promise;
+    const pageCount = Math.min(pdf.numPages, MAX_PDF_PAGES);
+    const pages = [];
+    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      const content = await page.getTextContent();
+      let pageText = '';
+      content.items.forEach((item) => {
+        pageText += item.str || '';
+        pageText += item.hasEOL ? '\n' : ' ';
+      });
+      pages.push(pageText.trim());
+    }
+    await task.destroy();
+    return {
+      text: pages.join('\n\n'),
+      warnings: pdf.numPages > MAX_PDF_PAGES ? [`Only the first ${MAX_PDF_PAGES} PDF pages were read.`] : [],
+    };
+  }
+
+  function xmlText(xmlText) {
+    const documentXml = new DOMParser().parseFromString(xmlText, 'application/xml');
+    if (documentXml.querySelector('parsererror')) throw new Error('The Word document XML could not be read.');
+    const paragraphs = [...documentXml.getElementsByTagNameNS('*', 'p')];
+    return paragraphs.map((paragraph) =>
+      [...paragraph.getElementsByTagNameNS('*', 't')].map((node) => node.textContent || '').join(''),
+    ).filter(Boolean).join('\n');
+  }
+
+  async function extractDocxText(arrayBuffer) {
+    if (!root.fflate?.unzipSync) throw new Error('The local DOCX parser did not load.');
+    const archive = root.fflate.unzipSync(new Uint8Array(arrayBuffer));
+    const names = Object.keys(archive).filter((name) =>
+      name === 'word/document.xml' || /^word\/(header|footer)\d+\.xml$/.test(name),
+    );
+    if (!names.includes('word/document.xml')) throw new Error('This file does not contain a readable Word document.');
+    const decoder = new TextDecoder('utf-8');
+    return names.map((name) => xmlText(decoder.decode(archive[name]))).join('\n');
+  }
+
+  async function parseDocument(file) {
+    if (!file) throw new Error('Choose a document first.');
+    if (file.size > MAX_FILE_BYTES) throw new Error('Choose a document smaller than 15 MB.');
+    const extension = file.name.split('.').pop().toLowerCase();
+    const warnings = [];
+    let fields = [];
+    let textLength = 0;
+
+    if (extension === 'json' || file.type === 'application/json') {
+      let object;
+      try {
+        object = JSON.parse(await file.text());
+      } catch {
+        throw new Error('The JSON file is not valid. Check its commas and quotation marks.');
+      }
+      if (!object || Array.isArray(object) || typeof object !== 'object') throw new Error('The JSON file must contain one client or business record.');
+      fields = extractFieldsFromObject(object);
+    } else {
+      let extracted;
+      if (extension === 'pdf' || file.type === 'application/pdf') {
+        extracted = await extractPdfText(await file.arrayBuffer());
+        warnings.push(...extracted.warnings);
+      } else if (extension === 'docx' || file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+        extracted = { text: await extractDocxText(await file.arrayBuffer()), warnings: [] };
+      } else if (['txt', 'csv', 'tsv'].includes(extension) || file.type.startsWith('text/')) {
+        const rawText = await file.text();
+        const delimiter = extension === 'tsv' ? '\t' : extension === 'csv' ? ',' : null;
+        extracted = { text: delimiter ? delimitedToLabeledText(rawText, delimiter) : rawText, warnings: [] };
+      } else {
+        throw new Error('Use a PDF, DOCX, TXT, CSV, TSV, or JSON file. Image-only documents need OCR, which is not included in this build.');
+      }
+      const text = String(extracted.text || '').slice(0, MAX_TEXT_CHARS);
+      textLength = text.length;
+      fields = extractFieldsFromText(text);
+      if (!text.trim()) warnings.push('No readable text was found. This may be a scanned or image-only document.');
+    }
+
+    if (!fields.length) warnings.push('No clearly labeled demographic, identity, contact, address, or business fields were found.');
+    return {
+      file: { name: file.name, type: file.type || extension, size: file.size },
+      fields,
+      warnings,
+      textLength,
+    };
+  }
+
+  const api = {
+    extractFieldsFromObject,
+    extractFieldsFromText,
+    delimitedToLabeledText,
+    parseDocument,
+  };
+
+  root.NavaDocumentParser = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this);

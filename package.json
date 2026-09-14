@@ -1,0 +1,14 @@
+{
+  "name": "nava-form-filler-extension",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Local-first Chrome side-panel prototype for Nava's form-completion protocol.",
+  "scripts": {
+    "check": "node --check background.js && node --check shared/form-engine.js && node --check content/form-agent.js && node --check sidepanel/document-parser.js && node --check sidepanel/sidepanel.js && node -e \"JSON.parse(require('node:fs').readFileSync('manifest.json','utf8'))\"",
+    "test": "node --test tests/*.test.cjs"
+  },
+  "devDependencies": {
+    "fflate": "^0.8.3",
+    "pdfjs-dist": "^6.3.289"
+  }
+}

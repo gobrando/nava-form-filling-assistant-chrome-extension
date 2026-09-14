@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nava Form-Filler Test Page</title>
+    <link rel="stylesheet" href="demo.css">
+  </head>
+  <body>
+    <header>
+      <span class="logo" aria-hidden="true"></span>
+      <strong>Benefits application test page</strong>
+      <span class="tag">Local fixture</span>
+    </header>
+    <main>
+      <aside>
+        <p>Currently on</p>
+        <strong>Step 1 of 3</strong>
+        <ol>
+          <li class="active">Your information</li>
+          <li>Household details</li>
+          <li>Review and submit</li>
+        </ol>
+      </aside>
+      <form id="application-form">
+        <div class="intro">
+          <p class="eyebrow">Applicant</p>
+          <h1>Tell us about the client</h1>
+          <p>This local page exercises field detection, gap questions, masks, gates, and the submit safeguard.</p>
+        </div>
+
+        <div class="grid two">
+          <label>First Name (required)<input id="firstName" name="firstName" autocomplete="given-name" required></label>
+          <label>Last Name (required)<input id="lastName" name="lastName" autocomplete="family-name" required></label>
+          <label>Date of Birth (required)<input id="birthDate" name="birthDate" placeholder="MM/DD/YYYY" maxlength="10" required></label>
+          <label>Mobile Phone<input id="phone" name="phone" type="tel" autocomplete="tel" maxlength="10"></label>
+          <label>Email<input id="email" name="email" type="email" autocomplete="email"></label>
+          <label>State<input id="state" name="state" autocomplete="address-level1" maxlength="2" required></label>
+        </div>
+
+        <fieldset>
+          <legend>Is the client experiencing homelessness? (required)</legend>
+          <label class="inline"><input type="radio" name="housingStatus" value="yes" required> Yes</label>
+          <label class="inline"><input type="radio" name="housingStatus" value="no"> No</label>
+        </fieldset>
+
+        <label>What is the client's immigration status?<select id="immigration" name="immigration" required>
+          <option value="">Select one</option>
+          <option>U.S. citizen</option>
+          <option>Qualified non-citizen</option>
+          <option>Other or prefer not to answer</option>
+        </select></label>
+
+        <label>Monthly household income<input id="income" name="income" inputmode="decimal" required></label>
+
+        <label class="honeypot">Leave this field blank<input name="url" tabindex="-1"></label>
+
+        <details>
+          <summary>Read the affirmation</summary>
+          <p>I confirm that I reviewed the information on this test page.</p>
+          <label class="inline"><input id="affirm" type="checkbox"> I read the affirmation.</label>
+        </details>
+        <input id="g-recaptcha-response" type="hidden" value="">
+        <button id="submit" type="submit" disabled>Submit application</button>
+        <p id="result" role="status"></p>
+      </form>
+    </main>
+    <section class="lab" aria-label="Test controls">
+      <strong>Local test controls</strong>
+      <button id="scan-test" type="button">Scan the form</button>
+      <button id="fill-test" type="button">Fill record values</button>
+      <output id="test-output" aria-live="polite">Ready.</output>
+    </section>
+    <script src="../shared/form-engine.js"></script>
+    <script src="../content/form-agent.js"></script>
+    <script src="demo.js"></script>
+  </body>
+</html>
