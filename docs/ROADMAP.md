@@ -2,33 +2,44 @@
 
 ## Status of the three candidate areas
 
-### Document upload extractor — prototype complete
+### Self-service database connector — vertical slice complete
 
-The extension now parses PDF, DOCX, TXT, CSV, TSV, and JSON locally, proposes clearly labeled demographic, identity, address, contact, and business fields, masks SSN/EIN evidence, and requires review before merge. The remaining work is production hardening: OCR for image-only documents, encrypted backend extraction for layouts that deterministic parsing cannot handle, more formats, malware scanning, retention controls, and extraction-quality evaluation.
+Version 0.4 delivers the extension-side connector milestone against a loopback contract fixture. An organization can enter a managed service URL and opaque connection ID, test access, load labeled Apricot fields, review suggested mappings, retrieve and confirm a fictional record with field-level provenance and freshness, and launch the existing multi-page runner without pasting JSON.
+
+The extension rejects secret-like configuration, requires HTTPS outside localhost, keeps participant records in session storage, and never assigns meaning from a numeric Apricot field ID. The production backend remains separate work: organization authentication, provider credential custody, a sandbox tenant, revocation, rate limits, audit events without values, and current Bonterra/partner approval.
+
+### Document upload extractor — prototype complete; hardening is next
+
+The extension parses PDF, DOCX, TXT, CSV, TSV, and JSON locally, proposes clearly labeled demographic, identity, address, contact, and business fields, masks SSN/EIN evidence, and requires review before merge. Image-only and scanned documents remain the largest coverage gap.
 
 ### Multi-application UI — useful foundation complete
 
-The dashboard can track separate application tabs, retain one session client, show attention states, and produce cross-page progress. The next layer is operational: resumable sessions, notifications for human checkpoints, ownership/hand-off, and audit export.
+The dashboard tracks separate application tabs, retains one session client, shows attention states, runs approved multi-page flows, and produces cross-page progress. The next layer is operational: resumable sessions, notifications for human checkpoints, ownership/hand-off, and audit export.
 
-### Self-service database connector — recommended next
+## Recommended next milestone: OCR and extraction evaluation
 
-This is the highest-leverage next feature. The form writer and document intake now have a trustworthy canonical record boundary, but caseworkers still need bundled test data, pasted JSON, or document upload. A connector turns the prototype into a repeatable workflow and removes the most frequent manual step before filling begins.
+Before adding more intake automation, establish a measurable quality bar and preserve the current bias against invented data.
 
-## Proposed first connector release
+1. Build a consent-safe evaluation corpus of fictional and redacted documents, including clean PDFs, scans, rotated pages, low contrast, tables, handwriting, and bilingual layouts.
+2. Report field-level precision, recall, conflict handling, sensitive-value masking, and document-level “safe to review” coverage. Treat a wrong confident value as more costly than an omitted value.
+3. Add bounded on-device OCR for image-only PDFs and common image formats, with page, pixel, language, time, and memory limits.
+4. Retain page/region provenance and OCR confidence so the caseworker can compare every proposed value with its source.
+5. Route low-confidence, ambiguous, handwritten, or unsupported content to manual entry. Do not infer protected or eligibility facts.
+6. Add malware/file-type validation, encrypted temporary handling, retention tests, accessibility checks, and performance budgets before a pilot.
 
-1. Build a Nava-controlled connector service; never place Apricot or other source-system secrets in the extension.
-2. Start read-only with Apricot 360 because the current UI and sample records already use its record-ID mental model.
-3. Add organization-admin OAuth/credential setup, least-privilege scopes, connection health, revocation, and audit logs.
-4. Provide a self-service schema-mapping screen from source fields to the extension's canonical participant/business schema.
-5. Preview the fetched record and require caseworker confirmation before it enters the browser session.
-6. Attach field-level source/provenance and retrieval time to every filled value.
-7. Ship contract tests, a sandbox tenant, retry/rate-limit behavior, and an explicit stale-record warning.
+Success: on a representative evaluation set, every imported value is traceable to visible source evidence; sensitive evidence stays masked; no unreviewed value reaches a form; and accuracy, abstention, latency, and failure behavior meet published thresholds.
 
 ## Suggested sequence
 
-- **Now:** Apricot read-only connector and schema mapping.
-- **Next:** OCR/evaluation hardening for document intake.
+- **Now:** OCR and extraction-quality evaluation.
+- **In parallel with backend owners:** productionize the Nava connector service and pilot one authenticated Apricot organization.
 - **Then:** resumable multi-application work queues and caseworker hand-off.
-- **Later:** additional data sources through the same connector contract.
+- **Later:** additional source systems through the same connector contract.
 
-Success for the connector milestone: a new organization can configure a read-only source, map its schema, retrieve a participant by ID, review the normalized record, and launch the multi-page runner without engineering assistance or copied JSON.
+## Connector follow-through before production
+
+- Replace the loopback fixture with the organization-authenticated Nava service.
+- Restrict CORS and Chrome host permissions to managed deployment IDs and approved domains.
+- Add connection health, revocation, credential rotation, retry/backoff, and value-free audit events.
+- Validate mappings against a sandbox tenant and require re-review when source labels or form schema drift.
+- Run a privacy, threat-model, accessibility, and incident-response review before processing real participant data.

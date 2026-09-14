@@ -4,7 +4,7 @@
 
 This is a loadable Manifest V3 Chrome extension that adapts Foad's `form-completion` skill to Jillian's side-panel design.
 
-It is a working local prototype, not a production deployment. It can import a client or business document, inspect an application, compare its fields with the reviewed record, ask for missing answers, fill and verify approved multi-page flows, and show one provenance review. It has no submit command.
+It is a working local prototype, not a production deployment. It can connect to a read-only organization data service, map labeled source fields, import a client or business document, inspect an application, ask for missing answers, fill and verify approved multi-page flows, and show one provenance review. It has no submit command.
 
 ## What is implemented
 
@@ -13,6 +13,8 @@ It is a working local prototype, not a production deployment. It can import a cl
 - Deterministic extraction of clearly labeled demographic, identity, contact, address, and business fields; no model or network call is used.
 - Field-by-field intake review. New and matching values start selected; conflicts start unselected and require an explicit replacement choice.
 - SSNs and EINs are masked in intake evidence and later review screens.
+- Self-service Apricot 360 connector setup through a Nava-managed service: health check, labeled-schema discovery, suggested mappings, admin review, record lookup, field-level provenance, stale-record warnings, and caseworker confirmation before import.
+- A hard credential boundary. Chrome accepts only an organization label, HTTPS service URL, opaque connection ID, form ID, reviewed mappings, and freshness policy. Provider secrets stay server-side.
 - One session-only client record shared across application tabs.
 - One writer per tab. Each application is tracked independently.
 - Guided multi-page completion for approved site playbooks. The runner keeps the client record loaded, fills each page, reads every write back, and activates only exact safe continuation labels such as **Begin**, **Next**, or **Save and continue**.
@@ -26,7 +28,7 @@ It is a working local prototype, not a production deployment. It can import a cl
 - Diagnosis for hidden, disabled, masked, changed, and maxlength-constrained fields.
 - Bundled knowledge signals for BenefitsCal, Riverside IHSS, and Riverside WIC.
 - Submit-gate and bot-token inspection. The extension reports the state but cannot click submit.
-- Session-only storage (`chrome.storage.session`). The raw uploaded document is not stored, and nothing is sent to a server by this build.
+- Session-only participant storage (`chrome.storage.session`). The raw uploaded document is not stored. Non-personal connector configuration and labeled schema use `chrome.storage.local`; managed lookups use the configured organization service.
 - A regular-page preview mode and a local form fixture for safe testing.
 
 ## Load it in Chrome
@@ -61,6 +63,27 @@ To preview only the side-panel UI without loading the extension, serve the exten
 http://localhost:4173/sidepanel/index.html?preview=1&demo=1
 ```
 
+## Self-service connector demo
+
+The repository includes a loopback-only connector service with fictional Apricot-shaped data. It never accepts provider credentials.
+
+```bash
+npm run connector:mock
+```
+
+In the extension, select **Connect**, then configure:
+
+```text
+Organization: Riverside Community Services
+Service URL: http://127.0.0.1:4789
+Connection ID: nava-demo
+Apricot form ID: 99
+```
+
+Test the connection, review the label-based mapping, save it, retrieve fictional record `339619`, and confirm the mapped record preview. For a regular-page UI walkthrough, open `http://localhost:4173/sidepanel/index.html?preview=1`; **Use local demo settings** supplies those values.
+
+The production service contract and required security controls are documented in [`connector-service/README.md`](connector-service/README.md).
+
 ## Checks
 
 ```bash
@@ -78,12 +101,13 @@ Image-only or scanned PDFs are reported as unreadable because OCR is not include
 
 ## Production integration boundary
 
-The current `ai-chatbot` source does not have a live Apricot lookup in the user flow; it passes bundled or pasted participant JSON to the agent. This prototype preserves that reality:
+Version 0.4 implements the extension half of a managed connector and ships a fictional loopback service for contract testing. It does not ship a production Apricot credential broker or organization-authentication service.
 
-- `background.js` contains three fictional demo records.
-- `LOOKUP_RECORD` is the narrow adapter point for a production Nava API.
-- A production Apricot integration should call a Nava-controlled backend with the user's established organization session. Do not place Apricot client secrets in the extension.
-- The managed build should narrow `host_permissions` to the approved application domains.
+- `background.js` uses credentialed, read-only `GET` requests to the configured Nava connector service. It does not call Apricot directly.
+- `shared/connector-engine.js` accepts only labeled schema fields, rejects secret-like configuration, requires HTTPS outside localhost, and will not infer meaning from a numeric `field_####` ID.
+- Chrome stores the sanitized connection descriptor, reviewed mapping, and labeled schema—not Apricot credentials or participant records. Retrieved participant data remains session-only.
+- The production service must authenticate the current organization, keep provider credentials in a secret manager, enforce least-privilege read scopes, restrict CORS to the managed extension ID, support revocation, and avoid logging record bodies.
+- The managed build should narrow `host_permissions` to approved application and connector domains.
 
 The browser extension also cannot produce genuinely trusted hardware keystrokes. Its incremental mask fallback works with many event-driven controls, but a site that rejects all synthetic events is marked for direct caseworker entry. Adding Chrome's debugger permission solely to force trusted keystrokes would create an invasive permission and is intentionally out of scope.
 
@@ -94,8 +118,9 @@ The browser extension also cannot produce genuinely trusted hardware keystrokes.
 - It scans the top document, not cross-origin frames or closed shadow roots.
 - Playbook signals identify known sites and known freshness fields; the live DOM scan remains authoritative for every write.
 - Opening known applications is implemented. Background parallel autonomous agents are not: local Chrome tabs share a human browser and extension service worker, so this build enforces one writer per tab instead.
+- The included connector server is a fictional loopback fixture. A real organization still needs the Nava-controlled service, provider partnership/access, authentication, security review, and data-processing controls.
 - There is no model call. Ambiguous, unlabeled fields become questions or remain untouched.
 
 See [`docs/IMPLEMENTATION_NOTES.md`](docs/IMPLEMENTATION_NOTES.md) for the exact mapping from the six-phase skill to the extension architecture.
 
-See [`docs/TEST_REPORT.md`](docs/TEST_REPORT.md) for the controlled multi-page results and the read-only BenefitsCal compatibility check. The proposed next product investment is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+See [`docs/TEST_REPORT.md`](docs/TEST_REPORT.md) for the connector walkthrough, controlled multi-page results, and read-only BenefitsCal compatibility check. The updated next product investment is in [`docs/ROADMAP.md`](docs/ROADMAP.md).

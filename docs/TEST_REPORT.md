@@ -11,7 +11,20 @@ npm run check
 npm test
 ```
 
-The suite covers canonical client and business records, field mapping and formatting, masked-value verification, document extraction, bundled-parser and storage boundaries, Manifest V3 configuration, and the no-submit contract. It also statically verifies the multi-page runner's allowlisted continuation, loop guard, page limit, and final-action boundary.
+The suite covers canonical client and business records, field mapping and formatting, masked-value verification, document extraction, bundled-parser and storage boundaries, connector configuration sanitization, labeled-schema mapping, source provenance/freshness, Manifest V3 configuration, and the no-submit contract. It also statically verifies the connector's read-only boundary and the multi-page runner's allowlisted continuation, loop guard, page limit, and final-action boundary.
+
+## Self-service connector walkthrough
+
+Chrome ran the regular-page side-panel preview against the fictional Apricot-shaped connector fixture on 2026-09-14:
+
+1. Opened **Connect Apricot 360** and supplied the loopback service URL, opaque connection ID, form ID, organization label, and 30-day freshness window.
+2. Loaded 13 labeled fields from form `99`; numeric IDs were normalized to explicit `field_###` source keys.
+3. Confirmed 13 label/reference-tag suggestions in the mapping UI. Sensitive destinations remained visibly marked and unmapped when the source schema did not contain them.
+4. Saved the read-only mapping. The client-choice screen reported the connected organization and mapped-field count.
+5. Retrieved fictional record `339619`, reviewed all 13 mapped values with their source labels/IDs and freshness, and explicitly confirmed the import.
+6. Reached program selection with the normalized Celeste record, organization provenance, and retrieval timestamp intact.
+
+The mock service was also probed directly for health, schema, and record responses. It binds only to `127.0.0.1`, rejects non-GET methods, contains no credentials, and sends `Cache-Control: no-store`.
 
 ## Three-page browser fixture
 

@@ -69,3 +69,19 @@ test('document intake uses only bundled parsers and never persists the raw file'
   assert.ok(fs.existsSync(path.join(root, 'vendor/licenses/PDFJS-LICENSE.txt')));
   assert.ok(fs.existsSync(path.join(root, 'vendor/licenses/FFLATE-LICENSE.txt')));
 });
+
+test('managed connector is read-only and stores only validated configuration', () => {
+  const background = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
+  const mock = fs.readFileSync(path.join(root, 'connector-service/mock-server.mjs'), 'utf8');
+  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
+
+  assert.match(background, /connectorEngine\.validateMappings\(message\.config, schema\)/);
+  assert.match(background, /chrome\.storage\.local\.set/);
+  assert.match(background, /method: 'GET'/);
+  assert.match(background, /credentials: 'include'/);
+  assert.doesNotMatch(background, /method:\s*['"](?:POST|PUT|PATCH|DELETE)['"]/);
+  assert.match(mock, /server\.listen\(port, '127\.0\.0\.1'/);
+  assert.match(mock, /Read-only mock: GET requests only/);
+  assert.match(panel, /Confirm this client/);
+  assert.match(panel, /confirm-connector-record/);
+});

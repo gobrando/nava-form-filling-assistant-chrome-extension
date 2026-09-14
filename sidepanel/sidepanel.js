@@ -3,6 +3,7 @@
 
   const appRoot = document.getElementById('app');
   const engine = globalThis.NavaFormEngine;
+  const connectorEngine = globalThis.NavaConnectorEngine;
   const previewMode = new URLSearchParams(location.search).get('preview') === '1'
     || !globalThis.chrome?.runtime?.id;
   const demoMode = new URLSearchParams(location.search).get('demo') === '1';
@@ -16,6 +17,10 @@
     apps: [],
     currentAppId: null,
     previewPage: 1,
+    connector: null,
+    connectorDraft: null,
+    connectorSchema: [],
+    pendingConnectorRecord: null,
   };
 
   const MAX_AUTOMATED_PAGES = 12;
@@ -42,6 +47,45 @@
         mailing: { street: '5556 Test Blvd', unit: 'Apt 556', city: 'WILDOMAR', state: 'California', county: 'Riverside', zip: '92595' },
       },
     },
+  };
+
+  const PREVIEW_CONNECTOR_SCHEMA = [
+    { id: 101, label: 'First Name', type: 'text', reference_tag: 'firstName' },
+    { id: 102, label: 'Middle Name', type: 'text', reference_tag: 'middleName' },
+    { id: 103, label: 'Last Name', type: 'text', reference_tag: 'lastName' },
+    { id: 104, label: 'Date of Birth', type: 'date', reference_tag: 'dateOfBirth' },
+    { id: 105, label: 'Primary Email', type: 'email', reference_tag: 'email' },
+    { id: 106, label: 'Cell Phone', type: 'phone', reference_tag: 'phone' },
+    { id: 107, label: 'Residential Address', type: 'text', reference_tag: 'addressLine1' },
+    { id: 108, label: 'Apartment or Unit', type: 'text', reference_tag: 'addressLine2' },
+    { id: 109, label: 'Residential City', type: 'text', reference_tag: 'city' },
+    { id: 110, label: 'Residential State', type: 'text', reference_tag: 'state' },
+    { id: 111, label: 'Residential County', type: 'text', reference_tag: 'county' },
+    { id: 112, label: 'ZIP Code', type: 'text', reference_tag: 'postalCode' },
+    { id: 113, label: 'Preferred Language', type: 'select', reference_tag: 'primaryLanguage' },
+  ];
+
+  const PREVIEW_RAW_RECORD = {
+    data: [{
+      id: 339619,
+      attributes: {
+        form_id: 99,
+        mod_time: new Date().toISOString(),
+        field_101: 'Celeste',
+        field_102: 'NAVA',
+        field_103: 'Thomas II',
+        field_104: '2000-01-02',
+        field_105: 'testnava@email.com',
+        field_106: '777-777-7777',
+        field_107: '5556 Test Blvd',
+        field_108: 'Apt 556',
+        field_109: 'WILDOMAR',
+        field_110: 'California',
+        field_111: 'Riverside',
+        field_112: '92595',
+        field_113: 'English',
+      },
+    }],
   };
 
   function escapeHtml(value) {
@@ -73,12 +117,36 @@
     return String(value ?? '');
   }
 
+  function formatTimestamp(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? 'Unavailable' : date.toLocaleString();
+  }
+
   function clientSummary() {
     return engine.canonicalizeParticipant(state.participant || {});
   }
 
   function firstName() {
     return clientSummary().values.firstName || clientSummary().name || 'Client';
+  }
+
+  function managedConnector() {
+    return state.connector?.mode === 'managed';
+  }
+
+  function connectorTitle() {
+    return managedConnector() ? state.connector.organizationName : 'Nava fictional test data';
+  }
+
+  function renderConnectorStatus() {
+    const managed = managedConnector();
+    const mapped = Object.keys(state.connector?.mappings || {}).length;
+    return `
+      <div class="connector-status ${managed ? 'connected' : ''}">
+        <span class="connector-status-icon" aria-hidden="true">${managed ? '✓' : 'DB'}</span>
+        <span><strong>${escapeHtml(connectorTitle())}</strong><small>${managed ? `Apricot 360 · ${mapped} mapped fields · read-only` : 'Bundled demo records · no external connection'}</small></span>
+        <button class="link-button" type="button" data-action="configure-connector">${managed ? 'Manage' : 'Connect'}</button>
+      </div>`;
   }
 
   function hostLabel(url) {
@@ -146,6 +214,12 @@
     state.view = state.apps.length ? 'dashboard' : 'programs';
   }
 
+  async function restoreConnector() {
+    const response = await sendRuntime({ type: 'GET_CONNECTOR_STATUS' });
+    if (!response?.ok) throw new Error(response?.error || 'The data-source status could not be loaded.');
+    state.connector = response.connector;
+  }
+
   function setBusy(message = 'Checking this form…') {
     appRoot.innerHTML = `
       <div class="loading">
@@ -171,6 +245,7 @@
           <p class="lede">Choose how you want to bring the client's information into this browser session.</p>
         </div>
         ${renderError()}
+        ${renderConnectorStatus()}
         <div class="stack">
           <button class="choice-button" type="button" data-action="choose-id">
             <span class="choice-icon" aria-hidden="true">ID</span>
@@ -188,7 +263,7 @@
             <span class="chevron" aria-hidden="true">›</span>
           </button>
         </div>
-        <div class="notice" style="margin-top:16px"><span aria-hidden="true">i</span><span>The source app currently uses bundled demo records, not a live Apricot connection. This extension keeps that boundary explicit.</span></div>
+        <div class="notice" style="margin-top:16px"><span aria-hidden="true">i</span><span>${managedConnector() ? 'Record lookup uses the organization’s read-only connector. Credentials remain in the Nava connector service, never in Chrome.' : 'Connect a managed data source to replace fictional records. Credentials are never stored in this extension.'}</span></div>
       </section>`;
   }
 
@@ -199,20 +274,170 @@
         <div class="intro">
           <p class="eyebrow">Client record</p>
           <h1>Let's find your client</h1>
-          <p class="lede">Enter an Apricot 360 ID. We'll pull the record through the configured data provider.</p>
+          <p class="lede">Enter an Apricot 360 ID. We'll pull the record through ${escapeHtml(connectorTitle())}.</p>
         </div>
         ${renderError()}
         <form id="record-form" class="stack">
           <div class="field">
             <label for="record-id">Apricot 360 ID</label>
             <input id="record-id" name="recordId" type="text" inputmode="numeric" autocomplete="off" placeholder="Enter ID" required>
-            <p class="field-hint">Prototype demo IDs: 339619, 338618, and 339637.</p>
+            <p class="field-hint">${managedConnector() ? `Read-only connector · form ${escapeHtml(state.connector.formId)} · ${Object.keys(state.connector.mappings || {}).length} mapped fields` : 'Prototype demo IDs: 339619, 338618, and 339637.'}</p>
           </div>
           <div class="form-actions">
             <button class="primary-button" type="submit">Continue</button>
             <button class="secondary-button" type="button" data-action="choose-json">Paste client JSON instead</button>
+            <button class="link-button" type="button" data-action="configure-connector">Manage data source</button>
           </div>
         </form>
+      </section>`;
+  }
+
+  function connectorDraft() {
+    if (state.connectorDraft) return state.connectorDraft;
+    if (managedConnector()) return { ...state.connector, mappings: { ...(state.connector.mappings || {}) } };
+    return {
+      provider: 'apricot360',
+      organizationName: '',
+      backendUrl: '',
+      connectionId: '',
+      formId: '',
+      maxAgeDays: 30,
+      mappings: {},
+    };
+  }
+
+  function renderConnectorSetup() {
+    const draft = connectorDraft();
+    appRoot.innerHTML = `
+      <section>
+        <button class="back-button" type="button" data-action="back-choice"><span aria-hidden="true">←</span> Back</button>
+        <div class="intro">
+          <p class="eyebrow">Data source</p>
+          <h1>Connect Apricot 360</h1>
+          <p class="lede">Connect through a Nava-managed service, test access, and load the form’s labeled fields. API credentials remain on the service.</p>
+        </div>
+        ${renderError()}
+        <div class="notice"><span aria-hidden="true">⌁</span><span>This extension accepts a connection ID, never an Apricot client secret, access token, password, or API key.</span></div>
+        <form id="connector-form" class="stack connector-form">
+          <div class="field">
+            <label for="connector-org">Organization name</label>
+            <input id="connector-org" name="organizationName" type="text" value="${escapeHtml(draft.organizationName)}" placeholder="Riverside Community Services" required>
+          </div>
+          <div class="field">
+            <label for="connector-url">Nava connector service URL</label>
+            <input id="connector-url" name="backendUrl" type="text" inputmode="url" value="${escapeHtml(draft.backendUrl)}" placeholder="https://connectors.example.org" required>
+            <p class="field-hint">HTTPS is required, except for localhost development.</p>
+          </div>
+          <div class="field">
+            <label for="connection-id">Connection ID</label>
+            <input id="connection-id" name="connectionId" type="text" value="${escapeHtml(draft.connectionId)}" placeholder="riverside-apricot" autocomplete="off" required>
+          </div>
+          <div class="grid-fields">
+            <div class="field">
+              <label for="connector-form-id">Apricot form ID</label>
+              <input id="connector-form-id" name="formId" type="number" min="1" value="${escapeHtml(draft.formId)}" required>
+            </div>
+            <div class="field">
+              <label for="connector-age">Stale after</label>
+              <select id="connector-age" name="maxAgeDays">
+                ${[1, 7, 30, 90].map((days) => `<option value="${days}" ${Number(draft.maxAgeDays) === days ? 'selected' : ''}>${days} day${days === 1 ? '' : 's'}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="primary-button" type="submit">Test connection and load fields</button>
+            ${previewMode ? '<button class="secondary-button" type="button" data-action="local-connector-settings">Use local demo settings</button>' : ''}
+            ${managedConnector() ? '<button class="link-button danger-link" type="button" data-action="reset-connector">Disconnect and use demo data</button>' : ''}
+          </div>
+        </form>
+      </section>`;
+  }
+
+  function renderConnectorMapping() {
+    const draft = connectorDraft();
+    const schema = connectorEngine.normalizeSchemaFields(state.connectorSchema);
+    if (!schema.length) {
+      state.view = 'connector';
+      return renderConnectorSetup();
+    }
+    const categories = [...new Set(connectorEngine.CANONICAL_FIELDS.map((field) => field.category))];
+    appRoot.innerHTML = `
+      <section>
+        <button class="back-button" type="button" data-action="back-connector"><span aria-hidden="true">←</span> Connection</button>
+        <div class="intro">
+          <p class="eyebrow">Schema mapping</p>
+          <h1>Confirm what each field means</h1>
+          <p class="lede">Suggestions use the source labels and reference tags. Review every mapping—numeric Apricot field IDs never determine meaning.</p>
+        </div>
+        ${renderError()}
+        <div class="connector-summary">
+          <span class="connector-status-icon" aria-hidden="true">✓</span>
+          <span><strong>${escapeHtml(draft.organizationName)}</strong><small>${schema.length} labeled source fields loaded · form ${escapeHtml(draft.formId)}</small></span>
+        </div>
+        <form id="connector-mapping-form">
+          ${categories.map((category) => `
+            <p class="section-label">${escapeHtml(category)}</p>
+            <div class="mapping-list">
+              ${connectorEngine.CANONICAL_FIELDS.filter((field) => field.category === category).map((canonical) => `
+                <label class="mapping-row">
+                  <span><strong>${escapeHtml(canonical.label)}</strong>${canonical.sensitive ? '<small>Sensitive · masked in review</small>' : '<small>Canonical destination</small>'}</span>
+                  <select name="map-${escapeHtml(canonical.key)}" aria-label="Apricot field for ${escapeHtml(canonical.label)}">
+                    <option value="">Not mapped</option>
+                    ${schema.map((field) => `<option value="${escapeHtml(field.id)}" ${draft.mappings?.[canonical.key] === field.id ? 'selected' : ''}>${escapeHtml(field.label)} — ${escapeHtml(field.id)}</option>`).join('')}
+                  </select>
+                </label>`).join('')}
+            </div>`).join('')}
+          <div class="notice warning" style="margin-top:18px"><span aria-hidden="true">!</span><span>Saving authorizes read-only lookup through this mapping. It does not grant the extension permission to edit Apricot.</span></div>
+          <div class="form-actions">
+            <button class="primary-button" type="submit">Save read-only connection</button>
+          </div>
+        </form>
+      </section>`;
+  }
+
+  function renderConnectorRecordReview() {
+    const record = state.pendingConnectorRecord;
+    if (!record?._connector) {
+      state.view = 'record';
+      return renderRecordId();
+    }
+    const meta = record._connector;
+    const fields = connectorEngine.CANONICAL_FIELDS.filter((field) =>
+      record[field.key] !== undefined && record[field.key] !== null && record[field.key] !== '');
+    const name = [record.firstName, record.middleName, record.lastName].filter(Boolean).join(' ') || `Record ${record.record_id}`;
+    const freshnessText = meta.freshness === 'unknown'
+      ? 'Source update time unavailable'
+      : meta.stale
+        ? `Source updated ${formatTimestamp(meta.sourceModifiedAt)} · may be stale`
+        : `Source updated ${formatTimestamp(meta.sourceModifiedAt)}`;
+    appRoot.innerHTML = `
+      <section>
+        <button class="back-button" type="button" data-action="back-record-id"><span aria-hidden="true">←</span> Back</button>
+        <div class="intro">
+          <p class="eyebrow">Review imported record</p>
+          <h1>Confirm this client</h1>
+          <p class="lede">Review every mapped value before it enters this browser session and becomes available to application forms.</p>
+        </div>
+        ${renderError()}
+        <div class="connector-summary">
+          <span class="connector-status-icon" aria-hidden="true">✓</span>
+          <span><strong>${escapeHtml(name)}</strong><small>Record ${escapeHtml(record.record_id)} · ${escapeHtml(meta.organizationName)}</small></span>
+        </div>
+        <div class="record-preview-list">
+          ${fields.map((field) => {
+            const source = meta.provenance?.[field.key];
+            return `
+              <div class="record-preview-row">
+                <span><strong>${escapeHtml(field.label)}</strong><small>${escapeHtml(source?.sourceLabel || 'Mapped source field')} · ${escapeHtml(source?.sourceFieldId || '')}</small></span>
+                <span class="record-preview-value ${field.sensitive ? 'sensitive' : ''}">${escapeHtml(displayValue(field.key, record[field.key]))}</span>
+              </div>`;
+          }).join('')}
+        </div>
+        <div class="notice ${meta.stale ? 'warning' : ''}" style="margin-top:18px"><span aria-hidden="true">${meta.stale ? '!' : 'i'}</span><span>${escapeHtml(freshnessText)}. Retrieved ${escapeHtml(formatTimestamp(meta.retrievedAt))}.</span></div>
+        <div class="form-actions">
+          <button class="primary-button" type="button" data-action="confirm-connector-record">Use this reviewed record</button>
+          <button class="secondary-button" type="button" data-action="back-record-id">Use a different record</button>
+        </div>
       </section>`;
   }
 
@@ -324,6 +549,7 @@
 
   function renderPrograms() {
     const client = clientSummary();
+    const connectorMeta = state.participant?._connector;
     const tabUrl = state.activeTab?.url || '';
     const currentAllowed = /^https?:/i.test(tabUrl);
     appRoot.innerHTML = `
@@ -336,7 +562,7 @@
         </div>
         ${renderError()}
         <div class="client-chip">
-          <div><strong>${escapeHtml(client.name)}</strong><span>${client.recordId ? `Record ${escapeHtml(client.recordId)}` : state.participant?._documentSources?.length ? 'Document import' : 'Pasted client record'}</span></div>
+          <div><strong>${escapeHtml(client.name)}</strong><span>${client.recordId ? `Record ${escapeHtml(client.recordId)}` : state.participant?._documentSources?.length ? 'Document import' : 'Pasted client record'}${connectorMeta ? ` · ${escapeHtml(connectorMeta.organizationName)}` : ''}</span>${connectorMeta ? `<span class="source-freshness ${connectorMeta.stale ? 'stale' : ''}">${connectorMeta.freshness === 'unknown' ? 'Source freshness unavailable' : connectorMeta.stale ? 'Source record may be stale' : `Retrieved ${escapeHtml(formatTimestamp(connectorMeta.retrievedAt))}`}</span>` : ''}</div>
           <div class="client-actions">
             <button class="link-button" type="button" data-action="choose-document">Add document</button>
             <button class="link-button" type="button" data-action="change-client">Change</button>
@@ -567,21 +793,38 @@
   }
 
   function render() {
-    if (state.view === 'record') return renderRecordId();
-    if (state.view === 'json') return renderJsonImport();
-    if (state.view === 'document') return renderDocumentUpload();
-    if (state.view === 'document-review') return renderDocumentReview();
-    if (state.view === 'programs') return renderPrograms();
-    if (state.view === 'dashboard') return renderDashboard();
-    if (state.view === 'questions') return renderQuestions();
-    if (state.view === 'review') return renderReview();
-    return renderChoice();
+    const renderView = {
+      connector: renderConnectorSetup,
+      'connector-mapping': renderConnectorMapping,
+      'record-review': renderConnectorRecordReview,
+      record: renderRecordId,
+      json: renderJsonImport,
+      document: renderDocumentUpload,
+      'document-review': renderDocumentReview,
+      programs: renderPrograms,
+      dashboard: renderDashboard,
+      questions: renderQuestions,
+      review: renderReview,
+    }[state.view] || renderChoice;
+    renderView();
+    const resetScroll = () => {
+      if (document.scrollingElement) document.scrollingElement.scrollTop = 0;
+      appRoot.scrollTop = 0;
+    };
+    resetScroll();
+    requestAnimationFrame(() => requestAnimationFrame(resetScroll));
+    setTimeout(resetScroll, 100);
   }
 
   async function lookupRecord(recordId) {
     setBusy('Finding the client record…');
     const response = await sendRuntime({ type: 'LOOKUP_RECORD', recordId });
     if (!response?.ok || !response.record) throw new Error(response?.message || 'No client record was found.');
+    if (response.record._connector) {
+      state.pendingConnectorRecord = response.record;
+      state.view = 'record-review';
+      return;
+    }
     state.participant = response.record;
     state.activeTab = await getActiveTab();
     state.view = 'programs';
@@ -817,11 +1060,47 @@
     }
     if (action === 'choose-id') state.view = 'record';
     if (action === 'choose-json') state.view = 'json';
+    if (action === 'configure-connector') {
+      state.connectorDraft = null;
+      state.connectorSchema = [];
+      state.pendingConnectorRecord = null;
+      state.view = 'connector';
+    }
+    if (action === 'back-connector') state.view = 'connector';
+    if (action === 'local-connector-settings') {
+      document.getElementById('connector-org').value = 'Riverside Community Services';
+      document.getElementById('connector-url').value = 'http://127.0.0.1:4789';
+      document.getElementById('connection-id').value = 'nava-demo';
+      document.getElementById('connector-form-id').value = '99';
+      return;
+    }
+    if (action === 'reset-connector') {
+      setBusy('Disconnecting the data source…');
+      const response = await sendRuntime({ type: 'RESET_CONNECTOR' });
+      if (!response?.ok) throw new Error(response?.error || 'The connector could not be removed.');
+      state.connector = response.connector;
+      state.connectorDraft = null;
+      state.connectorSchema = [];
+      state.pendingConnectorRecord = null;
+      state.view = 'choice';
+    }
     if (action === 'choose-document') {
       state.documentResult = null;
       state.view = 'document';
     }
     if (action === 'back-choice') state.view = 'choice';
+    if (action === 'back-record-id') {
+      state.pendingConnectorRecord = null;
+      state.view = 'record';
+    }
+    if (action === 'confirm-connector-record') {
+      if (!state.pendingConnectorRecord) throw new Error('Retrieve and review a connector record first.');
+      state.participant = state.pendingConnectorRecord;
+      state.pendingConnectorRecord = null;
+      state.activeTab = await getActiveTab();
+      state.view = 'programs';
+      await persist();
+    }
     if (action === 'back-programs') state.view = 'programs';
     if (action === 'back-document') {
       state.documentResult = null;
@@ -830,6 +1109,7 @@
     if (action === 'change-client') {
       state.participant = null;
       state.documentResult = null;
+      state.pendingConnectorRecord = null;
       state.apps = [];
       state.currentAppId = null;
       state.previewPage = 1;
@@ -848,6 +1128,7 @@
     if (action === 'start-over') {
       state.participant = null;
       state.documentResult = null;
+      state.pendingConnectorRecord = null;
       state.apps = [];
       state.currentAppId = null;
       state.previewPage = 1;
@@ -881,6 +1162,41 @@
 
   async function onSubmit(form) {
     state.error = '';
+    if (form.id === 'connector-form') {
+      const data = new FormData(form);
+      const config = {
+        provider: 'apricot360',
+        organizationName: String(data.get('organizationName') || '').trim(),
+        backendUrl: String(data.get('backendUrl') || '').trim(),
+        connectionId: String(data.get('connectionId') || '').trim(),
+        formId: Number(data.get('formId')),
+        maxAgeDays: Number(data.get('maxAgeDays')),
+        mappings: managedConnector() ? state.connector.mappings : {},
+        mappingVersion: managedConnector() ? Number(state.connector.mappingVersion || 1) + 1 : 1,
+      };
+      setBusy('Testing the connector and loading labeled fields…');
+      const response = await sendRuntime({ type: 'DISCOVER_CONNECTOR', config });
+      if (!response?.ok) throw new Error(response?.error || 'The connector could not be verified.');
+      state.connectorDraft = { ...response.config, mappings: response.suggestions || {} };
+      state.connectorSchema = response.schema || [];
+      state.view = 'connector-mapping';
+    }
+    if (form.id === 'connector-mapping-form') {
+      const data = new FormData(form);
+      const mappings = {};
+      connectorEngine.CANONICAL_FIELDS.forEach((field) => {
+        const source = String(data.get(`map-${field.key}`) || '').trim();
+        if (source) mappings[field.key] = source;
+      });
+      const config = { ...state.connectorDraft, mappings };
+      setBusy('Saving the reviewed field mapping…');
+      const response = await sendRuntime({ type: 'SAVE_CONNECTOR', config, schema: state.connectorSchema });
+      if (!response?.ok) throw new Error(response?.error || 'The connector mapping could not be saved.');
+      state.connector = response.connector;
+      state.connectorDraft = null;
+      state.connectorSchema = [];
+      state.view = 'choice';
+    }
     if (form.id === 'record-form') {
       await lookupRecord(new FormData(form).get('recordId'));
     }
@@ -966,7 +1282,61 @@
   }
 
   function previewRuntime(message) {
+    if (message.type === 'GET_CONNECTOR_STATUS') {
+      return Promise.resolve({
+        ok: true,
+        connector: state.connector || {
+          mode: 'demo',
+          provider: 'bundled-demo-records',
+          organizationName: 'Nava fictional test data',
+          status: 'ready',
+        },
+      });
+    }
+    if (message.type === 'DISCOVER_CONNECTOR') {
+      try {
+        const config = connectorEngine.sanitizeConfig(message.config);
+        const schema = connectorEngine.normalizeSchemaFields(PREVIEW_CONNECTOR_SCHEMA);
+        return Promise.resolve({
+          ok: true,
+          health: { organizationName: config.organizationName, provider: 'apricot360' },
+          config,
+          schema,
+          suggestions: connectorEngine.suggestMappings(schema, config.mappings),
+        });
+      } catch (error) {
+        return Promise.resolve({ ok: false, error: error.message });
+      }
+    }
+    if (message.type === 'SAVE_CONNECTOR') {
+      try {
+        const config = connectorEngine.validateMappings(message.config, message.schema);
+        state.connector = { ...config, status: 'ready', connectedAt: new Date().toISOString(), schemaFieldCount: message.schema.length };
+        return Promise.resolve({ ok: true, connector: state.connector });
+      } catch (error) {
+        return Promise.resolve({ ok: false, error: error.message });
+      }
+    }
+    if (message.type === 'RESET_CONNECTOR') {
+      state.connector = { mode: 'demo', provider: 'bundled-demo-records', organizationName: 'Nava fictional test data', status: 'ready' };
+      return Promise.resolve({ ok: true, connector: state.connector });
+    }
     if (message.type === 'LOOKUP_RECORD') {
+      if (managedConnector()) {
+        if (String(message.recordId) !== '339619') return Promise.resolve({ ok: false, record: null, message: 'The preview connector includes record 339619.' });
+        try {
+          const mapped = connectorEngine.mapRecord(PREVIEW_RAW_RECORD, state.connector, PREVIEW_CONNECTOR_SCHEMA);
+          return Promise.resolve({
+            ok: mapped.found,
+            record: mapped.record,
+            provider: 'apricot360',
+            connector: { organizationName: state.connector.organizationName, stale: mapped.stale, mappedFields: Object.keys(mapped.provenance).length },
+            message: 'Record loaded from the preview connector.',
+          });
+        } catch (error) {
+          return Promise.resolve({ ok: false, record: null, error: error.message });
+        }
+      }
       const record = DEMO_RECORDS[String(message.recordId)] || null;
       return Promise.resolve({
         ok: Boolean(record),
@@ -1102,6 +1472,7 @@
   async function bootstrap() {
     setBusy('Opening the assistant…');
     try {
+      await restoreConnector();
       await restore();
       state.activeTab = await getActiveTab();
       await loadPreviewDocumentFixture();
