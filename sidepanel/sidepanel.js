@@ -5,6 +5,7 @@
   const engine = globalThis.NavaFormEngine;
   const previewMode = new URLSearchParams(location.search).get('preview') === '1'
     || !globalThis.chrome?.runtime?.id;
+  const demoMode = new URLSearchParams(location.search).get('demo') === '1';
 
   const state = {
     view: 'choice',
@@ -14,7 +15,10 @@
     activeTab: null,
     apps: [],
     currentAppId: null,
+    previewPage: 1,
   };
+
+  const MAX_AUTOMATED_PAGES = 12;
 
   const DEMO_RECORDS = {
     '339619': {
@@ -87,7 +91,7 @@
 
   async function getActiveTab() {
     if (previewMode) {
-      return { id: 7001, title: 'Benefits application', url: 'https://benefitscal.com/ApplyForBenefits/ABNMI' };
+      return { id: 7001, title: 'Benefits application', url: `https://benefitscal.com/ApplyForBenefits/step-${state.previewPage}` };
     }
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     return tab || null;
@@ -387,15 +391,18 @@
     const attention = ['needs_attention', 'no_form'].includes(application.status);
     const gaps = application.analysis?.gaps?.length || 0;
     const blocked = application.blocked?.length || 0;
+    const completedPages = application.completedPages?.length || 0;
     const note = application.error
       || (blocked ? `${blocked} fields need direct help` : '')
       || (gaps ? `${gaps} answers are needed before this page is complete` : '')
-      || (review ? 'All writes on this page were read back and verified' : 'Ready to fill the values found in the client record');
+      || (review ? (application.runStopReason || 'All writes were read back and verified') : 'Ready to fill the values found in the client record');
     let actions = '';
     if (attention && gaps) {
-      actions = `<button class="small-button" type="button" data-action="answer" data-app="${encoded(application.id)}">Answer questions</button>`;
+      actions = `<button class="small-button" type="button" data-action="answer-run" data-app="${encoded(application.id)}">Answer and continue</button>
+        <button class="small-button secondary" type="button" data-action="answer" data-app="${encoded(application.id)}">This page only</button>`;
     } else if (application.status === 'ready_to_fill') {
-      actions = `<button class="small-button" type="button" data-action="fill" data-app="${encoded(application.id)}">Fill available fields</button>`;
+      actions = `<button class="small-button" type="button" data-action="run" data-app="${encoded(application.id)}">Fill through application</button>
+        <button class="small-button secondary" type="button" data-action="fill" data-app="${encoded(application.id)}">This page only</button>`;
     } else if (review) {
       actions = `<button class="small-button secondary" type="button" data-action="review" data-app="${encoded(application.id)}">Review details</button>`;
     } else {
@@ -413,6 +420,7 @@
           <div aria-label="${progressFor(application)} percent complete" class="progress-track"><div class="progress-fill" style="width:${progressFor(application)}%"></div></div>
         </div>
         <p class="card-note"><strong>${escapeHtml(statusLabel(application))}.</strong> ${escapeHtml(note)}</p>
+        ${completedPages ? `<p class="automation-badge">✓ ${completedPages} page${completedPages === 1 ? '' : 's'} completed automatically</p>` : ''}
         <div class="card-actions">${actions}</div>
       </article>`;
   }
@@ -428,7 +436,7 @@
         <div class="intro">
           <p class="eyebrow">Application dashboard</p>
           <h1>${escapeHtml(firstName())}'s applications</h1>
-          <p class="lede">Each application has one tab and one writer. Nothing is submitted from this assistant.</p>
+          <p class="lede">The assistant can continue across approved application pages. It always stops before certification, signature, or submission.</p>
         </div>
         ${renderError()}
         ${groups.map(([label, apps]) => apps.length ? `
@@ -465,7 +473,7 @@
         <div class="intro">
           <p class="eyebrow">${escapeHtml(application.name)}</p>
           <h1>Answer the missing questions</h1>
-          <p class="lede">Your answers go directly into the application. Leave a field blank if you do not know it—the assistant will not guess.</p>
+          <p class="lede">Your answers go directly into the application. Leave a field blank if you do not know it—the assistant will not guess.${application.autoRun ? ' After this page is verified, the assistant will continue through approved next steps.' : ''}</p>
         </div>
         ${application.playbook ? `<div class="notice"><span aria-hidden="true">i</span><span>${escapeHtml(application.playbook.note)}</span></div>` : ''}
         <form id="questions-form">
@@ -490,7 +498,7 @@
             }).join('')}
           </div>
           <div class="form-actions">
-            <button class="primary-button" type="submit">Fill the page</button>
+            <button class="primary-button" type="submit">${application.autoRun ? 'Fill and continue automatically' : 'Fill this page'}</button>
           </div>
         </form>
       </section>`;
@@ -506,42 +514,51 @@
       state.view = 'dashboard';
       return renderDashboard();
     }
-    const rows = [
-      ...(application.provenance || []),
-      ...(application.empty || []).map((item) => ({ label: item.label, value: '(empty)', source: 'empty', detail: item.reason || 'No value was provided' })),
+    const completedPages = application.completedPages || [];
+    const pageSnapshots = [
+      ...completedPages,
+      { title: application.page?.title || application.name, provenance: application.provenance || [], empty: application.empty || [], noFields: application.analysis?.noFields || [] },
     ];
-    const verified = (application.provenance || []).length;
-    const empty = (application.empty || []).length;
-    const unused = application.analysis?.noFields?.length || 0;
+    const rows = pageSnapshots.flatMap((page) => [
+      ...(page.provenance || []).map((item) => ({ ...item, pageTitle: page.title })),
+      ...(page.empty || []).map((item) => ({ label: item.label, value: '(empty)', source: 'empty', detail: item.reason || 'No value was provided', pageTitle: page.title })),
+    ]);
+    const verified = pageSnapshots.reduce((sum, page) => sum + (page.provenance?.length || 0), 0);
+    const empty = pageSnapshots.reduce((sum, page) => sum + (page.empty?.length || 0), 0);
+    const noFieldLists = pageSnapshots.map((page) => page.noFields || []);
+    const unusedEntries = (noFieldLists[0] || []).filter((candidate) =>
+      noFieldLists.every((items) => items.some((item) => item.purpose === candidate.purpose)));
+    const unused = unusedEntries.length;
     const gate = application.submitGate || {};
+    const stopReason = application.runStopReason || application.navigationGate?.reason || gate.blockedReason
+      || 'The assistant will not submit this application. Review the page, complete any affirmation or bot check, and submit it yourself.';
     appRoot.innerHTML = `
       <section>
         <button class="back-button" type="button" data-action="back-dashboard"><span aria-hidden="true">←</span> Back</button>
         <div class="intro">
           <p class="eyebrow">${escapeHtml(application.name)}</p>
           <h1>Review what was filled</h1>
-          <p class="lede">Every changed value below was read back from the form. Review the application itself before you submit it.</p>
+          <p class="lede">Every changed value below was read back from the form. The assistant stopped before the final action so a caseworker can review and submit.</p>
         </div>
         <div class="summary-grid">
           <div class="summary-card"><strong>${verified}</strong><span>Verified</span></div>
           <div class="summary-card"><strong>${empty}</strong><span>Empty</span></div>
-          <div class="summary-card"><strong>${unused}</strong><span>No place</span></div>
+          <div class="summary-card"><strong>${pageSnapshots.length}</strong><span>Pages</span></div>
         </div>
+        ${completedPages.length ? `<ol class="page-progress-list">${pageSnapshots.map((page, index) => `<li><span>Page ${index + 1}</span><strong>${escapeHtml(page.title || 'Application page')}</strong></li>`).join('')}</ol>` : ''}
         <div class="table-wrap">
           <table class="review-table">
             <thead><tr><th style="width:34%">Field</th><th style="width:36%">Value</th><th style="width:30%">Source</th></tr></thead>
             <tbody>${rows.map((row) => `
               <tr>
-                <td>${escapeHtml(row.label)}</td>
+                <td><span class="review-page">${escapeHtml(row.pageTitle || '')}</span>${escapeHtml(row.label)}</td>
                 <td title="${escapeHtml(row.detail || '')}">${escapeHtml(row.value)}</td>
                 <td><span class="source-chip ${escapeHtml(row.source)}">${escapeHtml(sourceLabel(row.source))}</span></td>
               </tr>`).join('')}</tbody>
           </table>
         </div>
-        ${application.analysis?.noFields?.length ? `
-          <p class="section-label">Values with no field on this page</p>
-          <p class="card-note">${application.analysis.noFields.map((item) => escapeHtml(item.label)).join(', ')}</p>` : ''}
-        <div class="notice warning" style="margin-top:18px"><span aria-hidden="true">!</span><span>${escapeHtml(gate.blockedReason || 'The assistant will not submit this application. Review the page, complete any affirmation or bot check, and submit it yourself.')}</span></div>
+        ${unused ? `<p class="card-note" style="margin-top:12px">No matching field in this flow: ${unusedEntries.map((item) => escapeHtml(item.label)).join(', ')}.</p>` : ''}
+        <div class="notice warning" style="margin-top:18px"><span aria-hidden="true">!</span><span>${escapeHtml(stopReason)}</span></div>
         <div class="form-actions">
           <button class="primary-button" type="button" data-action="go-tab" data-app="${encoded(application.id)}">Go to application</button>
           <button class="secondary-button" type="button" data-action="rescan" data-app="${encoded(application.id)}">Scan this page again</button>
@@ -571,18 +588,22 @@
     await persist();
   }
 
-  async function scanTab(tab) {
-    setBusy('Checking this form and its required fields…');
+  async function scanTab(tab, { quiet = false } = {}) {
+    if (!quiet) setBusy('Checking this form and its required fields…');
     const response = await sendToTab(tab, { type: 'NAVA_SCAN', participant: state.participant });
     if (!response?.ok) throw new Error(response?.error || 'The form could not be read.');
     const id = `tab:${tab.id}`;
+    const previous = state.apps.find((item) => item.id === id) || {};
     const fieldsFound = response.analysis?.counts?.fields || 0;
+    const canContinue = response.navigationGate?.kind === 'next';
     const application = {
+      ...previous,
       id,
       tabId: tab.id,
       name: response.playbook?.name || response.page?.title || hostLabel(tab.url),
       url: response.page?.url || tab.url,
-      status: fieldsFound === 0
+      page: response.page,
+      status: fieldsFound === 0 && !canContinue
         ? 'no_form'
         : response.analysis.gaps.length
           ? 'needs_attention'
@@ -590,10 +611,14 @@
       analysis: response.analysis,
       playbook: response.playbook,
       submitGate: response.submitGate,
-      error: fieldsFound === 0 ? 'No visible application fields were found on this page.' : '',
+      navigationGate: response.navigationGate,
+      error: fieldsFound === 0 && !canContinue ? 'No visible application fields or safe continuation controls were found on this page.' : '',
       provenance: [],
       blocked: [],
       empty: [],
+      completedPages: previous.completedPages || [],
+      autoRun: Boolean(previous.autoRun),
+      visitedSignatures: previous.visitedSignatures || [],
       updatedAt: new Date().toISOString(),
     };
     const existing = state.apps.findIndex((item) => item.id === id);
@@ -622,19 +647,16 @@
     });
   }
 
-  async function fillApplication(application, userAssignments = [], unresolved = []) {
+  async function fillCurrentPage(application, userAssignments = [], unresolved = []) {
     const tab = previewMode
       ? { id: application.tabId, url: application.url }
       : await chrome.tabs.get(application.tabId);
     setBusy('Filling the page and checking every value…');
-    const previousProvenance = application.provenance || [];
-    const verifiedKeys = new Set(previousProvenance.map((item) => item.fieldKey));
-    const assignments = [...(application.analysis?.assignments || []), ...userAssignments]
-      .filter((item) => !verifiedKeys.has(item.fieldKey));
+    const assignments = [...(application.analysis?.assignments || []), ...userAssignments];
     const response = await sendToTab(tab, { type: 'NAVA_FILL', assignments });
     if (!response?.ok) throw new Error(response?.error || 'The page could not be filled.');
     const provenanceByField = new Map();
-    [...previousProvenance, ...(application.analysis?.observed || []), ...(response.provenance || [])]
+    [...(application.provenance || []), ...(application.analysis?.observed || []), ...(response.provenance || [])]
       .forEach((item) => provenanceByField.set(item.fieldKey, item));
     application.provenance = [...provenanceByField.values()];
     application.blocked = (response.results || []).filter((item) => item.status !== 'verified');
@@ -643,10 +665,138 @@
       ...application.blocked.map((item) => ({ label: item.label, reason: item.reason })),
     ];
     application.submitGate = response.submitGate || application.submitGate;
+    application.navigationGate = response.navigationGate || application.navigationGate;
     application.analysis.gaps = unresolved;
-    application.status = application.empty.length ? 'needs_attention' : 'ready_for_review';
+    application.status = application.empty.length ? 'needs_attention' : 'ready_to_fill';
     application.updatedAt = new Date().toISOString();
     state.currentAppId = application.id;
+    await persist();
+    return response;
+  }
+
+  function archiveCurrentPage(application) {
+    const signature = application.navigationGate?.pageSignature || `${application.page?.url || application.url}|${application.page?.title || application.name}`;
+    if (application.completedPages?.some((page) => page.signature === signature)) return;
+    application.completedPages = [
+      ...(application.completedPages || []),
+      {
+        signature,
+        title: application.page?.title || application.name,
+        url: application.page?.url || application.url,
+        provenance: application.provenance || [],
+        empty: application.empty || [],
+        noFields: application.analysis?.noFields || [],
+        completedAt: new Date().toISOString(),
+      },
+    ];
+  }
+
+  async function navigationStatusFor(tab) {
+    const response = await sendToTab(tab, { type: 'NAVA_NAVIGATION_STATUS' });
+    if (!response?.ok) throw new Error(response?.error || 'The next-step control could not be checked.');
+    return response.navigationGate;
+  }
+
+  async function waitForNextPage(tabId, previousSignature) {
+    if (previewMode) return { id: tabId, url: `https://benefitscal.com/ApplyForBenefits/step-${state.previewPage}` };
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab.status !== 'complete') continue;
+        const gate = await navigationStatusFor(tab);
+        if (gate?.pageSignature && gate.pageSignature !== previousSignature) return tab;
+      } catch {
+        // Full-page navigations briefly disconnect the content agent. Keep polling.
+      }
+    }
+    throw new Error('The site did not reach a new page after the safe continuation control was activated. The assistant stopped so the caseworker can inspect the application.');
+  }
+
+  async function runThroughApplication(application, userAssignments = [], unresolved = []) {
+    application.autoRun = true;
+    application.runStopReason = '';
+    let current = application;
+    let suppliedAssignments = userAssignments;
+    let suppliedUnresolved = unresolved;
+
+    for (;;) {
+      if ((current.analysis?.gaps?.length || 0) && !suppliedAssignments.length && !suppliedUnresolved.length) {
+        current.status = 'needs_attention';
+        state.currentAppId = current.id;
+        state.view = 'questions';
+        await persist();
+        return;
+      }
+
+      await fillCurrentPage(current, suppliedAssignments, suppliedUnresolved);
+      suppliedAssignments = [];
+      suppliedUnresolved = [];
+
+      if (current.empty.length || current.blocked.length) {
+        current.status = 'needs_attention';
+        current.runStopReason = 'The automated run paused because at least one field needs a caseworker answer or direct entry.';
+        state.view = 'dashboard';
+        await persist();
+        return;
+      }
+
+      const tab = previewMode
+        ? { id: current.tabId, url: current.url }
+        : await chrome.tabs.get(current.tabId);
+      current.navigationGate = await navigationStatusFor(tab);
+
+      if (current.navigationGate?.kind !== 'next') {
+        current.status = 'ready_for_review';
+        current.runStopReason = current.navigationGate?.reason || 'No approved continuation control is visible. Review the application before taking the next action.';
+        current.autoRun = false;
+        state.currentAppId = current.id;
+        state.view = 'review';
+        await persist();
+        return;
+      }
+
+      if ((current.completedPages?.length || 0) >= MAX_AUTOMATED_PAGES - 1) {
+        current.status = 'needs_attention';
+        current.runStopReason = `The assistant reached its ${MAX_AUTOMATED_PAGES}-page safety limit and stopped.`;
+        current.error = current.runStopReason;
+        current.autoRun = false;
+        state.view = 'dashboard';
+        await persist();
+        return;
+      }
+
+      const signature = current.navigationGate.pageSignature;
+      if (current.visitedSignatures?.includes(signature)) {
+        current.status = 'needs_attention';
+        current.runStopReason = 'The application returned to a page it already completed. The assistant stopped to avoid a navigation loop.';
+        current.error = current.runStopReason;
+        current.autoRun = false;
+        state.view = 'dashboard';
+        await persist();
+        return;
+      }
+
+      setBusy(`Page ${(current.completedPages?.length || 0) + 1} verified. Moving to the next page…`);
+      const advanced = await sendToTab(tab, { type: 'NAVA_ADVANCE' });
+      if (!advanced?.ok || !advanced.advanced) {
+        throw new Error(advanced?.navigationGate?.reason || 'The approved continuation control was no longer available.');
+      }
+      const nextTab = await waitForNextPage(current.tabId, signature);
+      current.visitedSignatures = [...(current.visitedSignatures || []), signature];
+      archiveCurrentPage(current);
+      await persist();
+      current = await scanTab(nextTab, { quiet: true });
+      current.autoRun = true;
+    }
+  }
+
+  async function fillApplication(application, userAssignments = [], unresolved = []) {
+    application.autoRun = false;
+    application.runStopReason = '';
+    await fillCurrentPage(application, userAssignments, unresolved);
+    application.status = application.empty.length ? 'needs_attention' : 'ready_for_review';
+    application.runStopReason = application.navigationGate?.reason || '';
     state.view = application.status === 'ready_for_review' ? 'review' : 'dashboard';
     await persist();
   }
@@ -682,6 +832,7 @@
       state.documentResult = null;
       state.apps = [];
       state.currentAppId = null;
+      state.previewPage = 1;
       state.view = 'choice';
       if (!previewMode) await chrome.storage.session.remove('nava:session');
     }
@@ -699,16 +850,21 @@
       state.documentResult = null;
       state.apps = [];
       state.currentAppId = null;
+      state.previewPage = 1;
       state.view = 'choice';
       if (!previewMode) await chrome.storage.session.remove('nava:session');
     }
-    if (['answer', 'fill', 'review', 'rescan', 'go-tab'].includes(action)) {
+    if (['answer', 'answer-run', 'fill', 'run', 'review', 'rescan', 'go-tab'].includes(action)) {
       const id = decoded(button.dataset.app);
       const application = state.apps.find((item) => item.id === id);
       if (!application) throw new Error('That application is no longer available.');
       state.currentAppId = id;
-      if (action === 'answer') state.view = 'questions';
+      if (action === 'answer' || action === 'answer-run') {
+        application.autoRun = action === 'answer-run';
+        state.view = 'questions';
+      }
       if (action === 'fill') await fillApplication(application);
+      if (action === 'run') await runThroughApplication(application);
       if (action === 'review') state.view = 'review';
       if (action === 'rescan') {
         const tab = previewMode ? { id: application.tabId, url: application.url } : await chrome.tabs.get(application.tabId);
@@ -803,7 +959,8 @@
           sensitive: gap.sensitive,
         });
       });
-      await fillApplication(application, userAssignments, unresolved);
+      if (application.autoRun) await runThroughApplication(application, userAssignments, unresolved);
+      else await fillApplication(application, userAssignments, unresolved);
     }
     render();
   }
@@ -836,38 +993,73 @@
   }
 
   function previewTabMessage(message) {
+    const previewResponse = (payload, delay = 0) => demoMode && delay
+      ? new Promise((resolve) => setTimeout(() => resolve(payload), delay))
+      : Promise.resolve(payload);
+    const pages = {
+      1: {
+        title: 'About the applicant',
+        fields: [
+          { fieldKey: 'page1:first', type: 'text', label: 'First Name', required: true, autocomplete: 'given-name', value: '' },
+          { fieldKey: 'page1:middle', type: 'text', label: 'Middle Name', autocomplete: 'additional-name', value: '' },
+          { fieldKey: 'page1:last', type: 'text', label: 'Last Name', required: true, autocomplete: 'family-name', value: '' },
+          { fieldKey: 'page1:dob', type: 'text', label: 'Date of Birth', required: true, id: 'birthDate', maxLength: 10, value: '' },
+        ],
+        gate: { kind: 'next', text: 'Next', pageSignature: 'preview:page-1', reason: 'A known safe “Next” control is ready.' },
+      },
+      2: {
+        title: 'Home address',
+        fields: [
+          { fieldKey: 'page2:street', type: 'text', label: 'Street address', required: true, autocomplete: 'address-line1', value: '' },
+          { fieldKey: 'page2:unit', type: 'text', label: 'Apartment or unit', autocomplete: 'address-line2', value: '' },
+          { fieldKey: 'page2:city', type: 'text', label: 'City', required: true, autocomplete: 'address-level2', value: '' },
+          { fieldKey: 'page2:state', type: 'text', label: 'State', required: true, autocomplete: 'address-level1', value: '' },
+          { fieldKey: 'page2:zip', type: 'text', label: 'ZIP code', required: true, autocomplete: 'postal-code', maxLength: 5, value: '' },
+        ],
+        gate: { kind: 'next', text: 'Save and continue', pageSignature: 'preview:page-2', reason: 'A known safe “Save and continue” control is ready.' },
+      },
+      3: {
+        title: 'Contact and final review',
+        fields: [
+          { fieldKey: 'page3:email', type: 'email', label: 'Email', required: true, autocomplete: 'email', value: '' },
+          { fieldKey: 'page3:phone', type: 'tel', label: 'Mobile Phone', required: true, autocomplete: 'tel', maxLength: 10, value: '' },
+          { fieldKey: 'page3:language', type: 'text', label: 'Primary language', autocomplete: 'language', value: '' },
+        ],
+        gate: { kind: 'final_review', text: 'Submit application', pageSignature: 'preview:page-3', reason: 'The application reached its final review step. Submission stays with the caseworker.' },
+      },
+    };
+    const page = pages[state.previewPage] || pages[3];
     if (message.type === 'NAVA_SCAN') {
-      const fields = [
-        { fieldKey: 'first', type: 'text', label: 'First Name (required)', required: true, autocomplete: 'given-name', value: '' },
-        { fieldKey: 'last', type: 'text', label: 'Last Name (required)', required: true, autocomplete: 'family-name', value: '' },
-        { fieldKey: 'dob', type: 'text', label: 'Date of Birth', required: true, id: 'birthDate', maxLength: 10, value: '' },
-        { fieldKey: 'email', type: 'email', label: 'Email', required: true, autocomplete: 'email', value: '' },
-        { fieldKey: 'phone', type: 'tel', label: 'Mobile Phone', required: true, autocomplete: 'tel', maxLength: 10, value: '' },
-        { fieldKey: 'housing:yes', groupKey: 'housing', type: 'radio', label: 'Yes', optionLabel: 'Yes', question: 'Is the client experiencing homelessness?', value: 'yes', required: true },
-        { fieldKey: 'housing:no', groupKey: 'housing', type: 'radio', label: 'No', optionLabel: 'No', question: 'Is the client experiencing homelessness?', value: 'no', required: true },
-        { fieldKey: 'immigration', type: 'text', label: "What is the client's immigration status?", required: true, value: '' },
-        { fieldKey: 'childcare:yes', groupKey: 'childcare', type: 'radio', label: 'Yes', optionLabel: 'Yes', question: 'Is the client currently paying for childcare?', value: 'yes' },
-        { fieldKey: 'childcare:no', groupKey: 'childcare', type: 'radio', label: 'No', optionLabel: 'No', question: 'Is the client currently paying for childcare?', value: 'no' },
-        { fieldKey: 'income', type: 'text', label: 'Monthly household income', required: true, value: '' },
-      ];
-      return Promise.resolve({
+      return previewResponse({
         ok: true,
-        page: { title: 'Benefits application', url: 'https://benefitscal.com/ApplyForBenefits/ABNMI', domain: 'benefitscal.com' },
-        playbook: { status: 'fresh', name: 'CalFresh', note: 'Bundled BenefitsCal playbook. A known field was found on this page.' },
-        analysis: engine.buildAnalysis(fields, message.participant),
+        page: { title: page.title, url: `https://benefitscal.com/ApplyForBenefits/step-${state.previewPage}`, domain: 'benefitscal.com' },
+        playbook: { status: 'fresh', name: 'California benefits application', note: 'Bundled BenefitsCal playbook; automatic continuation is limited to exact Begin, Next, and Continue controls.' },
+        analysis: engine.buildAnalysis(page.fields, message.participant),
         submitGate: { found: false, enabled: false, botCheckPresent: false, blockedReason: '' },
-      });
+        navigationGate: page.gate,
+      }, 240);
     }
     if (message.type === 'NAVA_FILL') {
       const results = message.assignments.map((item) => ({ ...item, status: 'verified', actual: item.value, reason: '' }));
-      return Promise.resolve({
+      return previewResponse({
         ok: true,
         results,
         provenance: results.map((item) => ({ ...item, value: item.sensitive ? '••••' : item.actual })),
-        submitGate: { found: true, enabled: false, botCheckPresent: true, botCheckComplete: false, blockedReason: 'A human must complete the bot check before submission.' },
-      });
+        submitGate: state.previewPage === 3
+          ? { found: true, enabled: true, botCheckPresent: false, blockedReason: 'The assistant never activates Submit application.' }
+          : { found: false, enabled: false, botCheckPresent: false, blockedReason: '' },
+        navigationGate: page.gate,
+      }, 650);
     }
-    return Promise.resolve({ ok: true });
+    if (message.type === 'NAVA_NAVIGATION_STATUS') {
+      return previewResponse({ ok: true, navigationGate: page.gate }, 180);
+    }
+    if (message.type === 'NAVA_ADVANCE') {
+      if (page.gate.kind !== 'next') return previewResponse({ ok: true, advanced: false, navigationGate: page.gate });
+      state.previewPage = Math.min(3, state.previewPage + 1);
+      return previewResponse({ ok: true, advanced: true, navigationGate: page.gate }, 900);
+    }
+    return previewResponse({ ok: true });
   }
 
   async function loadPreviewDocumentFixture() {

@@ -1,6 +1,6 @@
 {
   "name": "nava-form-filler-extension",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Local-first Chrome side-panel prototype for Nava's form-completion protocol.",
   "scripts": {

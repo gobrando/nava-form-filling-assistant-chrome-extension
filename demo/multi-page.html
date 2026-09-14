@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en" data-nava-demo-flow="true">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Multi-page benefits application fixture</title>
+    <link rel="stylesheet" href="demo.css">
+  </head>
+  <body>
+    <header>
+      <span class="logo" aria-hidden="true"></span>
+      <strong>Benefits application test flow</strong>
+      <span class="tag">Local, no data sent</span>
+    </header>
+    <main>
+      <aside>
+        <p>Automated completion test</p>
+        <strong id="step-label">Step 1 of 3</strong>
+        <ol id="steps"></ol>
+      </aside>
+      <form id="application-form"></form>
+    </main>
+    <section class="lab" aria-label="Assistant test result">
+      <strong>Assistant activity</strong>
+      <output id="test-output" aria-live="polite">Preparing the local flow…</output>
+    </section>
+    <script src="../shared/form-engine.js"></script>
+    <script src="../content/form-agent.js"></script>
+    <script src="multi-page.js"></script>
+  </body>
+</html>

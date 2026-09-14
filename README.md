@@ -1,8 +1,10 @@
 # Nava Form-Filling Assistant — Chrome prototype
 
+![Animated demo of the Nava assistant completing a three-page benefits application and stopping at final review](docs/assets/nava-form-filling-demo.gif)
+
 This is a loadable Manifest V3 Chrome extension that adapts Foad's `form-completion` skill to Jillian's side-panel design.
 
-It is a working local prototype, not a production deployment. It can import a client or business document, inspect a visible web form, compare the fields with the reviewed record, ask one batch of missing questions, write the available values, read every changed field back, and show a provenance review. It has no submit command.
+It is a working local prototype, not a production deployment. It can import a client or business document, inspect an application, compare its fields with the reviewed record, ask for missing answers, fill and verify approved multi-page flows, and show one provenance review. It has no submit command.
 
 ## What is implemented
 
@@ -13,6 +15,9 @@ It is a working local prototype, not a production deployment. It can import a cl
 - SSNs and EINs are masked in intake evidence and later review screens.
 - One session-only client record shared across application tabs.
 - One writer per tab. Each application is tracked independently.
+- Guided multi-page completion for approved site playbooks. The runner keeps the client record loaded, fills each page, reads every write back, and activates only exact safe continuation labels such as **Begin**, **Next**, or **Save and continue**.
+- Cross-page progress history, loop detection, a 12-page safety ceiling, and automatic pauses when a field needs direct help.
+- A hard final-action boundary: certification, attestation, signature, Finish, Complete, Apply, and Submit controls are never activated.
 - Live field inventory using labels, ARIA text, autocomplete, field types, required markers, options, masks, and maxlength.
 - Gap categories from the skill: record values, changed values, missing values, decisions, and values with no place on the current page.
 - Explicit no-inference rules for SSN, housing status, contact preference, household size, immigration status, income, childcare, and unemployment.
@@ -36,18 +41,24 @@ Chrome may require an already-open form tab to be refreshed once after the exten
 
 ## Safe local demo
 
-From this folder, serve the fixture:
+From this folder, serve the project:
 
 ```bash
-python3 -m http.server 4173 -d demo
+python3 -m http.server 4173
 ```
 
-Then open `http://localhost:4173/demo-form.html`, open the extension, and use demo client ID `339619`. The demo's submit button never sends anything.
+Then open `http://localhost:4173/demo/demo-form.html`, open the extension, and use demo client ID `339619`. The demo's submit button never sends anything.
+
+The automated three-page DOM fixture runs at:
+
+```text
+http://localhost:4173/demo/multi-page.html?step=1&autorun=1
+```
 
 To preview only the side-panel UI without loading the extension, serve the extension root and open:
 
 ```text
-http://localhost:4173/sidepanel/index.html?preview=1
+http://localhost:4173/sidepanel/index.html?preview=1&demo=1
 ```
 
 ## Checks
@@ -78,10 +89,13 @@ The browser extension also cannot produce genuinely trusted hardware keystrokes.
 
 ## Current limits
 
-- It fills the visible page, then the caseworker moves to the next page and scans again. The extension does not automatically navigate an unknown form flow.
+- Automatic continuation is deliberately allowlisted. Unknown sites and ambiguous controls pause for the caseworker instead of navigating.
+- Human checkpoints—including CAPTCHA, one-time codes, certifications, signatures, and the final submission—always pause the run.
 - It scans the top document, not cross-origin frames or closed shadow roots.
 - Playbook signals identify known sites and known freshness fields; the live DOM scan remains authoritative for every write.
 - Opening known applications is implemented. Background parallel autonomous agents are not: local Chrome tabs share a human browser and extension service worker, so this build enforces one writer per tab instead.
 - There is no model call. Ambiguous, unlabeled fields become questions or remain untouched.
 
 See [`docs/IMPLEMENTATION_NOTES.md`](docs/IMPLEMENTATION_NOTES.md) for the exact mapping from the six-phase skill to the extension architecture.
+
+See [`docs/TEST_REPORT.md`](docs/TEST_REPORT.md) for the controlled multi-page results and the read-only BenefitsCal compatibility check. The proposed next product investment is in [`docs/ROADMAP.md`](docs/ROADMAP.md).

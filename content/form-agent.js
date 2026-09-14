@@ -1,8 +1,8 @@
 (function installPageAgent() {
   'use strict';
 
-  if (globalThis.__NAVA_FORM_FILLER_AGENT__) return;
-  globalThis.__NAVA_FORM_FILLER_AGENT__ = true;
+  if (globalThis.__NAVA_FORM_FILLER_AGENT_V3__) return;
+  globalThis.__NAVA_FORM_FILLER_AGENT_V3__ = true;
 
   const engine = globalThis.NavaFormEngine;
   const fieldMap = new Map();
@@ -13,19 +13,34 @@
     'benefitscal.com': {
       name: 'California benefits application',
       probes: ['#primarylang', '#addressLine1', '#zip5', '#birthDate_primary_input', '#ssn'],
-      note: 'Bundled playbook; pages after the work-program details remain unconfirmed.',
+      note: 'Bundled playbook; automatic continuation is limited to exact Begin, Next, and Continue controls.',
+      autoAdvance: true,
     },
     'riversideihss.org': {
       name: 'Riverside County IHSS application',
       probes: ['#firstNameTxt', '#ssnTxt', '#btnSubmit'],
       note: 'Bundled playbook with confirmed mask, gate, and submit-check behavior.',
+      autoAdvance: true,
     },
     'www.ruhealth.org': {
       name: 'Riverside University Health System WIC application',
       probes: ['#edit-name', '#edit-please-choose-the-wic-clinic-closest-to-you', '#edit-submit'],
       note: 'Bundled playbook with confirmed inline-form and CAPTCHA behavior.',
+      autoAdvance: false,
     },
   };
+
+  const SAFE_ADVANCE_LABELS = new Set([
+    'begin',
+    'next',
+    'next step',
+    'continue',
+    'continue to next step',
+    'save and continue',
+    'save continue',
+  ]);
+  const FINAL_ACTION_PATTERN = /\b(submit|finish|complete|certify|attest|sign|send|file|apply)\b/i;
+  const FINAL_PAGE_PATTERN = /^(review (?:and|&) submit|review and submit your application|final review|ready to submit|submit your application|certification|attestation|signature|declaration)\b/i;
 
   function visible(element) {
     if (!element || element.type === 'hidden') return false;
@@ -93,6 +108,7 @@
     if (/current-password|new-password|one-time-code|cc-number|cc-csc|cc-exp/.test(autocomplete)) return true;
     if (type === 'password' && !/social security|\bssn\b|date of birth|birth date|birthdate/.test(signal)) return true;
     if (/credit card|card number|security code|\bcvv\b|routing number|bank account|payment account/.test(signal)) return true;
+    if (type === 'checkbox' && /certif|attest|affirm|declaration|signature|terms and conditions|under penalty/.test(signal)) return true;
     if (/leave this field blank|do not fill|honeypot|website url|site search|search this site/.test(signal)) return true;
     if (element.closest('[role="search"], .search-form, .site-search, .g-recaptcha')) return true;
     return false;
@@ -175,7 +191,7 @@
 
   function playbookStatus() {
     const hostname = location.hostname.toLowerCase();
-    const playbook = PLAYBOOKS[hostname];
+    const playbook = playbookForHost(hostname);
     if (!playbook) {
       return {
         status: 'cold',
@@ -191,6 +207,11 @@
         ? `${playbook.note} A known field was found on this page.`
         : `${playbook.note} No freshness field appears on this page, so every write will rely on the live scan and readback.`,
     };
+  }
+
+  function playbookForHost(hostname = location.hostname.toLowerCase()) {
+    return Object.entries(PLAYBOOKS)
+      .find(([domain]) => hostname === domain || hostname.endsWith(`.${domain}`))?.[1];
   }
 
   function botCheckStatus() {
@@ -217,6 +238,126 @@
       blockedReason: bot.present && !bot.complete
         ? 'A human must complete the bot check before submission.'
         : '',
+    };
+  }
+
+  function pageSignature() {
+    const heading = [...document.querySelectorAll('h1, h2, [role="heading"]')]
+      .filter(visible)
+      .map((element) => cleanText(element.textContent))
+      .find(Boolean) || document.title;
+    const fieldSignal = [...document.querySelectorAll('input, select, textarea')]
+      .filter(visible)
+      .slice(0, 30)
+      .map((element) => `${element.tagName}:${element.type || ''}:${element.name || element.id || labelFor(element)}`)
+      .join('|');
+    const source = `${location.href}|${heading}|${fieldSignal}`;
+    let hash = 2166136261;
+    for (let index = 0; index < source.length; index += 1) {
+      hash ^= source.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `${location.pathname}:${(hash >>> 0).toString(36)}`;
+  }
+
+  function navigationControlText(element) {
+    return cleanText(
+      element.textContent
+      || element.value
+      || element.getAttribute('aria-label')
+      || element.getAttribute('title'),
+    );
+  }
+
+  function isControlEnabled(element) {
+    return !element.disabled && element.getAttribute('aria-disabled') !== 'true';
+  }
+
+  function isSafeAdvanceText(text) {
+    return SAFE_ADVANCE_LABELS.has(engine.normalize(text).replace(/\band\b/g, '').replace(/\s+/g, ' ').trim())
+      || SAFE_ADVANCE_LABELS.has(engine.normalize(text));
+  }
+
+  function hasFinalPageSignal() {
+    const headings = [...document.querySelectorAll('h1, h2, h3, legend, [role="heading"]')]
+      .filter(visible)
+      .slice(0, 20)
+      .map((element) => cleanText(element.textContent));
+    if (headings.some((heading) => FINAL_PAGE_PATTERN.test(heading))) return true;
+    return [...document.querySelectorAll('input[type="checkbox"], input[type="radio"]')]
+      .filter(visible)
+      .some((element) => /certif|attest|under penalty|declare|signature|agree.*truth|information.*correct/i.test(
+        `${labelFor(element)} ${questionText(element, labelFor(element))}`,
+      ));
+  }
+
+  function navigationDecision() {
+    const controls = [...document.querySelectorAll('button, input[type="submit"], input[type="button"], a[href], [role="button"]')]
+      .filter((element) => visible(element) && isControlEnabled(element))
+      .map((element) => ({ element, text: navigationControlText(element) }))
+      .filter((item) => item.text);
+    const safeNext = controls.find((item) => isSafeAdvanceText(item.text) && !FINAL_ACTION_PATTERN.test(item.text));
+    const finalAction = controls.find((item) => FINAL_ACTION_PATTERN.test(item.text));
+    const playbook = playbookForHost();
+    const demoFlow = document.documentElement.dataset.navaDemoFlow === 'true';
+    const allowed = Boolean(playbook?.autoAdvance || demoFlow);
+    const bot = botCheckStatus();
+    const signature = pageSignature();
+
+    if (bot.present && !bot.complete) {
+      return {
+        element: null,
+        gate: { kind: 'manual', text: '', pageSignature: signature, reason: 'A human must complete the bot check before the assistant can continue.' },
+      };
+    }
+    if (hasFinalPageSignal()) {
+      return {
+        element: null,
+        gate: { kind: 'final_review', text: finalAction?.text || '', pageSignature: signature, reason: 'The application reached a certification, signature, or final review step. Submission stays with the caseworker.' },
+      };
+    }
+    if (safeNext && allowed) {
+      return {
+        element: safeNext.element,
+        gate: { kind: 'next', text: safeNext.text, pageSignature: signature, reason: `A known safe “${safeNext.text}” control is ready.` },
+      };
+    }
+    if (finalAction) {
+      return {
+        element: null,
+        gate: { kind: 'final_review', text: finalAction.text, pageSignature: signature, reason: `The next visible action is “${finalAction.text}”. The assistant will not activate it.` },
+      };
+    }
+    if (safeNext && !allowed) {
+      return {
+        element: null,
+        gate: { kind: 'manual', text: safeNext.text, pageSignature: signature, reason: 'This site has no approved auto-navigation playbook. Continue on the page, then resume the assistant.' },
+      };
+    }
+    return {
+      element: null,
+      gate: { kind: 'none', text: '', pageSignature: signature, reason: 'No safe continuation control is visible.' },
+    };
+  }
+
+  function navigationStatus() {
+    return navigationDecision().gate;
+  }
+
+  function advance() {
+    const decision = navigationDecision();
+    if (decision.gate.kind !== 'next' || !decision.element) {
+      return { advanced: false, navigationGate: decision.gate };
+    }
+    const beforeUrl = location.href;
+    const beforeTitle = document.title;
+    decision.element.focus();
+    decision.element.click();
+    return {
+      advanced: true,
+      beforeUrl,
+      beforeTitle,
+      navigationGate: decision.gate,
     };
   }
 
@@ -355,6 +496,7 @@
       verifiedCount: results.filter((result) => result.status === 'verified').length,
       blockedCount: results.filter((result) => result.status === 'blocked').length,
       submitGate: submitGateStatus(),
+      navigationGate: navigationStatus(),
     };
   }
 
@@ -372,6 +514,7 @@
         playbook: playbookStatus(),
         analysis: engine.buildAnalysis(fields, message.participant || {}),
         submitGate: submitGateStatus(),
+        navigationGate: navigationStatus(),
       };
     }
     if (message?.type === 'NAVA_FILL') {
@@ -380,12 +523,20 @@
     if (message?.type === 'NAVA_SUBMIT_STATUS') {
       return { ok: true, submitGate: submitGateStatus() };
     }
+    if (message?.type === 'NAVA_NAVIGATION_STATUS') {
+      return { ok: true, navigationGate: navigationStatus() };
+    }
+    if (message?.type === 'NAVA_ADVANCE') {
+      return { ok: true, ...advance() };
+    }
     return { ok: false, error: 'Unknown message.' };
   }
 
   globalThis.NavaPageAgentTestApi = {
     scan: (participant) => handleMessage({ type: 'NAVA_SCAN', participant }),
     fill: (assignments) => handleMessage({ type: 'NAVA_FILL', assignments }),
+    navigationStatus: () => navigationStatus(),
+    advance: () => advance(),
   };
 
   if (globalThis.chrome?.runtime?.onMessage) {

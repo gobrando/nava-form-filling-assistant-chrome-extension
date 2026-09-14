@@ -110,11 +110,11 @@ const DEMO_RECORDS = [
 const PROGRAMS = {
   calfresh: {
     name: 'CalFresh',
-    url: 'https://benefitscal.com/Public/login?lang=en',
+    url: 'https://benefitscal.com/ApplyForBenefits/begin/ABOVR?lang=en',
   },
   medical: {
     name: 'Medi-Cal',
-    url: 'https://benefitscal.com/Public/login?lang=en',
+    url: 'https://benefitscal.com/ApplyForBenefits/begin/ABOVR?lang=en',
   },
   wic: {
     name: 'WIC',
@@ -122,7 +122,7 @@ const PROGRAMS = {
   },
   calworks: {
     name: 'CalWORKs',
-    url: 'https://benefitscal.com/Public/login?lang=en',
+    url: 'https://benefitscal.com/ApplyForBenefits/begin/ABOVR?lang=en',
   },
   ihss: {
     name: 'IHSS',
