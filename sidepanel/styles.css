@@ -707,6 +707,10 @@ textarea {
   background: var(--warning-light);
 }
 
+.extraction-card.low-confidence {
+  border-color: #e9b9c7;
+}
+
 .extraction-card > input {
   width: 18px;
   height: 18px;
@@ -749,6 +753,11 @@ textarea {
   color: var(--warning);
 }
 
+.confidence-chip.low {
+  background: var(--danger-light);
+  color: var(--danger);
+}
+
 .extracted-value {
   overflow-wrap: anywhere;
   font-weight: 650;
@@ -765,6 +774,14 @@ textarea {
   border-top: 1px solid #e7c998;
   color: #5e3d10;
   font-size: 11px;
+}
+
+.ocr-provenance {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
 }
 
 .client-chip span {

@@ -8,15 +8,15 @@ Version 0.4 delivers the extension-side connector milestone against a loopback c
 
 The extension rejects secret-like configuration, requires HTTPS outside localhost, keeps participant records in session storage, and never assigns meaning from a numeric Apricot field ID. The production backend remains separate work: organization authentication, provider credential custody, a sandbox tenant, revocation, rate limits, audit events without values, and current Bonterra/partner approval.
 
-### Document upload extractor — prototype complete; hardening is next
+### Document upload extractor — OCR and evaluation vertical slice complete
 
-The extension parses PDF, DOCX, TXT, CSV, TSV, and JSON locally, proposes clearly labeled demographic, identity, address, contact, and business fields, masks SSN/EIN evidence, and requires review before merge. Image-only and scanned documents remain the largest coverage gap.
+Version 0.5 adds bundled English OCR for PNG, JPEG, WebP, and image-only PDF pages; strict page/pixel/attempt/time budgets; rotation recovery; page/region/confidence provenance; default-unchecked OCR proposals; and an executable quality gate. The synthetic corpus currently passes at 100% precision, 91.2% recall, 100% expected-abstention accuracy, zero accepted wrong values, and zero sensitive evidence leaks. The next extraction work is pilot-grade hardening against representative, consented documents rather than broader automatic acceptance.
 
 ### Multi-application UI — useful foundation complete
 
 The dashboard tracks separate application tabs, retains one session client, shows attention states, runs approved multi-page flows, and produces cross-page progress. The next layer is operational: resumable sessions, notifications for human checkpoints, ownership/hand-off, and audit export.
 
-## Recommended next milestone: OCR and extraction evaluation
+## Completed milestone: OCR and extraction evaluation
 
 Before adding more intake automation, establish a measurable quality bar and preserve the current bias against invented data.
 
@@ -27,13 +27,26 @@ Before adding more intake automation, establish a measurable quality bar and pre
 5. Route low-confidence, ambiguous, handwritten, or unsupported content to manual entry. Do not infer protected or eligibility facts.
 6. Add malware/file-type validation, encrypted temporary handling, retention tests, accessibility checks, and performance budgets before a pilot.
 
-Success: on a representative evaluation set, every imported value is traceable to visible source evidence; sensitive evidence stays masked; no unreviewed value reaches a form; and accuracy, abstention, latency, and failure behavior meet published thresholds.
+The repository now provides the implementation and a reproducible synthetic baseline for those success criteria. A real pilot must add representative consented/redacted documents and accessibility, malware, performance, and privacy validation before these numbers can be generalized.
+
+## Recommended next milestone: resumable multi-application work queues
+
+The best next extension-side investment is making the existing multi-application dashboard operational across real caseworker interruptions while production connector work proceeds with backend owners.
+
+1. Persist minimal encrypted work-queue metadata without persisting raw documents or participant values longer than policy allows.
+2. Make paused applications resumable at a verified URL/page signature, then rescan before any write.
+3. Add explicit ownership, hand-off, and human-checkpoint states for CAPTCHA, OTP, certification, signature, and final submit.
+4. Add value-free audit export for opened, scanned, prompted, filled, verified, blocked, resumed, and review-reached events.
+5. Add notifications only for actionable human checkpoints, with organization policy controls and no PII in notification content.
+6. Test recovery from tab closure, browser restart, expired sessions, stale records, changed forms, and two caseworkers attempting the same application.
+
+Success: a caseworker can safely leave and resume several applications without reloading the source document or silently replaying stale writes, and another authorized caseworker can understand exactly why an application paused.
 
 ## Suggested sequence
 
-- **Now:** OCR and extraction-quality evaluation.
+- **Completed:** OCR and extraction-quality evaluation baseline.
 - **In parallel with backend owners:** productionize the Nava connector service and pilot one authenticated Apricot organization.
-- **Then:** resumable multi-application work queues and caseworker hand-off.
+- **Next:** resumable multi-application work queues and caseworker hand-off.
 - **Later:** additional source systems through the same connector contract.
 
 ## Connector follow-through before production

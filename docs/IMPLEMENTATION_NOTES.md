@@ -17,9 +17,10 @@
 ```text
 sidepanel/
   sidepanel.js        workflow, document review, questions, dashboard, provenance review
-  document-parser.js  local PDF/DOCX/text/delimited/JSON extraction
+  document-parser.js  local image/PDF/DOCX/text/delimited/JSON extraction and review policy
+  ocr-engine.js       bounded local OCR, rotation correction, confidence + region evidence
         │
-        ├── vendor/                    bundled PDF.js worker + fflate
+        ├── vendor/                    bundled PDF.js, fflate, Tesseract.js, WASM + English data
         ├── chrome.storage.session     participant + per-tab application state
         ├── chrome.storage.local       non-personal connector descriptor + reviewed schema map
         ├── shared/connector-engine.js label-based schema mapping, validation, provenance
@@ -38,12 +39,16 @@ All executable extension code ships inside the package; there are no remote scri
 
 ## Document intake safety model
 
-1. The file picker accepts PDF, DOCX, TXT, CSV, TSV, and JSON files no larger than 15 MB.
+1. The file picker accepts PDF, PNG, JPEG, WebP, DOCX, TXT, CSV, TSV, and JSON files no larger than 15 MB.
 2. Parsing runs in the side panel with bundled code. The extension keeps only proposed fields in memory and does not retain the raw file or extracted document text.
 3. Free-form extraction is conservative: values must have recognized labels, except for common email, phone, US address, and city/state/ZIP patterns. SSNs and EINs must be explicitly labeled.
-4. The caseworker reviews every proposed field. Conflicts with the active record start unchecked; selecting one is an explicit replacement.
+4. All OCR proposals start unchecked. The caseworker must compare page/region evidence and explicitly select each value. Conflicts and low-confidence non-OCR values also start unchecked.
 5. Sensitive values remain masked in evidence and review UI. The selected underlying value stays in session storage so it can be written to a matching form field.
-6. PDFs are capped at 60 pages and 750,000 extracted characters. Scanned/image-only PDFs are not OCR'd and return a warning instead of guessed data.
+6. PDFs are capped at 60 pages and 750,000 embedded-text characters. Only the first 8 image-only pages are eligible for OCR.
+7. OCR is capped at 8 million pixels per attempt, 32 million total processed pixels, 10 attempts, 30 seconds to start, and 45 seconds per page. One worker is created per document and always terminated.
+8. OCR uses a pinned, bundled English fast model. It performs a bounded 90°/270° retry only when the first orientation is weak.
+9. The parser withholds OCR below 70% confidence, requires 94% for email and 90% for SSN/EIN, and rejects common recognition artifacts in names. Accepted OCR is never labeled high-confidence.
+10. Handwriting and unsupported languages are expected to abstain. Production use still requires representative pilot data, malware validation, accessibility review, and a privacy/security assessment.
 
 ## Deliberate product choices
 

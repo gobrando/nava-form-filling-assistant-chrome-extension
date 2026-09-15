@@ -259,7 +259,7 @@
           </button>
           <button class="choice-button" type="button" data-action="choose-document">
             <span class="choice-icon" aria-hidden="true">DOC</span>
-            <span class="choice-copy"><strong>Upload a client or business document</strong><small>Review labeled details from PDF, Word, text, CSV, or JSON.</small></span>
+            <span class="choice-copy"><strong>Upload a client or business document</strong><small>Review labeled details from scans, images, PDF, Word, text, CSV, or JSON.</small></span>
             <span class="chevron" aria-hidden="true">›</span>
           </button>
         </div>
@@ -479,10 +479,10 @@
           <label class="upload-zone" for="client-document">
             <span class="upload-icon" aria-hidden="true">↑</span>
             <strong>Choose a document</strong>
-            <span>PDF, DOCX, TXT, CSV, TSV, or JSON · up to 15 MB</span>
-            <input id="client-document" name="clientDocument" type="file" accept=".pdf,.docx,.txt,.csv,.tsv,.json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/csv,application/json" required>
+            <span>PDF, PNG, JPEG, WebP, DOCX, TXT, CSV, TSV, or JSON · up to 15 MB</span>
+            <input id="client-document" name="clientDocument" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.docx,.txt,.csv,.tsv,.json,application/pdf,image/png,image/jpeg,image/webp,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/csv,application/json" required>
           </label>
-          <div class="notice"><span aria-hidden="true">⌁</span><span>The raw file stays on this device and is discarded after parsing. Scanned PDFs without selectable text are not supported in this build.</span></div>
+          <div class="notice"><span aria-hidden="true">⌁</span><span>The raw file stays on this device and is discarded after parsing. Image-only pages use the bundled English OCR model with strict page, pixel, attempt, and time limits.</span></div>
           <div class="form-actions">
             <button class="primary-button" type="submit">Read document</button>
             ${state.participant ? '' : '<button class="secondary-button" type="button" data-action="choose-json">Paste JSON instead</button>'}
@@ -502,6 +502,16 @@
       const existing = current[field.key];
       return existing !== undefined && existing !== null && existing !== '' && !sameValue(existing, field.value);
     }).length;
+    const lowConfidenceCount = result.fields.filter((field) => field.confidence === 'low').length;
+    const methodLabel = {
+      ocr: 'On-device OCR',
+      mixed: 'Embedded text + OCR',
+      'embedded-text': 'Embedded PDF text',
+      docx: 'Word document text',
+      text: 'Plain text',
+      'delimited-text': 'Delimited text',
+      structured: 'Structured JSON',
+    }[result.quality?.method] || 'Local extraction';
     appRoot.innerHTML = `
       <section>
         <button class="back-button" type="button" data-action="back-document"><span aria-hidden="true">←</span> Back</button>
@@ -513,7 +523,7 @@
         ${renderError()}
         <div class="file-summary">
           <span class="file-badge" aria-hidden="true">DOC</span>
-          <span><strong>${escapeHtml(result.file.name)}</strong><small>${result.fields.length} proposed ${result.fields.length === 1 ? 'field' : 'fields'}${conflictCount ? ` · ${conflictCount} ${conflictCount === 1 ? 'conflict' : 'conflicts'}` : ''}</small></span>
+          <span><strong>${escapeHtml(result.file.name)}</strong><small>${escapeHtml(methodLabel)} · ${result.fields.length} proposed ${result.fields.length === 1 ? 'field' : 'fields'}${conflictCount ? ` · ${conflictCount} ${conflictCount === 1 ? 'conflict' : 'conflicts'}` : ''}${lowConfidenceCount ? ` · ${lowConfidenceCount} low confidence` : ''}</small></span>
         </div>
         ${result.warnings.map((warning) => `<div class="notice warning document-warning"><span aria-hidden="true">!</span><span>${escapeHtml(warning)}</span></div>`).join('')}
         ${result.fields.length ? `
@@ -524,12 +534,14 @@
                 const hasExisting = existing !== undefined && existing !== null && existing !== '';
                 const conflict = hasExisting && !sameValue(existing, field.value);
                 return `
-                  <label class="extraction-card ${conflict ? 'conflict' : ''}">
-                    <input type="checkbox" name="fieldIndex" value="${index}" ${conflict ? '' : 'checked'}>
+                  <label class="extraction-card ${conflict ? 'conflict' : ''} ${field.confidence === 'low' ? 'low-confidence' : ''}">
+                    <input type="checkbox" name="fieldIndex" value="${index}" ${conflict || field.confidence === 'low' || field.reviewRequired ? '' : 'checked'}>
                     <span class="extraction-copy">
                       <span class="extraction-heading"><strong>${escapeHtml(field.label)}</strong><span class="confidence-chip ${escapeHtml(field.confidence)}">${escapeHtml(field.confidence)}</span></span>
                       <span class="extracted-value">${escapeHtml(field.displayValue)}</span>
                       <small>${escapeHtml(field.evidence)}</small>
+                      ${field.source?.method === 'ocr' ? `<span class="ocr-provenance">Page ${escapeHtml(field.source.pageNumber)}${field.source.region ? ` · region ${escapeHtml(Math.round(field.source.region.x0))},${escapeHtml(Math.round(field.source.region.y0))}–${escapeHtml(Math.round(field.source.region.x1))},${escapeHtml(Math.round(field.source.region.y1))}` : ''}${field.source.canvas?.rotation ? ` · corrected ${escapeHtml(field.source.canvas.rotation)}° rotation` : ''}</span>` : ''}
+                      ${field.reviewRequired ? '<span class="conflict-note"><strong>OCR review required:</strong> verify this value in the source before selecting it.</span>' : field.confidence === 'low' ? '<span class="conflict-note"><strong>Low confidence:</strong> verify this value in the source before selecting it.</span>' : ''}
                       ${conflict ? `<span class="conflict-note"><strong>Different from current:</strong> ${escapeHtml(displayValue(field.key, existing))}. Select to replace it.</span>` : ''}
                     </span>
                   </label>`;
@@ -1217,7 +1229,13 @@
     if (form.id === 'document-form') {
       const file = form.elements.clientDocument?.files?.[0];
       setBusy('Reading the document on this device…');
-      state.documentResult = await globalThis.NavaDocumentParser.parseDocument(file);
+      state.documentResult = await globalThis.NavaDocumentParser.parseDocument(file, {
+        onProgress(update) {
+          const page = update.pageNumber ? ` page ${update.pageNumber}${update.totalPages ? ` of ${update.totalPages}` : ''}` : '';
+          const percent = Number.isFinite(update.progress) && update.progress > 0 ? ` · ${Math.round(update.progress * 100)}%` : '';
+          setBusy(`On-device OCR${page}: ${update.status || 'working'}${percent}`);
+        },
+      });
       state.view = 'document-review';
     }
     if (form.id === 'document-review-form') {
@@ -1234,7 +1252,17 @@
         ...additions,
         _documentSources: [
           ...(state.participant?._documentSources || []),
-          { name: result.file.name, fields: selected.map((field) => field.key) },
+          {
+            name: result.file.name,
+            fields: selected.map((field) => field.key),
+            quality: result.quality,
+            provenance: selected.map((field) => ({
+              key: field.key,
+              confidence: field.confidence,
+              ocrConfidence: field.ocrConfidence,
+              source: field.source,
+            })),
+          },
         ],
       };
       state.documentResult = null;
@@ -1440,6 +1468,8 @@
       pdf: { name: 'sample-client.pdf', type: 'application/pdf' },
       docx: { name: 'sample-business.docx', type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
       csv: { name: 'sample-business.csv', type: 'text/csv' },
+      ocr: { name: 'sample-client-scan.png', type: 'image/png' },
+      ocrpdf: { name: 'sample-client-scan.pdf', type: 'application/pdf' },
     };
     const fixture = fixtures[fixtureKey];
     if (!fixture) return false;

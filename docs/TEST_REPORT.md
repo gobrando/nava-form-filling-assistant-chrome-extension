@@ -1,6 +1,6 @@
 # Test report
 
-Date: 2026-09-14
+Date: 2026-09-15
 
 ## Automated checks
 
@@ -11,7 +11,31 @@ npm run check
 npm test
 ```
 
-The suite covers canonical client and business records, field mapping and formatting, masked-value verification, document extraction, bundled-parser and storage boundaries, connector configuration sanitization, labeled-schema mapping, source provenance/freshness, Manifest V3 configuration, and the no-submit contract. It also statically verifies the connector's read-only boundary and the multi-page runner's allowlisted continuation, loop guard, page limit, and final-action boundary.
+The 36-test suite covers canonical client and business records, field mapping and formatting, masked-value verification, document and OCR extraction, OCR resource budgets and default-review behavior, bundled-parser and storage boundaries, connector configuration sanitization, labeled-schema mapping, source provenance/freshness, Manifest V3 configuration, and the no-submit contract. It also statically verifies the connector's read-only boundary and the multi-page runner's allowlisted continuation, loop guard, page limit, and final-action boundary.
+
+## OCR and extraction-quality gate
+
+Run `npm run eval:extraction` to execute bundled Tesseract against six generated fictional fixtures: clean client data, a low-contrast/noisy scan, a rotated business record, a two-column business table, bilingual English/Spanish labels, and unsupported handwriting. The harness scores only proposals that survive the extension's actual confidence and safety filters.
+
+| Metric | Result | Gate |
+| --- | ---: | ---: |
+| Field precision | 100.0% | ≥ 95.0% |
+| Field recall | 91.2% | ≥ 80.0% |
+| Expected-abstention accuracy | 100.0% | 100.0% |
+| Accepted wrong values | 0 | 0 |
+| Sensitive values exposed in evidence | 0 | 0 |
+
+Three expected values were omitted rather than accepted incorrectly: two OCR email candidates that did not meet the 94% email floor and one noisy name containing a recognition artifact. The rotated fixture selected a 270° correction. The unsupported handwriting fixture yielded no field proposals. These are synthetic baseline results, not a claim about production-document accuracy; the full generated report is in `evaluation/latest-report.md` and its inspectable JSON companion.
+
+## Chrome OCR walkthrough
+
+Chrome loaded the regular-page preview with the bundled worker, WebAssembly core, and English model on 2026-09-15. No remote OCR service was configured.
+
+1. A 1,200 × 1,500 PNG scan produced nine correct review proposals and withheld one suspect email candidate.
+2. Every proposal included page number, OCR confidence, and a numeric source region; all nine checkboxes started unchecked.
+3. After explicit selection, the nine values merged into the fictional client and the application-selection screen retained the document provenance.
+4. The same raster image embedded as a one-page, image-only PDF used the PDF.js render-to-canvas path and then OCR. It produced eight correct proposals, withheld two candidates, and again left every proposal unchecked.
+5. Neither run emitted a browser console warning or error.
 
 ## Self-service connector walkthrough
 

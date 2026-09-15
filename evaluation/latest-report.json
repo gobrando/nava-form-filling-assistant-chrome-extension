@@ -1,0 +1,551 @@
+{
+  "corpusVersion": 1,
+  "generatedAt": "2026-09-15T17:01:41.660Z",
+  "passed": true,
+  "thresholds": {
+    "precision": 0.95,
+    "recall": 0.8,
+    "abstentionAccuracy": 1,
+    "wrongValues": 0,
+    "sensitiveEvidenceLeaks": 0
+  },
+  "thresholdResults": {
+    "precision": true,
+    "recall": true,
+    "abstentionAccuracy": true,
+    "wrongValues": true,
+    "sensitiveEvidenceLeaks": true
+  },
+  "metrics": {
+    "precision": 1,
+    "recall": 0.9117647058823529,
+    "abstentionAccuracy": 1,
+    "wrongValues": 0,
+    "sensitiveEvidenceLeaks": 0,
+    "totalDurationMs": 2109,
+    "averageCaseDurationMs": 352
+  },
+  "cases": [
+    {
+      "id": "clean-client",
+      "passed": false,
+      "expectedAbstain": false,
+      "abstained": false,
+      "truePositive": 9,
+      "falsePositive": 0,
+      "falseNegative": 1,
+      "wrongValues": 0,
+      "sensitiveEvidenceLeaks": 0,
+      "proposedFields": 9,
+      "lowConfidenceFields": 0,
+      "meanOcrConfidence": 95,
+      "selectedRotation": 0,
+      "attempts": 1,
+      "durationMs": 438,
+      "recognizedText": "FICTIONAL CLIENT INTAKE\n\nFirst Name: Celeste\n\nMiddle Name: NAVA\n\nLast Name: Thomas II\n\nDate of Birth: 01/02/2000\n\nEmail: testhava@email.com\n\nPhone: 777-777-7777\n\nAddress: 5556 Test Boulevard\n\nCity: Wildomar\n\nState: CA\n\nZIP Code: 92595\n",
+      "differences": [
+        {
+          "key": "email",
+          "kind": "missing",
+          "expected": "testnava@email.com"
+        }
+      ],
+      "actual": {
+        "firstName": {
+          "value": "Celeste",
+          "confidence": "medium",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 179,
+            "x1": 406,
+            "y1": 205
+          }
+        },
+        "middleName": {
+          "value": "NAVA",
+          "confidence": "medium",
+          "ocrConfidence": 95,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 271,
+            "x1": 414,
+            "y1": 297
+          }
+        },
+        "lastName": {
+          "value": "Thomas II",
+          "confidence": "medium",
+          "ocrConfidence": 95,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 363,
+            "x1": 440,
+            "y1": 389
+          }
+        },
+        "dateOfBirth": {
+          "value": "01/02/2000",
+          "confidence": "medium",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 455,
+            "x1": 488,
+            "y1": 481
+          }
+        },
+        "phone": {
+          "value": "777-777-7777",
+          "confidence": "medium",
+          "ocrConfidence": 95,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 639,
+            "x1": 437,
+            "y1": 665
+          }
+        },
+        "addressLine1": {
+          "value": "5556 Test Boulevard",
+          "confidence": "medium",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 90,
+            "y0": 731,
+            "x1": 567,
+            "y1": 757
+          }
+        },
+        "city": {
+          "value": "Wildomar",
+          "confidence": "medium",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 92,
+            "y0": 823,
+            "x1": 324,
+            "y1": 856
+          }
+        },
+        "state": {
+          "value": "CA",
+          "confidence": "medium",
+          "ocrConfidence": 95,
+          "pageNumber": 1,
+          "region": {
+            "x0": 92,
+            "y0": 915,
+            "x1": 244,
+            "y1": 941
+          }
+        },
+        "postalCode": {
+          "value": "92595",
+          "confidence": "medium",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 91,
+            "y0": 1007,
+            "x1": 360,
+            "y1": 1033
+          }
+        }
+      },
+      "fieldsWithheld": 1
+    },
+    {
+      "id": "low-contrast-client",
+      "passed": false,
+      "expectedAbstain": false,
+      "abstained": false,
+      "truePositive": 4,
+      "falsePositive": 0,
+      "falseNegative": 1,
+      "wrongValues": 0,
+      "sensitiveEvidenceLeaks": 0,
+      "proposedFields": 4,
+      "lowConfidenceFields": 0,
+      "meanOcrConfidence": 95,
+      "selectedRotation": 0,
+      "attempts": 1,
+      "durationMs": 200,
+      "recognizedText": "FICTIONAL SCANNED INTAKE\n\nFirst Name: Amelie\n\nLast Name: Thomas |\n\nDate of Birth: 01/01/2000\n\nPhone: 777-777-7777\n\nPrimary Language: English\n",
+      "differences": [
+        {
+          "key": "lastName",
+          "kind": "missing",
+          "expected": "Thomas I"
+        }
+      ],
+      "actual": {
+        "firstName": {
+          "value": "Amelie",
+          "confidence": "medium",
+          "ocrConfidence": 95,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 180,
+            "x1": 376,
+            "y1": 204
+          }
+        },
+        "dateOfBirth": {
+          "value": "01/01/2000",
+          "confidence": "medium",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 364,
+            "x1": 467,
+            "y1": 388
+          }
+        },
+        "phone": {
+          "value": "777-777-7777",
+          "confidence": "medium",
+          "ocrConfidence": 95,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 456,
+            "x1": 417,
+            "y1": 480
+          }
+        },
+        "primaryLanguage": {
+          "value": "English",
+          "confidence": "medium",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 548,
+            "x1": 496,
+            "y1": 579
+          }
+        }
+      },
+      "fieldsWithheld": 1
+    },
+    {
+      "id": "rotated-business",
+      "passed": true,
+      "expectedAbstain": false,
+      "abstained": false,
+      "truePositive": 7,
+      "falsePositive": 0,
+      "falseNegative": 0,
+      "wrongValues": 0,
+      "sensitiveEvidenceLeaks": 0,
+      "proposedFields": 7,
+      "lowConfidenceFields": 0,
+      "meanOcrConfidence": 95,
+      "selectedRotation": 270,
+      "attempts": 3,
+      "durationMs": 731,
+      "recognizedText": "FICTIONAL BUSINESS PROFILE\n\nBusiness Legal Name: Juniper Bicycle Works LLC\n\nDBA: Juniper Bikes\n\nEIN: ••••6789\n\nEntity Type: Limited Liability Company\n\nBusiness City: San Diego\n\nBusiness State: CA\n\nBusiness ZIP Code: 92109\n",
+      "differences": [],
+      "actual": {
+        "businessName": {
+          "value": "Juniper Bicycle Works LLC",
+          "confidence": "medium",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 180,
+            "x1": 844,
+            "y1": 211
+          }
+        },
+        "dba": {
+          "value": "Juniper Bikes",
+          "confidence": "medium",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 272,
+            "x1": 382,
+            "y1": 303
+          }
+        },
+        "ein": {
+          "value": "••••6789",
+          "confidence": "medium",
+          "ocrConfidence": 92,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 364,
+            "x1": 346,
+            "y1": 388
+          }
+        },
+        "businessType": {
+          "value": "Limited Liability Company",
+          "confidence": "medium",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 456,
+            "x1": 663,
+            "y1": 487
+          }
+        },
+        "businessCity": {
+          "value": "San Diego",
+          "confidence": "medium",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 548,
+            "x1": 472,
+            "y1": 579
+          }
+        },
+        "businessState": {
+          "value": "CA",
+          "confidence": "medium",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 640,
+            "x1": 383,
+            "y1": 664
+          }
+        },
+        "businessPostalCode": {
+          "value": "92109",
+          "confidence": "medium",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 732,
+            "x1": 492,
+            "y1": 756
+          }
+        }
+      },
+      "fieldsWithheld": 0
+    },
+    {
+      "id": "table-business",
+      "passed": false,
+      "expectedAbstain": false,
+      "abstained": false,
+      "truePositive": 6,
+      "falsePositive": 0,
+      "falseNegative": 1,
+      "wrongValues": 0,
+      "sensitiveEvidenceLeaks": 0,
+      "proposedFields": 6,
+      "lowConfidenceFields": 6,
+      "meanOcrConfidence": 95,
+      "selectedRotation": 0,
+      "attempts": 1,
+      "durationMs": 306,
+      "recognizedText": "FICTIONAL BUSINESS RECORD\n\nBusiness Legal Name\n\nHarbor Community Foods LLC\n\nBusiness Type\n\nLLC\n\nBusiness Address\n\n4400 Mission Boulevard\n\nBusiness City\n\nSan Diego\n\nBusiness State\n\nCA\n\nBusiness ZIP Code\n\n92109\n\nBusiness Email\n\nhello@harbor.example\n",
+      "differences": [
+        {
+          "key": "businessEmail",
+          "kind": "missing",
+          "expected": "hello@harbor.example"
+        }
+      ],
+      "actual": {
+        "businessName": {
+          "value": "Harbor Community Foods LLC",
+          "confidence": "low",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 563,
+            "y0": 168,
+            "x1": 992,
+            "y1": 197
+          }
+        },
+        "businessType": {
+          "value": "LLC",
+          "confidence": "low",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 563,
+            "y0": 168,
+            "x1": 992,
+            "y1": 197
+          }
+        },
+        "businessAddressLine1": {
+          "value": "4400 Mission Boulevard",
+          "confidence": "low",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 560,
+            "y0": 408,
+            "x1": 899,
+            "y1": 431
+          }
+        },
+        "businessCity": {
+          "value": "San Diego",
+          "confidence": "low",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 562,
+            "y0": 528,
+            "x1": 708,
+            "y1": 557
+          }
+        },
+        "businessState": {
+          "value": "CA",
+          "confidence": "low",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 562,
+            "y0": 648,
+            "x1": 604,
+            "y1": 671
+          }
+        },
+        "businessPostalCode": {
+          "value": "92109",
+          "confidence": "low",
+          "ocrConfidence": 96,
+          "pageNumber": 1,
+          "region": {
+            "x0": 561,
+            "y0": 768,
+            "x1": 648,
+            "y1": 791
+          }
+        }
+      },
+      "fieldsWithheld": 1
+    },
+    {
+      "id": "bilingual-client",
+      "passed": true,
+      "expectedAbstain": false,
+      "abstained": false,
+      "truePositive": 5,
+      "falsePositive": 0,
+      "falseNegative": 0,
+      "wrongValues": 0,
+      "sensitiveEvidenceLeaks": 0,
+      "proposedFields": 5,
+      "lowConfidenceFields": 0,
+      "meanOcrConfidence": 93,
+      "selectedRotation": 0,
+      "attempts": 1,
+      "durationMs": 268,
+      "recognizedText": "FORMULARIO FICTICIO / FICTIONAL FORM\n\nFirst Name / Nombre: Ana\n\nLast Name / Apellido: Morales\n\nDate of Birth / Fecha de nacimiento: 05/12/1991\n\nPhone / Teléfono: 951-555-0184\n\nPreferred Language / Idioma preferido: Spanish\n",
+      "differences": [],
+      "actual": {
+        "firstName": {
+          "value": "Ana",
+          "confidence": "medium",
+          "ocrConfidence": 94,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 180,
+            "x1": 481,
+            "y1": 204
+          }
+        },
+        "lastName": {
+          "value": "Morales",
+          "confidence": "medium",
+          "ocrConfidence": 93,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 272,
+            "x1": 540,
+            "y1": 303
+          }
+        },
+        "dateOfBirth": {
+          "value": "05/12/1991",
+          "confidence": "medium",
+          "ocrConfidence": 94,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 364,
+            "x1": 806,
+            "y1": 388
+          }
+        },
+        "phone": {
+          "value": "951-555-0184",
+          "confidence": "medium",
+          "ocrConfidence": 93,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 456,
+            "x1": 573,
+            "y1": 480
+          }
+        },
+        "primaryLanguage": {
+          "value": "Spanish",
+          "confidence": "medium",
+          "ocrConfidence": 93,
+          "pageNumber": 1,
+          "region": {
+            "x0": 93,
+            "y0": 548,
+            "x1": 806,
+            "y1": 579
+          }
+        }
+      },
+      "fieldsWithheld": 0
+    },
+    {
+      "id": "unsupported-handwriting",
+      "passed": true,
+      "expectedAbstain": true,
+      "abstained": true,
+      "truePositive": 0,
+      "falsePositive": 0,
+      "falseNegative": 0,
+      "wrongValues": 0,
+      "sensitiveEvidenceLeaks": 0,
+      "proposedFields": 0,
+      "lowConfidenceFields": 0,
+      "meanOcrConfidence": 95,
+      "selectedRotation": 0,
+      "attempts": 1,
+      "durationMs": 166,
+      "recognizedText": "Maria Santos\n\nborn during the summer of 1988\n\nreference ••••6789\n\nplease call the office next week\n",
+      "differences": [],
+      "actual": {},
+      "fieldsWithheld": 0
+    }
+  ]
+}

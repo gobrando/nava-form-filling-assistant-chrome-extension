@@ -70,6 +70,36 @@ test('document intake uses only bundled parsers and never persists the raw file'
   assert.ok(fs.existsSync(path.join(root, 'vendor/licenses/FFLATE-LICENSE.txt')));
 });
 
+test('OCR uses only bundled assets, enforces resource limits, and requires field review', () => {
+  const html = fs.readFileSync(path.join(root, 'sidepanel/index.html'), 'utf8');
+  const ocr = fs.readFileSync(path.join(root, 'sidepanel/ocr-engine.js'), 'utf8');
+  const parser = fs.readFileSync(path.join(root, 'sidepanel/document-parser.js'), 'utf8');
+  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
+
+  assert.match(html, /ocr-engine\.js/);
+  assert.match(ocr, /vendor\/tesseract\/tesseract\.esm\.min\.js/);
+  assert.match(ocr, /MAX_OCR_PAGES = 8/);
+  assert.match(ocr, /MAX_PAGE_PIXELS = 8_000_000/);
+  assert.match(ocr, /MAX_TOTAL_PIXELS = 32_000_000/);
+  assert.match(ocr, /MAX_OCR_ATTEMPTS = 10/);
+  assert.doesNotMatch(ocr, /https?:\/\//i);
+  assert.match(parser, /reviewRequired: true/);
+  assert.match(panel, /field\.reviewRequired \? '' : 'checked'/);
+  assert.match(panel, /image\/png/);
+
+  [
+    'vendor/tesseract/tesseract.esm.min.js',
+    'vendor/tesseract/worker.min.js',
+    'vendor/tesseract/core/tesseract-core-lstm.wasm.js',
+    'vendor/tesseract/core/tesseract-core-lstm.wasm',
+    'vendor/tesseract/lang-data/eng.traineddata.gz',
+    'vendor/licenses/TESSERACT-JS-LICENSE.txt',
+    'vendor/licenses/TESSERACT-CORE-LICENSE.txt',
+    'vendor/licenses/TESSDATA-FAST-LICENSE.txt',
+  ].forEach((relativePath) => assert.ok(fs.existsSync(path.join(root, relativePath)), `${relativePath} should be bundled`));
+  assert.ok(fs.existsSync(path.join(root, 'demo/fixtures/sample-client-scan.pdf')));
+});
+
 test('managed connector is read-only and stores only validated configuration', () => {
   const background = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
   const mock = fs.readFileSync(path.join(root, 'connector-service/mock-server.mjs'), 'utf8');

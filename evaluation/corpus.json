@@ -1,0 +1,175 @@
+{
+  "version": 1,
+  "description": "Synthetic fictional records for local OCR and extraction regression testing. No real participant data is included.",
+  "thresholds": {
+    "precision": 0.95,
+    "recall": 0.8,
+    "abstentionAccuracy": 1,
+    "wrongValues": 0,
+    "sensitiveEvidenceLeaks": 0
+  },
+  "cases": [
+    {
+      "id": "clean-client",
+      "fixture": "fixtures/clean-client.png",
+      "layout": "lines",
+      "width": 1200,
+      "height": 1500,
+      "background": "#ffffff",
+      "foreground": "#111111",
+      "font": "36px Arial",
+      "lines": [
+        "FICTIONAL CLIENT INTAKE",
+        "First Name: Celeste",
+        "Middle Name: NAVA",
+        "Last Name: Thomas II",
+        "Date of Birth: 01/02/2000",
+        "Email: testnava@email.com",
+        "Phone: 777-777-7777",
+        "Address: 5556 Test Boulevard",
+        "City: Wildomar",
+        "State: CA",
+        "ZIP Code: 92595"
+      ],
+      "expected": {
+        "firstName": "Celeste",
+        "middleName": "NAVA",
+        "lastName": "Thomas II",
+        "dateOfBirth": "01/02/2000",
+        "email": "testnava@email.com",
+        "phone": "777-777-7777",
+        "addressLine1": "5556 Test Boulevard",
+        "city": "Wildomar",
+        "state": "CA",
+        "postalCode": "92595"
+      }
+    },
+    {
+      "id": "low-contrast-client",
+      "fixture": "fixtures/low-contrast-client.png",
+      "layout": "lines",
+      "width": 1200,
+      "height": 1100,
+      "background": "#eeeeeb",
+      "foreground": "#777774",
+      "font": "34px Arial",
+      "noise": true,
+      "lines": [
+        "FICTIONAL SCANNED INTAKE",
+        "First Name: Amelie",
+        "Last Name: Thomas I",
+        "Date of Birth: 01/01/2000",
+        "Phone: 777-777-7777",
+        "Primary Language: English"
+      ],
+      "expected": {
+        "firstName": "Amelie",
+        "lastName": "Thomas I",
+        "dateOfBirth": "01/01/2000",
+        "phone": "777-777-7777",
+        "primaryLanguage": "English"
+      }
+    },
+    {
+      "id": "rotated-business",
+      "fixture": "fixtures/rotated-business.png",
+      "layout": "lines",
+      "width": 1200,
+      "height": 1300,
+      "background": "#ffffff",
+      "foreground": "#111111",
+      "font": "34px Arial",
+      "rotation": 90,
+      "lines": [
+        "FICTIONAL BUSINESS PROFILE",
+        "Business Legal Name: Juniper Bicycle Works LLC",
+        "DBA: Juniper Bikes",
+        "EIN: 12-3456789",
+        "Entity Type: Limited Liability Company",
+        "Business City: San Diego",
+        "Business State: CA",
+        "Business ZIP Code: 92109"
+      ],
+      "expected": {
+        "businessName": "Juniper Bicycle Works LLC",
+        "dba": "Juniper Bikes",
+        "ein": "12-3456789",
+        "businessType": "Limited Liability Company",
+        "businessCity": "San Diego",
+        "businessState": "CA",
+        "businessPostalCode": "92109"
+      }
+    },
+    {
+      "id": "table-business",
+      "fixture": "fixtures/table-business.png",
+      "layout": "table",
+      "width": 1500,
+      "height": 1200,
+      "background": "#ffffff",
+      "foreground": "#151515",
+      "font": "32px Arial",
+      "rows": [
+        ["Business Legal Name", "Harbor Community Foods LLC"],
+        ["Business Type", "LLC"],
+        ["Business Address", "4400 Mission Boulevard"],
+        ["Business City", "San Diego"],
+        ["Business State", "CA"],
+        ["Business ZIP Code", "92109"],
+        ["Business Email", "hello@harbor.example"]
+      ],
+      "expected": {
+        "businessName": "Harbor Community Foods LLC",
+        "businessType": "LLC",
+        "businessAddressLine1": "4400 Mission Boulevard",
+        "businessCity": "San Diego",
+        "businessState": "CA",
+        "businessPostalCode": "92109",
+        "businessEmail": "hello@harbor.example"
+      }
+    },
+    {
+      "id": "bilingual-client",
+      "fixture": "fixtures/bilingual-client.png",
+      "layout": "lines",
+      "width": 1400,
+      "height": 1200,
+      "background": "#ffffff",
+      "foreground": "#111111",
+      "font": "34px Arial",
+      "lines": [
+        "FORMULARIO FICTICIO / FICTIONAL FORM",
+        "First Name / Nombre: Ana",
+        "Last Name / Apellido: Morales",
+        "Date of Birth / Fecha de nacimiento: 05/12/1991",
+        "Phone / Teléfono: 951-555-0184",
+        "Preferred Language / Idioma preferido: Spanish"
+      ],
+      "expected": {
+        "firstName": "Ana",
+        "lastName": "Morales",
+        "dateOfBirth": "05/12/1991",
+        "phone": "951-555-0184",
+        "primaryLanguage": "Spanish"
+      }
+    },
+    {
+      "id": "unsupported-handwriting",
+      "fixture": "fixtures/unsupported-handwriting.png",
+      "layout": "handwriting",
+      "width": 1200,
+      "height": 900,
+      "background": "#fffdf8",
+      "foreground": "#3f4d72",
+      "font": "italic 48px Georgia",
+      "lines": [
+        "Maria Santos",
+        "born during the summer of 1988",
+        "reference 123456789",
+        "please call the office next week"
+      ],
+      "expected": {},
+      "expectedAbstain": true
+    }
+  ]
+}
