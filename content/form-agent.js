@@ -220,6 +220,14 @@
     return { present: true, complete: String(token.value || '').length > 100 };
   }
 
+  function oneTimeCodeStatus() {
+    const input = [...document.querySelectorAll('input')].filter(visible).find((element) => {
+      const signal = `${element.autocomplete || ''} ${element.name || ''} ${element.id || ''} ${labelFor(element)}`;
+      return /one-time-code|\botp\b|verification code|security code|passcode/i.test(signal);
+    });
+    return { present: Boolean(input), complete: Boolean(String(input?.value || '').trim()) };
+  }
+
   function submitGateStatus() {
     const controls = [...document.querySelectorAll('button, input[type="submit"], [role="button"]')]
       .filter(visible)
@@ -229,13 +237,18 @@
       }));
     const submit = controls.find((control) => /submit|send application|finish application|complete application/i.test(control.text));
     const bot = botCheckStatus();
+    const oneTimeCode = oneTimeCodeStatus();
     return {
       found: Boolean(submit),
       text: submit?.text || '',
       enabled: Boolean(submit?.enabled),
       botCheckPresent: bot.present,
       botCheckComplete: bot.complete,
-      blockedReason: bot.present && !bot.complete
+      oneTimeCodePresent: oneTimeCode.present,
+      oneTimeCodeComplete: oneTimeCode.complete,
+      blockedReason: oneTimeCode.present && !oneTimeCode.complete
+        ? 'A human must enter the one-time code before the assistant can continue.'
+        : bot.present && !bot.complete
         ? 'A human must complete the bot check before submission.'
         : '',
     };
@@ -302,8 +315,15 @@
     const demoFlow = document.documentElement.dataset.navaDemoFlow === 'true';
     const allowed = Boolean(playbook?.autoAdvance || demoFlow);
     const bot = botCheckStatus();
+    const oneTimeCode = oneTimeCodeStatus();
     const signature = pageSignature();
 
+    if (oneTimeCode.present && !oneTimeCode.complete) {
+      return {
+        element: null,
+        gate: { kind: 'manual', text: '', pageSignature: signature, reason: 'A human must enter the one-time code before the assistant can continue.' },
+      };
+    }
     if (bot.present && !bot.complete) {
       return {
         element: null,

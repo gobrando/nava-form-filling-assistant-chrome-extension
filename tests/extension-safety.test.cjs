@@ -28,6 +28,8 @@ test('cross-page automation only exposes gated advance and stops on final action
   assert.match(agent, /FINAL_ACTION_PATTERN/);
   assert.match(agent, /certif\|attest\|affirm/);
   assert.match(agent, /decision\.gate\.kind !== 'next'/);
+  assert.match(agent, /oneTimeCodeStatus/);
+  assert.match(agent, /one-time code before the assistant can continue/);
   assert.match(panel, /MAX_AUTOMATED_PAGES = 12/);
   assert.match(panel, /visitedSignatures/);
   assert.doesNotMatch(panel, /NAVA_SUBMIT\b/);
@@ -98,6 +100,23 @@ test('OCR uses only bundled assets, enforces resource limits, and requires field
     'vendor/licenses/TESSDATA-FAST-LICENSE.txt',
   ].forEach((relativePath) => assert.ok(fs.existsSync(path.join(root, relativePath)), `${relativePath} should be bundled`));
   assert.ok(fs.existsSync(path.join(root, 'demo/fixtures/sample-client-scan.pdf')));
+});
+
+test('resumable work queue persists only sanitized metadata and verifies before resume', () => {
+  const html = fs.readFileSync(path.join(root, 'sidepanel/index.html'), 'utf8');
+  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
+  const background = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
+
+  assert.match(html, /shared\/work-queue-engine\.js/);
+  assert.match(panel, /chrome\.storage\.session\.set\([\s\S]*participant: state\.participant/);
+  assert.match(panel, /chrome\.storage\.local\.set\(\{ \[QUEUE_STORAGE_KEY\]: durableQueue\(\) \}\)/);
+  assert.match(panel, /workQueueEngine\.resumeDecision/);
+  assert.match(panel, /NAVA_SCAN/);
+  assert.match(panel, /withApplicationLease/);
+  assert.match(panel, /exportAudit/);
+  assert.match(panel, /handoff_created/);
+  assert.match(background, /workQueueEngine\.markTabClosed/);
+  assert.doesNotMatch(background, /nava:application:/);
 });
 
 test('managed connector is read-only and stores only validated configuration', () => {

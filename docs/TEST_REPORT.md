@@ -11,7 +11,20 @@ npm run check
 npm test
 ```
 
-The 36-test suite covers canonical client and business records, field mapping and formatting, masked-value verification, document and OCR extraction, OCR resource budgets and default-review behavior, bundled-parser and storage boundaries, connector configuration sanitization, labeled-schema mapping, source provenance/freshness, Manifest V3 configuration, and the no-submit contract. It also statically verifies the connector's read-only boundary and the multi-page runner's allowlisted continuation, loop guard, page limit, and final-action boundary.
+The 45-test suite covers canonical client and business records, field mapping and formatting, masked-value verification, document and OCR extraction, OCR resource budgets and default-review behavior, bundled-parser and storage boundaries, connector configuration sanitization, labeled-schema mapping, source provenance/freshness, Manifest V3 configuration, and the no-submit contract. It also verifies the connector's read-only boundary, the multi-page runner's allowlisted continuation, OTP/CAPTCHA checkpoints, restart recovery, tab closure, changed-page rejection, stale/expired sources, pending handoffs, competing leases, durable metadata sanitization, and value-free audit export.
+
+## Resumable queue and handoff walkthrough
+
+Chrome ran the regular-page queue preview on 2026-09-15:
+
+1. Loaded two interrupted applications: a paused BenefitsCal workflow and a WIC workflow assigned to the Intake team.
+2. Selected **Verify and resume**. The assistant performed a fresh scan, matched the saved location and page signature, and moved the BenefitsCal workflow to ready-to-fill without writing first.
+3. Accepted the WIC handoff. Its owner changed from pending assignment to active ownership and its checkpoint required another verified resume.
+4. Paused the BenefitsCal workflow and assigned it to the fictional Eligibility team for supervisor review. The dashboard showed the pending owner and named checkpoint.
+5. Simulated an expired browser session. The durable queue retained both workflows and progress, but the BenefitsCal card exposed only **Reload client data** rather than a fill or resume action.
+6. The browser console reported no errors during the resume, accept, handoff, or recovery flows.
+
+Unit tests additionally confirm that the durable payload contains no participant values, raw paths/query strings, or raw page signatures; an active lease blocks a second assistant panel; and expired leases can be safely reclaimed.
 
 ## OCR and extraction-quality gate
 

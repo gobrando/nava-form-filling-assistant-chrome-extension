@@ -21,9 +21,10 @@ sidepanel/
   ocr-engine.js       bounded local OCR, rotation correction, confidence + region evidence
         │
         ├── vendor/                    bundled PDF.js, fflate, Tesseract.js, WASM + English data
-        ├── chrome.storage.session     participant + per-tab application state
-        ├── chrome.storage.local       non-personal connector descriptor + reviewed schema map
+        ├── chrome.storage.session     participant values + live application details
+        ├── chrome.storage.local       connector config + sanitized durable queue metadata
         ├── shared/connector-engine.js label-based schema mapping, validation, provenance
+        ├── shared/work-queue-engine.js resume fingerprints, leases, handoff, audit sanitization
         ├── background.js              connector adapter, side-panel setup, open known tabs
         └── content/form-agent.js     scan → write → readback in the active page
                     │
@@ -56,7 +57,9 @@ All executable extension code ships inside the package; there are no remote scri
 2. **Allowlisted cross-page control.** The runner advances only on a known domain (or the explicit local fixture) and an exact safe label. It rechecks the page immediately before clicking, keeps a page-signature history, stops after 12 pages, and denies all final-action language.
 3. **No Apricot secret in Chrome.** The self-service UI stores only a sanitized service URL, opaque connection ID, form ID, freshness policy, labeled schema, and reviewed mapping. `LOOKUP_RECORD` calls a Nava-controlled, credentialed, read-only endpoint; Apricot credentials and organization authorization belong to the service.
 4. **No debugger permission.** Chrome debugger access can create trusted input events, but it grants broad inspection power. Rejected masked fields are handed to the caseworker instead.
-5. **No durable participant storage.** Client data uses `chrome.storage.session`, which is cleared when the browser session ends. Site playbooks and non-personal configuration could later use managed storage.
+5. **No durable participant storage.** Client data uses `chrome.storage.session`, which is cleared when the browser session ends. The durable queue stores only workflow metadata, application origins, and opaque URL/page checksums. A restart therefore requires reloading the authorized source before resume.
+6. **Verified resume, not blind replay.** Every resume starts with a read-only scan and rejects missing tabs, stale or expired sources, unaccepted handoffs, changed locations, or changed page signatures before any write.
+7. **Local handoff boundary.** Version 0.6 models assignment, acceptance, named checkpoints, and same-profile write leases. Real multi-caseworker synchronization and identity enforcement belong in an authenticated Nava service.
 
 ## Recommended production follow-on
 
@@ -64,5 +67,6 @@ All executable extension code ships inside the package; there are no remote scri
 2. Convert the Markdown playbooks to versioned JSON delivered by that backend, with `confirmedAt`, `probeSelectors`, allowed transforms, and per-page field maps.
 3. Move the bundled navigation policy into versioned, signed server playbooks. Keep every allowed Begin/Next/Continue label explicit and continue denying all submit-adjacent text.
 4. Add organization-managed domain allowlists and remove broad `http://*/*` / `https://*/*` host access.
-5. Add audited events for gap analysis shown, question answered, write verified/blocked, review reached, user opened the form, and user-reported submission. Never include participant values in analytics.
-6. Security-review extension updates, backend authentication, CORS/CSP, managed deployment, incident logging, and all handling of PII before pilot use.
+5. Move value-free queue events and ownership leases to an authenticated service so authorized caseworkers can coordinate across devices without copying source values into queue records.
+6. Add policy-controlled, PII-free checkpoint notifications and immutable server-side audit retention.
+7. Security-review extension updates, backend authentication, CORS/CSP, managed deployment, incident logging, and all handling of PII before pilot use.

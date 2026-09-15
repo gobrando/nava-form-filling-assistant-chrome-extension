@@ -4,6 +4,7 @@
   const appRoot = document.getElementById('app');
   const engine = globalThis.NavaFormEngine;
   const connectorEngine = globalThis.NavaConnectorEngine;
+  const workQueueEngine = globalThis.NavaWorkQueueEngine;
   const previewMode = new URLSearchParams(location.search).get('preview') === '1'
     || !globalThis.chrome?.runtime?.id;
   const demoMode = new URLSearchParams(location.search).get('demo') === '1';
@@ -21,9 +22,13 @@
     connectorDraft: null,
     connectorSchema: [],
     pendingConnectorRecord: null,
+    audit: [],
+    handoffApplicationId: null,
+    workerId: globalThis.crypto?.randomUUID?.() || `panel-${Date.now()}-${Math.random().toString(36).slice(2)}`,
   };
 
   const MAX_AUTOMATED_PAGES = 12;
+  const QUEUE_STORAGE_KEY = 'nava:work-queue';
 
   const DEMO_RECORDS = {
     '339619': {
@@ -192,26 +197,65 @@
     return chrome.tabs.sendMessage(tab.id, message);
   }
 
+  function newWorkflowId() {
+    return `workflow:${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+  }
+
+  function recordAudit(type, application, details = {}) {
+    const event = workQueueEngine.auditEvent(type, application, details);
+    state.audit = workQueueEngine.appendAudit(state.audit, event);
+  }
+
+  function markSourceReloaded() {
+    state.apps.forEach((application) => {
+      if (application.status !== 'source_expired') return;
+      application.durableOnly = false;
+      application.error = '';
+      application.status = 'paused';
+      application.checkpoint = {
+        kind: 'voluntary_pause',
+        label: 'Verify the saved page before resuming',
+        createdAt: new Date().toISOString(),
+      };
+      application.updatedAt = new Date().toISOString();
+      recordAudit('source_reloaded', application, { toStatus: 'paused' });
+    });
+  }
+
+  function durableQueue() {
+    return workQueueEngine.buildQueue(state.apps, state.audit);
+  }
+
   async function persist() {
     if (previewMode) return;
-    await chrome.storage.session.set({
-      'nava:session': {
-        participant: state.participant,
-        apps: state.apps,
-        currentAppId: state.currentAppId,
-      },
-    });
+    await Promise.all([
+      chrome.storage.session.set({
+        'nava:session': {
+          participant: state.participant,
+          apps: state.apps,
+          currentAppId: state.currentAppId,
+        },
+      }),
+      chrome.storage.local.set({ [QUEUE_STORAGE_KEY]: durableQueue() }),
+    ]);
   }
 
   async function restore() {
     if (previewMode) return;
-    const result = await chrome.storage.session.get('nava:session');
-    const saved = result['nava:session'];
-    if (!saved?.participant) return;
-    state.participant = saved.participant;
-    state.apps = Array.isArray(saved.apps) ? saved.apps : [];
-    state.currentAppId = saved.currentAppId || null;
-    state.view = state.apps.length ? 'dashboard' : 'programs';
+    const [sessionResult, queueResult] = await Promise.all([
+      chrome.storage.session.get('nava:session'),
+      chrome.storage.local.get(QUEUE_STORAGE_KEY),
+    ]);
+    const saved = sessionResult['nava:session'];
+    const queue = queueResult[QUEUE_STORAGE_KEY];
+    state.participant = saved?.participant || null;
+    state.apps = queue?.applications?.length
+      ? workQueueEngine.restoreApplications(queue, saved?.apps || [])
+      : Array.isArray(saved?.apps) ? saved.apps : [];
+    state.audit = Array.isArray(queue?.audit) ? queue.audit : [];
+    state.currentAppId = state.apps.some((application) => application.id === saved?.currentAppId) ? saved.currentAppId : null;
+    if (state.apps.length) state.view = 'dashboard';
+    else if (state.participant) state.view = 'programs';
   }
 
   async function restoreConnector() {
@@ -613,6 +657,7 @@
     if (application.status === 'ready_for_review') return 100;
     if (application.status === 'needs_attention') return 55;
     if (application.status === 'ready_to_fill') return 35;
+    if (['paused', 'handoff_pending'].includes(application.status)) return 20;
     return 8;
   }
 
@@ -621,12 +666,15 @@
     if (application.status === 'needs_attention') return 'Needs your attention';
     if (application.status === 'ready_to_fill') return 'Ready to fill';
     if (application.status === 'no_form') return 'No form found';
+    if (application.status === 'paused') return 'Paused safely';
+    if (application.status === 'handoff_pending') return 'Handoff waiting';
+    if (application.status === 'source_expired') return 'Reload source data';
     return 'Not started';
   }
 
   function applicationCard(application) {
     const review = application.status === 'ready_for_review';
-    const attention = ['needs_attention', 'no_form'].includes(application.status);
+    const attention = ['needs_attention', 'no_form', 'paused', 'handoff_pending', 'source_expired'].includes(application.status);
     const gaps = application.analysis?.gaps?.length || 0;
     const blocked = application.blocked?.length || 0;
     const completedPages = application.completedPages?.length || 0;
@@ -635,7 +683,15 @@
       || (gaps ? `${gaps} answers are needed before this page is complete` : '')
       || (review ? (application.runStopReason || 'All writes were read back and verified') : 'Ready to fill the values found in the client record');
     let actions = '';
-    if (attention && gaps) {
+    if (application.status === 'source_expired') {
+      actions = '<button class="small-button" type="button" data-action="reload-source">Reload client data</button>';
+    } else if (application.status === 'handoff_pending') {
+      actions = `<button class="small-button" type="button" data-action="accept-handoff" data-app="${encoded(application.id)}">Accept handoff</button>`;
+    } else if (application.status === 'paused') {
+      actions = `<button class="small-button" type="button" data-action="${application.tabId ? 'resume' : 'resume-current'}" data-app="${encoded(application.id)}">${application.tabId ? 'Verify and resume' : 'Reconnect current tab'}</button>`;
+    } else if (application.status === 'not_started' && application.tabId) {
+      actions = `<button class="small-button" type="button" data-action="scan-application" data-app="${encoded(application.id)}">Scan application</button>`;
+    } else if (attention && gaps) {
       actions = `<button class="small-button" type="button" data-action="answer-run" data-app="${encoded(application.id)}">Answer and continue</button>
         <button class="small-button secondary" type="button" data-action="answer" data-app="${encoded(application.id)}">This page only</button>`;
     } else if (application.status === 'ready_to_fill') {
@@ -645,6 +701,9 @@
       actions = `<button class="small-button secondary" type="button" data-action="review" data-app="${encoded(application.id)}">Review details</button>`;
     } else {
       actions = `<button class="small-button" type="button" data-action="analyze-current">Analyze current tab</button>`;
+    }
+    if (!['source_expired', 'handoff_pending', 'ready_for_review'].includes(application.status)) {
+      actions += `<button class="small-button secondary" type="button" data-action="open-handoff" data-app="${encoded(application.id)}">Pause or hand off</button>`;
     }
     if (application.tabId) actions += `<button class="small-button secondary" type="button" data-action="go-tab" data-app="${encoded(application.id)}">Go to application</button>`;
 
@@ -658,6 +717,8 @@
           <div aria-label="${progressFor(application)} percent complete" class="progress-track"><div class="progress-fill" style="width:${progressFor(application)}%"></div></div>
         </div>
         <p class="card-note"><strong>${escapeHtml(statusLabel(application))}.</strong> ${escapeHtml(note)}</p>
+        ${application.owner ? `<p class="ownership-line"><span class="owner-chip ${application.owner.state}">${application.owner.state === 'pending' ? 'Assigned to' : 'Owned by'} ${escapeHtml(application.owner.assignedTo)}</span></p>` : ''}
+        ${application.checkpoint ? `<p class="checkpoint-line"><strong>Checkpoint:</strong> ${escapeHtml(application.checkpoint.label)}</p>` : ''}
         ${completedPages ? `<p class="automation-badge">✓ ${completedPages} page${completedPages === 1 ? '' : 's'} completed automatically</p>` : ''}
         <div class="card-actions">${actions}</div>
       </article>`;
@@ -665,7 +726,7 @@
 
   function renderDashboard() {
     const groups = [
-      ['NEEDS YOUR ATTENTION', state.apps.filter((item) => ['needs_attention', 'no_form'].includes(item.status))],
+      ['NEEDS YOUR ATTENTION', state.apps.filter((item) => ['needs_attention', 'no_form', 'paused', 'handoff_pending', 'source_expired'].includes(item.status))],
       ['IN PROGRESS', state.apps.filter((item) => ['not_started', 'ready_to_fill'].includes(item.status))],
       ['READY FOR REVIEW', state.apps.filter((item) => item.status === 'ready_for_review')],
     ];
@@ -673,18 +734,64 @@
       <section>
         <div class="intro">
           <p class="eyebrow">Application dashboard</p>
-          <h1>${escapeHtml(firstName())}'s applications</h1>
-          <p class="lede">The assistant can continue across approved application pages. It always stops before certification, signature, or submission.</p>
+          <h1>${state.participant ? `${escapeHtml(firstName())}'s applications` : 'Resumable work queue'}</h1>
+          <p class="lede">${state.participant ? 'The assistant can resume verified pages and continue across approved application steps. It always stops before certification, signature, or submission.' : 'Application progress survived, but client values expired with the browser session. Reload the source record before any application can resume.'}</p>
         </div>
         ${renderError()}
+        <div class="queue-summary" aria-label="Work queue summary">
+          <span><strong>${state.apps.length}</strong> applications</span>
+          <span><strong>${state.apps.filter((item) => ['needs_attention', 'paused', 'handoff_pending', 'source_expired'].includes(item.status)).length}</strong> checkpoints</span>
+          <span><strong>${state.apps.filter((item) => item.status === 'ready_for_review').length}</strong> ready</span>
+        </div>
         ${groups.map(([label, apps]) => apps.length ? `
           <p class="section-label">${label}</p>
           <div class="stack">${apps.map(applicationCard).join('')}</div>` : '').join('')}
         ${state.apps.length ? '' : '<div class="notice"><span>i</span><span>No application has been added yet.</span></div>'}
         <div class="form-actions">
-          <button class="secondary-button" type="button" data-action="add-application">Add another application</button>
+          <button class="secondary-button" type="button" data-action="${state.participant ? 'add-application' : 'reload-source'}">${state.participant ? 'Add another application' : 'Reload client data'}</button>
+          <button class="secondary-button" type="button" data-action="export-audit">Export activity log</button>
           <button class="link-button" type="button" data-action="start-over">End this session</button>
         </div>
+      </section>`;
+  }
+
+  function renderHandoff() {
+    const application = state.apps.find((item) => item.id === state.handoffApplicationId);
+    if (!application) {
+      state.view = 'dashboard';
+      return renderDashboard();
+    }
+    appRoot.innerHTML = `
+      <section>
+        <button class="back-button" type="button" data-action="back-dashboard"><span aria-hidden="true">←</span> Back</button>
+        <div class="intro">
+          <p class="eyebrow">${escapeHtml(application.name)}</p>
+          <h1>Pause or hand off</h1>
+          <p class="lede">Save an explicit checkpoint so another caseworker or team can understand what needs attention before resuming.</p>
+        </div>
+        ${renderError()}
+        <div class="notice"><span aria-hidden="true">i</span><span>The durable queue stores workflow metadata only. Do not put client names, identifiers, or answers in the assignee field.</span></div>
+        <form id="handoff-form">
+          <div class="form-stack">
+            <label>Caseworker or team
+              <input name="assignedTo" type="text" maxlength="80" autocomplete="off" placeholder="Example: Intake team" required>
+            </label>
+            <label>Reason for handoff
+              <select name="reason">
+                <option value="client_question">Client question needed</option>
+                <option value="direct_entry">Direct form entry needed</option>
+                <option value="captcha_or_otp">CAPTCHA or one-time code</option>
+                <option value="certification_or_signature">Certification or signature</option>
+                <option value="supervisor_review">Supervisor review</option>
+                <option value="other">Other checkpoint</option>
+              </select>
+            </label>
+          </div>
+          <div class="form-actions">
+            <button class="primary-button" type="submit">Create handoff</button>
+            <button class="secondary-button" type="button" data-action="pause" data-app="${encoded(application.id)}">Pause for later</button>
+          </div>
+        </form>
       </section>`;
   }
 
@@ -815,6 +922,7 @@
       'document-review': renderDocumentReview,
       programs: renderPrograms,
       dashboard: renderDashboard,
+      handoff: renderHandoff,
       questions: renderQuestions,
       review: renderReview,
     }[state.view] || renderChoice;
@@ -828,6 +936,62 @@
     setTimeout(resetScroll, 100);
   }
 
+  function checkpoint(kind, label) {
+    return { kind, label, createdAt: new Date().toISOString() };
+  }
+
+  function setCheckpoint(application, kind, label, status = 'paused') {
+    application.checkpoint = checkpoint(kind, label);
+    application.status = status;
+    application.autoRun = false;
+    application.updatedAt = new Date().toISOString();
+    recordAudit('checkpoint_reached', application, { checkpointKind: kind, toStatus: status });
+  }
+
+  function checkpointFromScan(response, fieldsFound) {
+    if (response.submitGate?.oneTimeCodePresent && !response.submitGate?.oneTimeCodeComplete) return checkpoint('otp', 'One-time code required');
+    if (response.submitGate?.botCheckPresent && !response.submitGate?.botCheckComplete) return checkpoint('captcha', 'Human bot check required');
+    if (response.navigationGate?.kind === 'final_review') {
+      const signal = `${response.navigationGate.text || ''} ${response.navigationGate.reason || ''}`;
+      if (/signature|sign\b/i.test(signal)) return checkpoint('signature', 'Signature required');
+      if (/certif|attest|declaration|affirm/i.test(signal)) return checkpoint('certification', 'Certification required');
+      return checkpoint('final_review', 'Final review required');
+    }
+    if (response.analysis?.gaps?.length) return checkpoint('human_input', 'Caseworker answers required');
+    if (fieldsFound === 0 && response.navigationGate?.kind !== 'next') return checkpoint('navigation_unknown', 'No approved continuation found');
+    if (response.navigationGate?.kind === 'manual') return checkpoint('navigation_unknown', 'Manual page continuation required');
+    return null;
+  }
+
+  async function acquireApplicationLease(application) {
+    let candidate = application;
+    if (!previewMode) {
+      const result = await chrome.storage.local.get(QUEUE_STORAGE_KEY);
+      const current = result[QUEUE_STORAGE_KEY]?.applications?.find((item) => item.id === application.id);
+      if (current) candidate = { ...application, lease: current.lease };
+    }
+    const decision = workQueueEngine.acquireLease(candidate, state.workerId);
+    if (!decision.allowed) throw new Error(decision.reason);
+    application.lease = decision.lease;
+    await persist();
+  }
+
+  async function releaseApplicationLease(application) {
+    const current = state.apps.find((item) => item.id === application.id) || application;
+    const released = workQueueEngine.releaseLease(current, state.workerId);
+    current.lease = released.lease;
+    await persist();
+  }
+
+  async function withApplicationLease(application, action) {
+    await acquireApplicationLease(application);
+    try {
+      return await action();
+    } finally {
+      await releaseApplicationLease(application);
+    }
+  }
+
   async function lookupRecord(recordId) {
     setBusy('Finding the client record…');
     const response = await sendRuntime({ type: 'LOOKUP_RECORD', recordId });
@@ -838,24 +1002,29 @@
       return;
     }
     state.participant = response.record;
+    markSourceReloaded();
     state.activeTab = await getActiveTab();
     state.view = 'programs';
     await persist();
   }
 
-  async function scanTab(tab, { quiet = false } = {}) {
+  async function scanTab(tab, { quiet = false, applicationId = null } = {}) {
     if (!quiet) setBusy('Checking this form and its required fields…');
     const response = await sendToTab(tab, { type: 'NAVA_SCAN', participant: state.participant });
     if (!response?.ok) throw new Error(response?.error || 'The form could not be read.');
-    const id = `tab:${tab.id}`;
-    const previous = state.apps.find((item) => item.id === id) || {};
+    const previous = state.apps.find((item) => item.id === applicationId)
+      || state.apps.find((item) => item.tabId === tab.id)
+      || {};
+    const id = previous.id || newWorkflowId();
     const fieldsFound = response.analysis?.counts?.fields || 0;
     const canContinue = response.navigationGate?.kind === 'next';
+    const nextCheckpoint = checkpointFromScan(response, fieldsFound);
     const application = {
       ...previous,
       id,
       tabId: tab.id,
       name: response.playbook?.name || response.page?.title || hostLabel(tab.url),
+      queueLabel: response.playbook?.name || hostLabel(response.page?.url || tab.url),
       url: response.page?.url || tab.url,
       page: response.page,
       status: fieldsFound === 0 && !canContinue
@@ -871,14 +1040,30 @@
       provenance: [],
       blocked: [],
       empty: [],
+      checkpoint: nextCheckpoint,
       completedPages: previous.completedPages || [],
       autoRun: Boolean(previous.autoRun),
       visitedSignatures: previous.visitedSignatures || [],
+      resumePoint: {
+        location: response.page?.url || tab.url,
+        pageSignature: response.navigationGate?.pageSignature || '',
+        pageSignatureHash: workQueueEngine.signatureHash(response.navigationGate?.pageSignature || ''),
+        capturedAt: new Date().toISOString(),
+      },
       updatedAt: new Date().toISOString(),
     };
     const existing = state.apps.findIndex((item) => item.id === id);
     if (existing >= 0) state.apps.splice(existing, 1, application);
     else state.apps.unshift(application);
+    recordAudit('scan_completed', application, {
+      fieldCount: response.analysis?.counts?.fields || 0,
+      gapCount: response.analysis?.gaps?.length || 0,
+      checkpointKind: nextCheckpoint?.kind,
+      toStatus: application.status,
+    });
+    if (response.analysis?.gaps?.length) {
+      recordAudit('questions_required', application, { gapCount: response.analysis.gaps.length, checkpointKind: 'human_input' });
+    }
     state.currentAppId = id;
     state.view = 'dashboard';
     await persist();
@@ -891,14 +1076,17 @@
     const response = await sendRuntime({ type: 'OPEN_PROGRAMS', programs: known });
     if (!response?.ok) throw new Error(response?.error || 'The application tabs could not be opened.');
     response.opened.forEach((item) => {
-      state.apps.push({
-        id: `tab:${item.tabId}`,
+      const application = {
+        id: newWorkflowId(),
         tabId: item.tabId,
         name: item.name,
+        queueLabel: item.name,
         url: item.url,
         status: 'not_started',
         updatedAt: new Date().toISOString(),
-      });
+      };
+      state.apps.push(application);
+      recordAudit('application_added', application, { toStatus: 'not_started' });
     });
   }
 
@@ -908,6 +1096,7 @@
       : await chrome.tabs.get(application.tabId);
     setBusy('Filling the page and checking every value…');
     const assignments = [...(application.analysis?.assignments || []), ...userAssignments];
+    recordAudit('fill_started', application, { fieldCount: assignments.length, fromStatus: application.status });
     const response = await sendToTab(tab, { type: 'NAVA_FILL', assignments });
     if (!response?.ok) throw new Error(response?.error || 'The page could not be filled.');
     const provenanceByField = new Map();
@@ -922,8 +1111,21 @@
     application.submitGate = response.submitGate || application.submitGate;
     application.navigationGate = response.navigationGate || application.navigationGate;
     application.analysis.gaps = unresolved;
-    application.status = application.empty.length ? 'needs_attention' : 'ready_to_fill';
+    if (application.empty.length) {
+      const kind = application.blocked.length ? 'direct_entry' : 'human_input';
+      setCheckpoint(application, kind, application.blocked.length ? 'Direct caseworker entry required' : 'Caseworker answers required', 'needs_attention');
+    } else {
+      application.status = 'ready_to_fill';
+      application.checkpoint = null;
+    }
     application.updatedAt = new Date().toISOString();
+    recordAudit('page_verified', application, {
+      verifiedCount: (response.results || []).filter((item) => item.status === 'verified').length,
+      blockedCount: application.blocked.length,
+      gapCount: unresolved.length,
+      pageCount: (application.completedPages?.length || 0) + 1,
+      toStatus: application.status,
+    });
     state.currentAppId = application.id;
     await persist();
     return response;
@@ -977,7 +1179,7 @@
 
     for (;;) {
       if ((current.analysis?.gaps?.length || 0) && !suppliedAssignments.length && !suppliedUnresolved.length) {
-        current.status = 'needs_attention';
+        setCheckpoint(current, 'human_input', 'Caseworker answers required', 'needs_attention');
         state.currentAppId = current.id;
         state.view = 'questions';
         await persist();
@@ -989,7 +1191,6 @@
       suppliedUnresolved = [];
 
       if (current.empty.length || current.blocked.length) {
-        current.status = 'needs_attention';
         current.runStopReason = 'The automated run paused because at least one field needs a caseworker answer or direct entry.';
         state.view = 'dashboard';
         await persist();
@@ -1002,9 +1203,15 @@
       current.navigationGate = await navigationStatusFor(tab);
 
       if (current.navigationGate?.kind !== 'next') {
-        current.status = 'ready_for_review';
         current.runStopReason = current.navigationGate?.reason || 'No approved continuation control is visible. Review the application before taking the next action.';
-        current.autoRun = false;
+        const signal = `${current.navigationGate?.text || ''} ${current.runStopReason}`;
+        const kind = current.submitGate?.oneTimeCodePresent && !current.submitGate?.oneTimeCodeComplete ? 'otp'
+          : current.submitGate?.botCheckPresent && !current.submitGate?.botCheckComplete ? 'captcha'
+            : /signature|sign\b/i.test(signal) ? 'signature'
+            : /certif|attest|declaration|affirm/i.test(signal) ? 'certification'
+              : current.navigationGate?.kind === 'final_review' ? 'final_review' : 'navigation_unknown';
+        setCheckpoint(current, kind, kind === 'navigation_unknown' ? 'Manual page continuation required' : 'Human final review required', 'ready_for_review');
+        recordAudit('review_reached', current, { checkpointKind: kind, pageCount: (current.completedPages?.length || 0) + 1, toStatus: 'ready_for_review' });
         state.currentAppId = current.id;
         state.view = 'review';
         await persist();
@@ -1012,10 +1219,9 @@
       }
 
       if ((current.completedPages?.length || 0) >= MAX_AUTOMATED_PAGES - 1) {
-        current.status = 'needs_attention';
         current.runStopReason = `The assistant reached its ${MAX_AUTOMATED_PAGES}-page safety limit and stopped.`;
         current.error = current.runStopReason;
-        current.autoRun = false;
+        setCheckpoint(current, 'navigation_unknown', 'Automation page limit reached', 'needs_attention');
         state.view = 'dashboard';
         await persist();
         return;
@@ -1023,10 +1229,9 @@
 
       const signature = current.navigationGate.pageSignature;
       if (current.visitedSignatures?.includes(signature)) {
-        current.status = 'needs_attention';
         current.runStopReason = 'The application returned to a page it already completed. The assistant stopped to avoid a navigation loop.';
         current.error = current.runStopReason;
-        current.autoRun = false;
+        setCheckpoint(current, 'page_changed', 'Repeated application page detected', 'needs_attention');
         state.view = 'dashboard';
         await persist();
         return;
@@ -1037,11 +1242,12 @@
       if (!advanced?.ok || !advanced.advanced) {
         throw new Error(advanced?.navigationGate?.reason || 'The approved continuation control was no longer available.');
       }
+      recordAudit('safe_advance', current, { pageCount: (current.completedPages?.length || 0) + 1 });
       const nextTab = await waitForNextPage(current.tabId, signature);
       current.visitedSignatures = [...(current.visitedSignatures || []), signature];
       archiveCurrentPage(current);
       await persist();
-      current = await scanTab(nextTab, { quiet: true });
+      current = await scanTab(nextTab, { quiet: true, applicationId: current.id });
       current.autoRun = true;
     }
   }
@@ -1050,7 +1256,18 @@
     application.autoRun = false;
     application.runStopReason = '';
     await fillCurrentPage(application, userAssignments, unresolved);
-    application.status = application.empty.length ? 'needs_attention' : 'ready_for_review';
+    if (application.empty.length) {
+      application.status = 'needs_attention';
+    } else {
+      const signal = `${application.navigationGate?.text || ''} ${application.navigationGate?.reason || ''}`;
+      const kind = application.submitGate?.oneTimeCodePresent && !application.submitGate?.oneTimeCodeComplete ? 'otp'
+        : application.submitGate?.botCheckPresent && !application.submitGate?.botCheckComplete ? 'captcha'
+          : /signature|sign\b/i.test(signal) ? 'signature'
+          : /certif|attest|declaration|affirm/i.test(signal) ? 'certification'
+            : application.navigationGate?.kind === 'final_review' ? 'final_review' : 'navigation_unknown';
+      setCheckpoint(application, kind, 'Human review required', 'ready_for_review');
+      recordAudit('review_reached', application, { checkpointKind: kind, pageCount: (application.completedPages?.length || 0) + 1, toStatus: 'ready_for_review' });
+    }
     application.runStopReason = application.navigationGate?.reason || '';
     state.view = application.status === 'ready_for_review' ? 'review' : 'dashboard';
     await persist();
@@ -1061,6 +1278,65 @@
     const tab = await chrome.tabs.get(application.tabId);
     await chrome.tabs.update(application.tabId, { active: true });
     if (tab.windowId) await chrome.windows.update(tab.windowId, { focused: true });
+  }
+
+  async function resumeApplication(application, useCurrentTab = false) {
+    setBusy('Verifying the saved application page before resuming…');
+    let tab = null;
+    try {
+      tab = useCurrentTab ? await getActiveTab() : previewMode
+        ? { id: application.tabId || 7001, url: application.url }
+        : await chrome.tabs.get(application.tabId);
+    } catch {
+      tab = null;
+    }
+
+    let response = null;
+    if (tab?.id && state.participant && !state.participant?._connector?.stale) {
+      try {
+        response = await sendToTab(tab, { type: 'NAVA_SCAN', participant: state.participant });
+      } catch {
+        response = null;
+      }
+    }
+    const decision = workQueueEngine.resumeDecision(application, response?.ok ? {
+      url: response.page?.url || tab?.url,
+      pageSignature: response.navigationGate?.pageSignature || '',
+    } : null, {
+      sourceAvailable: Boolean(state.participant),
+      sourceStale: Boolean(state.participant?._connector?.stale),
+    });
+
+    if (!decision.allowed) {
+      application.error = decision.reason;
+      setCheckpoint(application, decision.checkpointKind, decision.reason, decision.outcome === 'source_expired' ? 'source_expired' : 'paused');
+      recordAudit('resume_rejected', application, { resumeOutcome: decision.outcome, checkpointKind: decision.checkpointKind, toStatus: application.status });
+      state.view = 'dashboard';
+      await persist();
+      return application;
+    }
+
+    application.tabId = tab.id;
+    const resumed = await scanTab(tab, { quiet: true, applicationId: application.id });
+    resumed.error = '';
+    recordAudit('resume_verified', resumed, { resumeOutcome: 'verified', toStatus: resumed.status });
+    state.currentAppId = resumed.id;
+    state.view = 'dashboard';
+    await persist();
+    return resumed;
+  }
+
+  async function exportAuditLog() {
+    recordAudit('audit_exported', null);
+    await persist();
+    const payload = workQueueEngine.exportAudit(durableQueue());
+    const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `nava-form-filling-activity-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   async function onClick(button) {
@@ -1108,6 +1384,7 @@
     if (action === 'confirm-connector-record') {
       if (!state.pendingConnectorRecord) throw new Error('Retrieve and review a connector record first.');
       state.participant = state.pendingConnectorRecord;
+      markSourceReloaded();
       state.pendingConnectorRecord = null;
       state.activeTab = await getActiveTab();
       state.view = 'programs';
@@ -1126,18 +1403,32 @@
       state.currentAppId = null;
       state.previewPage = 1;
       state.view = 'choice';
-      if (!previewMode) await chrome.storage.session.remove('nava:session');
+      if (!previewMode) await Promise.all([
+        chrome.storage.session.remove('nava:session'),
+        chrome.storage.local.remove(QUEUE_STORAGE_KEY),
+      ]);
     }
-    if (action === 'back-dashboard') state.view = 'dashboard';
+    if (action === 'back-dashboard') {
+      state.handoffApplicationId = null;
+      state.view = 'dashboard';
+    }
     if (action === 'add-application') {
       state.activeTab = await getActiveTab();
       state.view = 'programs';
+    }
+    if (action === 'reload-source') {
+      state.view = 'choice';
+    }
+    if (action === 'export-audit') {
+      await exportAuditLog();
+      return;
     }
     if (action === 'use-sample') {
       document.getElementById('client-json').value = JSON.stringify(DEMO_RECORDS['339619'], null, 2);
       return;
     }
     if (action === 'start-over') {
+      recordAudit('session_ended', null);
       state.participant = null;
       state.documentResult = null;
       state.pendingConnectorRecord = null;
@@ -1145,9 +1436,12 @@
       state.currentAppId = null;
       state.previewPage = 1;
       state.view = 'choice';
-      if (!previewMode) await chrome.storage.session.remove('nava:session');
+      if (!previewMode) await Promise.all([
+        chrome.storage.session.remove('nava:session'),
+        chrome.storage.local.remove(QUEUE_STORAGE_KEY),
+      ]);
     }
-    if (['answer', 'answer-run', 'fill', 'run', 'review', 'rescan', 'go-tab'].includes(action)) {
+    if (['answer', 'answer-run', 'fill', 'run', 'review', 'rescan', 'go-tab', 'scan-application', 'resume', 'resume-current', 'open-handoff', 'pause', 'accept-handoff'].includes(action)) {
       const id = decoded(button.dataset.app);
       const application = state.apps.find((item) => item.id === id);
       if (!application) throw new Error('That application is no longer available.');
@@ -1156,12 +1450,39 @@
         application.autoRun = action === 'answer-run';
         state.view = 'questions';
       }
-      if (action === 'fill') await fillApplication(application);
-      if (action === 'run') await runThroughApplication(application);
+      if (action === 'fill') await withApplicationLease(application, () => fillApplication(application));
+      if (action === 'run') await withApplicationLease(application, () => runThroughApplication(application));
       if (action === 'review') state.view = 'review';
       if (action === 'rescan') {
         const tab = previewMode ? { id: application.tabId, url: application.url } : await chrome.tabs.get(application.tabId);
-        await scanTab(tab);
+        await scanTab(tab, { applicationId: application.id });
+      }
+      if (action === 'scan-application') {
+        const tab = previewMode ? { id: application.tabId, url: application.url } : await chrome.tabs.get(application.tabId);
+        await scanTab(tab, { applicationId: application.id });
+      }
+      if (action === 'resume' || action === 'resume-current') {
+        await withApplicationLease(application, () => resumeApplication(application, action === 'resume-current'));
+      }
+      if (action === 'open-handoff') {
+        state.handoffApplicationId = application.id;
+        state.view = 'handoff';
+      }
+      if (action === 'pause') {
+        setCheckpoint(application, 'voluntary_pause', 'Paused by caseworker', 'paused');
+        state.handoffApplicationId = null;
+        state.view = 'dashboard';
+        await persist();
+      }
+      if (action === 'accept-handoff') {
+        const acceptedAt = new Date().toISOString();
+        application.handoff = { ...application.handoff, acceptedAt };
+        application.owner = { ...application.owner, state: 'active', assignedAt: application.owner?.assignedAt || acceptedAt };
+        application.status = 'paused';
+        application.checkpoint = checkpoint('voluntary_pause', 'Handoff accepted; verify page before resuming');
+        application.updatedAt = acceptedAt;
+        recordAudit('handoff_accepted', application, { actor: application.owner?.assignedTo, toStatus: 'paused' });
+        await persist();
       }
       if (action === 'go-tab') await goToApplication(application);
     }
@@ -1174,6 +1495,25 @@
 
   async function onSubmit(form) {
     state.error = '';
+    if (form.id === 'handoff-form') {
+      const application = state.apps.find((item) => item.id === state.handoffApplicationId);
+      if (!application) throw new Error('That application is no longer available.');
+      const data = new FormData(form);
+      const assignedTo = String(data.get('assignedTo') || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+      const reason = String(data.get('reason') || 'other');
+      if (assignedTo.length < 2) throw new Error('Enter the caseworker or team receiving this handoff.');
+      const createdAt = new Date().toISOString();
+      application.owner = { assignedTo, state: 'pending', assignedAt: createdAt };
+      application.handoff = { to: assignedTo, reason, createdAt, acceptedAt: null };
+      application.status = 'handoff_pending';
+      application.checkpoint = checkpoint('handoff', 'Assigned handoff awaiting acceptance');
+      application.autoRun = false;
+      application.updatedAt = createdAt;
+      recordAudit('handoff_created', application, { actor: assignedTo, checkpointKind: 'handoff', toStatus: 'handoff_pending' });
+      state.handoffApplicationId = null;
+      state.view = 'dashboard';
+      await persist();
+    }
     if (form.id === 'connector-form') {
       const data = new FormData(form);
       const config = {
@@ -1222,6 +1562,7 @@
       }
       if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('Paste one client record as a JSON object.');
       state.participant = parsed;
+      markSourceReloaded();
       state.activeTab = await getActiveTab();
       state.view = 'programs';
       await persist();
@@ -1265,6 +1606,7 @@
           },
         ],
       };
+      markSourceReloaded();
       state.documentResult = null;
       state.activeTab = await getActiveTab();
       state.view = 'programs';
@@ -1303,8 +1645,8 @@
           sensitive: gap.sensitive,
         });
       });
-      if (application.autoRun) await runThroughApplication(application, userAssignments, unresolved);
-      else await fillApplication(application, userAssignments, unresolved);
+      if (application.autoRun) await withApplicationLease(application, () => runThroughApplication(application, userAssignments, unresolved));
+      else await withApplicationLease(application, () => fillApplication(application, userAssignments, unresolved));
     }
     render();
   }
@@ -1460,6 +1802,56 @@
     return previewResponse({ ok: true });
   }
 
+  function loadPreviewQueueFixture() {
+    if (!previewMode) return false;
+    const fixture = new URLSearchParams(location.search).get('queue');
+    if (!fixture) return false;
+    const capturedAt = new Date().toISOString();
+    state.previewPage = 2;
+    const paused = {
+      id: 'workflow:preview-benefits',
+      tabId: 7001,
+      name: 'California benefits application',
+      queueLabel: 'California benefits application',
+      url: 'https://benefitscal.com/ApplyForBenefits/step-2',
+      status: fixture === 'expired' ? 'source_expired' : 'paused',
+      completedPages: [{ title: 'About the applicant', provenance: [], completedAt: capturedAt }],
+      checkpoint: checkpoint(fixture === 'expired' ? 'source_expired' : 'voluntary_pause', fixture === 'expired' ? 'Reload client data' : 'Paused by caseworker'),
+      resumePoint: {
+        location: 'https://benefitscal.com/ApplyForBenefits/step-2',
+        pageSignatureHash: workQueueEngine.signatureHash('preview:page-2'),
+        capturedAt,
+      },
+      updatedAt: capturedAt,
+    };
+    const handedOff = {
+      id: 'workflow:preview-wic',
+      tabId: 8001,
+      name: 'WIC',
+      queueLabel: 'WIC',
+      url: 'https://www.ruhealth.org/appointments/apply-4-wic-form',
+      status: 'handoff_pending',
+      completedPages: [],
+      checkpoint: checkpoint('handoff', 'Assigned handoff awaiting acceptance'),
+      owner: { assignedTo: 'Intake team', state: 'pending', assignedAt: capturedAt },
+      handoff: { to: 'Intake team', reason: 'client_question', createdAt: capturedAt, acceptedAt: null },
+      resumePoint: {
+        location: 'https://www.ruhealth.org/appointments/apply-4-wic-form',
+        pageSignatureHash: '',
+        capturedAt,
+      },
+      updatedAt: capturedAt,
+    };
+    state.apps = [paused, handedOff];
+    state.participant = fixture === 'expired' ? null : DEMO_RECORDS['339619'];
+    state.audit = [workQueueEngine.auditEvent('checkpoint_reached', paused, {
+      checkpointKind: paused.checkpoint.kind,
+      toStatus: paused.status,
+    }, { at: capturedAt, id: 'preview-event' })];
+    state.view = 'dashboard';
+    return true;
+  }
+
   async function loadPreviewDocumentFixture() {
     if (!previewMode) return false;
     const params = new URLSearchParams(location.search);
@@ -1505,6 +1897,7 @@
       await restoreConnector();
       await restore();
       state.activeTab = await getActiveTab();
+      loadPreviewQueueFixture();
       await loadPreviewDocumentFixture();
       render();
     } catch (error) {

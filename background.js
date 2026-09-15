@@ -1,7 +1,10 @@
 import './shared/connector-engine.js';
+import './shared/work-queue-engine.js';
 
 const connectorEngine = globalThis.NavaConnectorEngine;
+const workQueueEngine = globalThis.NavaWorkQueueEngine;
 const CONNECTOR_STORAGE_KEY = 'nava:connector';
+const QUEUE_STORAGE_KEY = 'nava:work-queue';
 
 const DEMO_RECORDS = [
   {
@@ -239,7 +242,27 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  chrome.storage.session.remove(`nava:application:${tabId}`).catch(() => undefined);
+  Promise.all([
+    chrome.storage.local.get(QUEUE_STORAGE_KEY),
+    chrome.storage.session.get('nava:session'),
+  ]).then(async ([localResult, sessionResult]) => {
+    const queue = localResult[QUEUE_STORAGE_KEY];
+    if (queue?.applications?.some((application) => application.tabId === tabId)) {
+      await chrome.storage.local.set({ [QUEUE_STORAGE_KEY]: workQueueEngine.markTabClosed(queue, tabId) });
+    }
+    const session = sessionResult['nava:session'];
+    if (session?.apps?.some((application) => application.tabId === tabId)) {
+      session.apps = session.apps.map((application) => application.tabId === tabId ? {
+        ...application,
+        tabId: null,
+        status: application.status === 'ready_for_review' ? application.status : 'paused',
+        checkpoint: { kind: 'tab_closed', label: 'Application tab closed', createdAt: new Date().toISOString() },
+        lease: null,
+        updatedAt: new Date().toISOString(),
+      } : application);
+      await chrome.storage.session.set({ 'nava:session': session });
+    }
+  }).catch(() => undefined);
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -315,17 +338,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         .filter(Boolean)
         .map(async (program) => {
           const tab = await chrome.tabs.create({ url: program.url, active: false });
-          if (tab.id) {
-            await chrome.storage.session.set({
-              [`nava:application:${tab.id}`]: {
-                tabId: tab.id,
-                name: program.name,
-                url: program.url,
-                status: 'not_started',
-                updatedAt: new Date().toISOString(),
-              },
-            });
-          }
           return { tabId: tab.id, name: program.name, url: program.url };
         }),
     )

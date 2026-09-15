@@ -14,7 +14,7 @@ Version 0.5 adds bundled English OCR for PNG, JPEG, WebP, and image-only PDF pag
 
 ### Multi-application UI — useful foundation complete
 
-The dashboard tracks separate application tabs, retains one session client, shows attention states, runs approved multi-page flows, and produces cross-page progress. The next layer is operational: resumable sessions, notifications for human checkpoints, ownership/hand-off, and audit export.
+The dashboard tracks separate application tabs, retains one session client, shows attention states, runs approved multi-page flows, and produces cross-page progress.
 
 ## Completed milestone: OCR and extraction evaluation
 
@@ -29,24 +29,34 @@ Before adding more intake automation, establish a measurable quality bar and pre
 
 The repository now provides the implementation and a reproducible synthetic baseline for those success criteria. A real pilot must add representative consented/redacted documents and accessibility, malware, performance, and privacy validation before these numbers can be generalized.
 
-## Recommended next milestone: resumable multi-application work queues
+## Completed milestone: resumable multi-application work queues and handoff
 
-The best next extension-side investment is making the existing multi-application dashboard operational across real caseworker interruptions while production connector work proceeds with backend owners.
+Version 0.6 makes the existing multi-application dashboard operational across ordinary caseworker interruptions while preserving the session-only client-data boundary.
 
-1. Persist minimal encrypted work-queue metadata without persisting raw documents or participant values longer than policy allows.
-2. Make paused applications resumable at a verified URL/page signature, then rescan before any write.
-3. Add explicit ownership, hand-off, and human-checkpoint states for CAPTCHA, OTP, certification, signature, and final submit.
-4. Add value-free audit export for opened, scanned, prompted, filled, verified, blocked, resumed, and review-reached events.
-5. Add notifications only for actionable human checkpoints, with organization policy controls and no PII in notification content.
-6. Test recovery from tab closure, browser restart, expired sessions, stale records, changed forms, and two caseworkers attempting the same application.
+1. Durable local state contains sanitized queue metadata and opaque page checksums, never participant values, raw documents, raw page signatures, or query strings.
+2. A paused application resumes only after a live read-only scan verifies the saved URL fingerprint and page-signature fingerprint.
+3. Ownership, pending/accepted handoffs, and named CAPTCHA, OTP, direct-entry, certification, signature, final-review, tab-closure, stale-source, and expired-source checkpoints are explicit.
+4. A value-free audit export records workflow events and bounded counts, not answers.
+5. Per-application leases prevent competing assistant panels in the same Chrome profile from writing concurrently and expire safely after interruption.
+6. Automated tests cover restart recovery, tab closure, stale/expired sources, changed pages, pending handoffs, competing leases, and the durable PII boundary.
 
-Success: a caseworker can safely leave and resume several applications without reloading the source document or silently replaying stale writes, and another authorized caseworker can understand exactly why an application paused.
+Because client values intentionally expire at browser-session end, a full browser restart requires source reauthorization/reload before filling can continue. This is a deliberate safety tradeoff, not silent loss: application progress and the exact checkpoint remain visible.
+
+## Recommended next milestone: authenticated pilot operations
+
+The next meaningful step crosses the extension/backend boundary. Build the organization-authenticated queue and connector service needed for real multi-caseworker operation.
+
+1. Synchronize encrypted, metadata-only assignments across authorized caseworkers; keep participant values in the source system rather than copying them into the queue.
+2. Enforce server-side ownership leases, role-based access, handoff acceptance, revocation, retention, and immutable value-free audit events.
+3. Add policy-controlled, PII-free notifications for actionable human checkpoints.
+4. Pilot one Apricot organization in a sandbox tenant with current source freshness, mapping-drift detection, and approved application domains.
+5. Complete accessibility, privacy, security, incident-response, and representative-document evaluation before any real-client use.
 
 ## Suggested sequence
 
 - **Completed:** OCR and extraction-quality evaluation baseline.
-- **In parallel with backend owners:** productionize the Nava connector service and pilot one authenticated Apricot organization.
-- **Next:** resumable multi-application work queues and caseworker hand-off.
+- **Completed:** local resumable multi-application queue and same-profile handoff vertical slice.
+- **Next:** productionize the authenticated Nava connector and work-queue service; pilot one Apricot organization.
 - **Later:** additional source systems through the same connector contract.
 
 ## Connector follow-through before production

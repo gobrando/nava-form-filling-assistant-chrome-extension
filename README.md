@@ -21,6 +21,10 @@ It is a working local prototype, not a production deployment. It can connect to 
 - One writer per tab. Each application is tracked independently.
 - Guided multi-page completion for approved site playbooks. The runner keeps the client record loaded, fills each page, reads every write back, and activates only exact safe continuation labels such as **Begin**, **Next**, or **Save and continue**.
 - Cross-page progress history, loop detection, a 12-page safety ceiling, and automatic pauses when a field needs direct help.
+- A durable multi-application work queue with stable workflow IDs, explicit checkpoints, tab-closure recovery, and restart-safe progress metadata.
+- Verified resume: the assistant rescans the live tab and compares its URL and page signature before it permits another write.
+- Caseworker/team ownership, pending and accepted handoffs, and a short per-application lease that prevents two assistant windows from writing to the same workflow at once.
+- A value-free activity log for scan, fill, verification, safe navigation, pause, resume, handoff, review, and tab-closure events. Caseworkers can export it as JSON.
 - A hard final-action boundary: certification, attestation, signature, Finish, Complete, Apply, and Submit controls are never activated.
 - Live field inventory using labels, ARIA text, autocomplete, field types, required markers, options, masks, and maxlength.
 - Gap categories from the skill: record values, changed values, missing values, decisions, and values with no place on the current page.
@@ -38,7 +42,7 @@ It is a working local prototype, not a production deployment. It can connect to 
 1. Open `chrome://extensions`.
 2. Turn on **Developer mode**.
 3. Choose **Load unpacked**.
-4. Select this `nava-form-filler-extension` folder.
+4. Select this `nava-form-filling-assistant-chrome-extension` folder.
 5. Open a web form and click the extension icon. Chrome opens the assistant in the side panel.
 
 Chrome may require an already-open form tab to be refreshed once after the extension is first loaded.
@@ -104,9 +108,21 @@ OCR is capped at 8 pages, 8 million pixels per attempt, 32 million total process
 
 Run `npm run eval:extraction` to reproduce the published [quality report](evaluation/latest-report.md). See [OCR security and limits](docs/OCR_SECURITY_AND_LIMITS.md) for the threat model, resource budgets, abstention policy, and pilot work still required. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for licenses.
 
+## Resumable work queues and handoff
+
+Version 0.6 separates short-lived client values from durable operational state:
+
+- Participant values, document proposals, raw page signatures, and full page URLs remain in `chrome.storage.session` and expire with the browser session.
+- `chrome.storage.local` retains only sanitized queue metadata: workflow ID, application label, origin, status, progress counts, checkpoint, owner/handoff state, tab ID, timestamps, and opaque checksums of the saved path and page signature.
+- Closing a tab creates a recoverable checkpoint. Restarting Chrome preserves the queue, but the assistant requires the caseworker to reload the authorized source record before resuming because participant values were intentionally not retained.
+- Resume always performs a read-only live scan first. A changed location, changed page signature, stale source, expired source, unaccepted handoff, or missing tab blocks writes.
+- CAPTCHA, one-time codes, direct-entry fields, certification, signature, and final review are named checkpoints rather than background automation steps.
+
+The current handoff is a same-Chrome-profile workflow and ownership prototype. It does not transmit client data or synchronize queues between caseworkers. A production cross-device handoff requires an authenticated organization service with authorization, encrypted storage, retention controls, and concurrency enforcement. See [work-queue security and recovery](docs/WORK_QUEUE_SECURITY_AND_RECOVERY.md).
+
 ## Production integration boundary
 
-Version 0.5 implements the extension half of a managed connector, bounded local OCR, and an extraction-quality gate. It ships a fictional loopback connector service for contract testing, not a production Apricot credential broker or organization-authentication service.
+Version 0.6 implements the extension half of a managed connector, bounded local OCR, an extraction-quality gate, and a resumable metadata-only work queue. It ships a fictional loopback connector service for contract testing, not a production Apricot credential broker, organization-authentication service, or cross-device queue backend.
 
 - `background.js` uses credentialed, read-only `GET` requests to the configured Nava connector service. It does not call Apricot directly.
 - `shared/connector-engine.js` accepts only labeled schema fields, rejects secret-like configuration, requires HTTPS outside localhost, and will not infer meaning from a numeric `field_####` ID.
@@ -123,6 +139,7 @@ The browser extension also cannot produce genuinely trusted hardware keystrokes.
 - It scans the top document, not cross-origin frames or closed shadow roots.
 - Playbook signals identify known sites and known freshness fields; the live DOM scan remains authoritative for every write.
 - Opening known applications is implemented. Background parallel autonomous agents are not: local Chrome tabs share a human browser and extension service worker, so this build enforces one writer per tab instead.
+- Handoff metadata is local to one Chrome profile. It demonstrates the ownership and acceptance flow but is not an authenticated cross-device assignment system.
 - The included connector server is a fictional loopback fixture. A real organization still needs the Nava-controlled service, provider partnership/access, authentication, security review, and data-processing controls.
 - There is no model call. Ambiguous, unlabeled, low-confidence, and unsupported OCR content is withheld or remains untouched.
 
