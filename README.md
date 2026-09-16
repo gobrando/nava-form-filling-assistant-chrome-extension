@@ -1,10 +1,12 @@
 # Nava Form-Filling Assistant — Chrome prototype
 
-![Animated demo of the Nava assistant completing a three-page benefits application and stopping at final review](docs/assets/nava-form-filling-demo.gif)
+![Animated demo of the Nava assistant completing a benefits application and stopping at final review](docs/assets/nava-form-filling-demo.gif)
 
 This is a loadable Manifest V3 Chrome extension that adapts Foad's `form-completion` skill to Jillian's side-panel design.
 
 It is a working local prototype, not a production deployment. It can connect to a read-only organization data service, map labeled source fields, import a client or business document, inspect an application, ask for missing answers, fill and verify approved multi-page flows, and show one provenance review. It has no submit command.
+
+> **Evidence boundary:** the current build autonomously completed a six-page local benefits fixture through final review with 28 of 28 source-backed fields verified. It has not been connected to a production Apricot tenant or completed a live BenefitsCal application in a sanctioned test environment. Use only fictional or approved test data. See [production-readiness evidence](docs/PRODUCTION_READINESS.md).
 
 ## What is implemented
 
@@ -15,7 +17,7 @@ It is a working local prototype, not a production deployment. It can connect to 
 - A reproducible synthetic extraction corpus covering clean scans, low contrast, rotation, tables, bilingual labels, and unsupported handwriting. The current quality gate passes at 100% precision, 91.2% recall, 100% expected-abstention accuracy, zero accepted wrong values, and zero sensitive evidence leaks.
 - Field-by-field intake review. New and matching values start selected; conflicts start unselected and require an explicit replacement choice.
 - SSNs and EINs are masked in intake evidence and later review screens.
-- Self-service Apricot 360 connector setup through a Nava-managed service: health check, labeled-schema discovery, suggested mappings, admin review, record lookup, field-level provenance, stale-record warnings, and caseworker confirmation before import.
+- A provider-neutral managed-connector flow: searchable source catalog, health check, labeled-schema discovery, suggested mappings, admin review, record lookup, field-level provenance, stale-record warnings, and caseworker confirmation before import. The included runnable adapter is a fictional Apricot-shaped loopback fixture; other catalog entries require production server adapters.
 - A hard credential boundary. Chrome accepts only an organization label, HTTPS service URL, opaque connection ID, form ID, reviewed mappings, and freshness policy. Provider secrets stay server-side.
 - One session-only client record shared across application tabs.
 - One writer per tab. Each application is tracked independently.
@@ -63,6 +65,12 @@ The automated three-page DOM fixture runs at:
 http://localhost:4173/demo/multi-page.html?step=1&autorun=1
 ```
 
+The extensive six-page, 28-field validation flow runs at:
+
+```text
+http://localhost:4173/demo/extensive-application.html?step=1&autorun=1&reset=1
+```
+
 To preview only the side-panel UI without loading the extension, serve the extension root and open:
 
 ```text
@@ -71,7 +79,7 @@ http://localhost:4173/sidepanel/index.html?preview=1&demo=1
 
 ## Self-service connector demo
 
-The repository includes a loopback-only connector service with fictional Apricot-shaped data. It never accepts provider credentials.
+The repository includes a provider-neutral extension contract and a loopback-only connector service with fictional Apricot-shaped data. It never accepts provider credentials. The catalog also names Salesforce Nonprofit, Bitfocus Clarity, WellSky Community Services, Eccovia ClientTrack, CaseWorthy, Foothold AWARDS, and Bonterra ETO, but those entries require authorized server adapters before they can connect.
 
 ```bash
 npm run connector:mock
@@ -83,12 +91,13 @@ In the extension, select **Connect**, then configure:
 Organization: Riverside Community Services
 Service URL: http://127.0.0.1:4789
 Connection ID: nava-demo
-Apricot form ID: 99
+Provider: Bonterra Apricot 360
+Form / resource key: 99
 ```
 
 Test the connection, review the label-based mapping, save it, retrieve fictional record `339619`, and confirm the mapped record preview. For a regular-page UI walkthrough, open `http://localhost:4173/sidepanel/index.html?preview=1`; **Use local demo settings** supplies those values.
 
-The production service contract and required security controls are documented in [`connector-service/README.md`](connector-service/README.md).
+The production service contract and required security controls are documented in [`connector-service/README.md`](connector-service/README.md). The [connector coverage matrix](docs/CONNECTOR_COVERAGE.md) explains why this is not yet a Plaid-like production network.
 
 ## Checks
 
@@ -110,7 +119,7 @@ Run `npm run eval:extraction` to reproduce the published [quality report](evalua
 
 ## Resumable work queues and handoff
 
-Version 0.6 separates short-lived client values from durable operational state:
+Version 0.7 retains the version 0.6 privacy boundary between short-lived client values and durable operational state:
 
 - Participant values, document proposals, raw page signatures, and full page URLs remain in `chrome.storage.session` and expire with the browser session.
 - `chrome.storage.local` retains only sanitized queue metadata: workflow ID, application label, origin, status, progress counts, checkpoint, owner/handoff state, tab ID, timestamps, and opaque checksums of the saved path and page signature.
@@ -122,10 +131,10 @@ The current handoff is a same-Chrome-profile workflow and ownership prototype. I
 
 ## Production integration boundary
 
-Version 0.6 implements the extension half of a managed connector, bounded local OCR, an extraction-quality gate, and a resumable metadata-only work queue. It ships a fictional loopback connector service for contract testing, not a production Apricot credential broker, organization-authentication service, or cross-device queue backend.
+Version 0.7 implements the extension half of a provider-neutral managed connector, bounded local OCR, an extraction-quality gate, an extensive synthetic benefits-flow test, and a resumable metadata-only work queue. It ships a fictional loopback connector service for contract testing, not a production credential broker, organization-authentication service, provider network, or cross-device queue backend.
 
 - `background.js` uses credentialed, read-only `GET` requests to the configured Nava connector service. It does not call Apricot directly.
-- `shared/connector-engine.js` accepts only labeled schema fields, rejects secret-like configuration, requires HTTPS outside localhost, and will not infer meaning from a numeric `field_####` ID.
+- `shared/connector-engine.js` accepts only labeled schema fields, rejects secret-like configuration, requires HTTPS outside localhost, and will not infer meaning from an opaque source field ID.
 - Chrome stores the sanitized connection descriptor, reviewed mapping, and labeled schema—not Apricot credentials or participant records. Retrieved participant data remains session-only.
 - The production service must authenticate the current organization, keep provider credentials in a secret manager, enforce least-privilege read scopes, restrict CORS to the managed extension ID, support revocation, and avoid logging record bodies.
 - The managed build should narrow `host_permissions` to approved application and connector domains.
@@ -141,7 +150,14 @@ The browser extension also cannot produce genuinely trusted hardware keystrokes.
 - Opening known applications is implemented. Background parallel autonomous agents are not: local Chrome tabs share a human browser and extension service worker, so this build enforces one writer per tab instead.
 - Handoff metadata is local to one Chrome profile. It demonstrates the ownership and acceptance flow but is not an authenticated cross-device assignment system.
 - The included connector server is a fictional loopback fixture. A real organization still needs the Nava-controlled service, provider partnership/access, authentication, security review, and data-processing controls.
+- Provider selection is not the same as a live connection. Only the fictional Apricot-shaped adapter is runnable in this repository; all other listed systems require authorized backend adapters and sandbox validation.
 - There is no model call. Ambiguous, unlabeled, low-confidence, and unsupported OCR content is withheld or remains untouched.
+
+## Evidence, costs, and next steps
+
+- [Production-readiness evidence](docs/PRODUCTION_READINESS.md) states exactly what is and is not validated.
+- [Connector coverage](docs/CONNECTOR_COVERAGE.md) covers the current catalog, major human-services systems, and the work needed for a Plaid-like experience.
+- [Application cost model](docs/COST_MODEL.md) separates the prototype's $0 marginal third-party usage cost from a realistic production calculation.
 
 See [`docs/IMPLEMENTATION_NOTES.md`](docs/IMPLEMENTATION_NOTES.md) for the exact mapping from the six-phase skill to the extension architecture.
 

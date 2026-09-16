@@ -41,16 +41,25 @@
         primary_language: 'English',
         special_needs: false,
         marital_status: 'Single parent household',
+        farm_worker: false,
+        pregnant: false,
+        housing_status: 'Stable housing',
+        ssn: '123-45-6789',
       },
       contact_information: {
-        preferred_method: null,
+        preferred_method: 'Email',
         phones: { cell: '777-777-7777' },
         email: 'testnava@email.com',
       },
       address: {
-        residential: { street: '5556 Test Blvd', unit: 'Apt 556', city: 'WILDOMAR', state: 'California', county: 'Riverside', zip: '92595' },
-        mailing: { street: '5556 Test Blvd', unit: 'Apt 556', city: 'WILDOMAR', state: 'California', county: 'Riverside', zip: '92595' },
+        residential: { street: '5556 Test Blvd', unit: 'Apt 556', city: 'WILDOMAR', state: 'California', county: 'Riverside', zip: '92595', country: 'United States' },
+        mailing: { street: '5556 Test Blvd', unit: 'Apt 556', city: 'WILDOMAR', state: 'California', county: 'Riverside', zip: '92595', country: 'United States' },
       },
+      householdSize: '3',
+      immigrationStatus: 'U.S. citizen',
+      income: '1850',
+      childcare: true,
+      unemployment: false,
     },
   };
 
@@ -68,6 +77,21 @@
     { id: 111, label: 'Residential County', type: 'text', reference_tag: 'county' },
     { id: 112, label: 'ZIP Code', type: 'text', reference_tag: 'postalCode' },
     { id: 113, label: 'Preferred Language', type: 'select', reference_tag: 'primaryLanguage' },
+    { id: 114, label: 'Gender', type: 'select', reference_tag: 'gender' },
+    { id: 115, label: 'Ethnicity', type: 'select', reference_tag: 'ethnicity' },
+    { id: 116, label: 'Marital Status', type: 'select', reference_tag: 'maritalStatus' },
+    { id: 117, label: 'Special Needs', type: 'boolean', reference_tag: 'specialNeeds' },
+    { id: 118, label: 'Farm Worker', type: 'boolean', reference_tag: 'farmWorker' },
+    { id: 119, label: 'Preferred Contact Method', type: 'select', reference_tag: 'preferredContact' },
+    { id: 120, label: 'Housing Status', type: 'select', reference_tag: 'housingStatus' },
+    { id: 121, label: 'Household Size', type: 'number', reference_tag: 'householdSize' },
+    { id: 122, label: 'Citizenship Status', type: 'select', reference_tag: 'immigrationStatus' },
+    { id: 123, label: 'Monthly Household Income', type: 'currency', reference_tag: 'income' },
+    { id: 124, label: 'Pays for Childcare', type: 'boolean', reference_tag: 'childcare' },
+    { id: 125, label: 'Receives Unemployment Benefits', type: 'boolean', reference_tag: 'unemployment' },
+    { id: 126, label: 'Pregnancy Status', type: 'boolean', reference_tag: 'pregnant' },
+    { id: 127, label: 'Social Security Number', type: 'sensitive', reference_tag: 'ssn' },
+    { id: 128, label: 'Residential Country', type: 'text', reference_tag: 'country' },
   ];
 
   const PREVIEW_RAW_RECORD = {
@@ -89,6 +113,21 @@
         field_111: 'Riverside',
         field_112: '92595',
         field_113: 'English',
+        field_114: 'Female',
+        field_115: 'Hispanic/Latino',
+        field_116: 'Single',
+        field_117: false,
+        field_118: false,
+        field_119: 'Email',
+        field_120: 'Stable housing',
+        field_121: '3',
+        field_122: 'U.S. citizen',
+        field_123: '1850',
+        field_124: true,
+        field_125: false,
+        field_126: false,
+        field_127: '123-45-6789',
+        field_128: 'United States',
       },
     }],
   };
@@ -143,13 +182,21 @@
     return managedConnector() ? state.connector.organizationName : 'Nava fictional test data';
   }
 
+  function connectorProvider(config = state.connector) {
+    return connectorEngine.providerDefinition(config?.provider) || connectorEngine.providerDefinition('apricot360');
+  }
+
+  function connectorSourceId(config = state.connector) {
+    return String(config?.sourceId ?? config?.formId ?? '');
+  }
+
   function renderConnectorStatus() {
     const managed = managedConnector();
     const mapped = Object.keys(state.connector?.mappings || {}).length;
     return `
       <div class="connector-status ${managed ? 'connected' : ''}">
         <span class="connector-status-icon" aria-hidden="true">${managed ? '✓' : 'DB'}</span>
-        <span><strong>${escapeHtml(connectorTitle())}</strong><small>${managed ? `Apricot 360 · ${mapped} mapped fields · read-only` : 'Bundled demo records · no external connection'}</small></span>
+        <span><strong>${escapeHtml(connectorTitle())}</strong><small>${managed ? `${escapeHtml(connectorProvider().name)} · ${mapped} mapped fields · read-only` : 'Bundled demo records · no external connection'}</small></span>
         <button class="link-button" type="button" data-action="configure-connector">${managed ? 'Manage' : 'Connect'}</button>
       </div>`;
   }
@@ -293,12 +340,12 @@
         <div class="stack">
           <button class="choice-button" type="button" data-action="choose-id">
             <span class="choice-icon" aria-hidden="true">ID</span>
-            <span class="choice-copy"><strong>I have their Apricot ID</strong><small>Use the record number to find their information.</small></span>
+            <span class="choice-copy"><strong>I have their client record ID</strong><small>Use the connected organization data source.</small></span>
             <span class="chevron" aria-hidden="true">›</span>
           </button>
           <button class="choice-button" type="button" data-action="choose-json">
             <span class="choice-icon" aria-hidden="true">{ }</span>
-            <span class="choice-copy"><strong>I don't have their Apricot ID</strong><small>Paste the client information as JSON.</small></span>
+            <span class="choice-copy"><strong>I don't have their record ID</strong><small>Paste the client information as JSON.</small></span>
             <span class="chevron" aria-hidden="true">›</span>
           </button>
           <button class="choice-button" type="button" data-action="choose-document">
@@ -312,20 +359,21 @@
   }
 
   function renderRecordId() {
+    const provider = connectorProvider();
     appRoot.innerHTML = `
       <section>
         <button class="back-button" type="button" data-action="back-choice"><span aria-hidden="true">←</span> Back</button>
         <div class="intro">
           <p class="eyebrow">Client record</p>
           <h1>Let's find your client</h1>
-          <p class="lede">Enter an Apricot 360 ID. We'll pull the record through ${escapeHtml(connectorTitle())}.</p>
+          <p class="lede">Enter the client record ID. We'll pull the record through ${escapeHtml(connectorTitle())}.</p>
         </div>
         ${renderError()}
         <form id="record-form" class="stack">
           <div class="field">
-            <label for="record-id">Apricot 360 ID</label>
-            <input id="record-id" name="recordId" type="text" inputmode="numeric" autocomplete="off" placeholder="Enter ID" required>
-            <p class="field-hint">${managedConnector() ? `Read-only connector · form ${escapeHtml(state.connector.formId)} · ${Object.keys(state.connector.mappings || {}).length} mapped fields` : 'Prototype demo IDs: 339619, 338618, and 339637.'}</p>
+            <label for="record-id">${managedConnector() ? escapeHtml(provider.recordLabel) : 'Fictional demo record ID'}</label>
+            <input id="record-id" name="recordId" type="text" autocomplete="off" placeholder="Enter ID" required>
+            <p class="field-hint">${managedConnector() ? `Read-only ${escapeHtml(provider.name)} connector · source ${escapeHtml(connectorSourceId())} · ${Object.keys(state.connector.mappings || {}).length} mapped fields` : 'Prototype demo IDs: 339619, 338618, and 339637.'}</p>
           </div>
           <div class="form-actions">
             <button class="primary-button" type="submit">Continue</button>
@@ -344,7 +392,7 @@
       organizationName: '',
       backendUrl: '',
       connectionId: '',
-      formId: '',
+      sourceId: '',
       maxAgeDays: 30,
       mappings: {},
     };
@@ -352,17 +400,25 @@
 
   function renderConnectorSetup() {
     const draft = connectorDraft();
+    const provider = connectorProvider(draft);
     appRoot.innerHTML = `
       <section>
         <button class="back-button" type="button" data-action="back-choice"><span aria-hidden="true">←</span> Back</button>
         <div class="intro">
           <p class="eyebrow">Data source</p>
-          <h1>Connect Apricot 360</h1>
-          <p class="lede">Connect through a Nava-managed service, test access, and load the form’s labeled fields. API credentials remain on the service.</p>
+          <h1>Connect a client data source</h1>
+          <p class="lede">Choose a provider, connect through a Nava-managed service, and load labeled fields. Provider credentials remain on the service.</p>
         </div>
         ${renderError()}
-        <div class="notice"><span aria-hidden="true">⌁</span><span>This extension accepts a connection ID, never an Apricot client secret, access token, password, or API key.</span></div>
+        <div class="notice"><span aria-hidden="true">⌁</span><span>The extension accepts an opaque connection ID, never a provider secret, access token, password, or API key. Listed providers still require a Nava service adapter and organization authorization.</span></div>
         <form id="connector-form" class="stack connector-form">
+          <div class="field">
+            <label for="connector-provider">Database provider</label>
+            <select id="connector-provider" name="provider" required>
+              ${connectorEngine.PROVIDER_CATALOG.map((item) => `<option value="${escapeHtml(item.id)}" ${draft.provider === item.id ? 'selected' : ''}>${escapeHtml(item.name)} — ${escapeHtml(item.category)}</option>`).join('')}
+            </select>
+            <p class="field-hint">Apricot has a tested fictional adapter. Every provider requires a separately deployed, authorized Nava connector before real records can be used.</p>
+          </div>
           <div class="field">
             <label for="connector-org">Organization name</label>
             <input id="connector-org" name="organizationName" type="text" value="${escapeHtml(draft.organizationName)}" placeholder="Riverside Community Services" required>
@@ -378,8 +434,8 @@
           </div>
           <div class="grid-fields">
             <div class="field">
-              <label for="connector-form-id">Apricot form ID</label>
-              <input id="connector-form-id" name="formId" type="number" min="1" value="${escapeHtml(draft.formId)}" required>
+              <label for="connector-source-id">Form / resource key</label>
+              <input id="connector-source-id" name="sourceId" type="text" value="${escapeHtml(connectorSourceId(draft))}" placeholder="${escapeHtml(provider.sourceLabel)}" required>
             </div>
             <div class="field">
               <label for="connector-age">Stale after</label>
@@ -411,12 +467,12 @@
         <div class="intro">
           <p class="eyebrow">Schema mapping</p>
           <h1>Confirm what each field means</h1>
-          <p class="lede">Suggestions use the source labels and reference tags. Review every mapping—numeric Apricot field IDs never determine meaning.</p>
+          <p class="lede">Suggestions use source labels and reference tags. Review every mapping—opaque or numeric source IDs never determine meaning.</p>
         </div>
         ${renderError()}
         <div class="connector-summary">
           <span class="connector-status-icon" aria-hidden="true">✓</span>
-          <span><strong>${escapeHtml(draft.organizationName)}</strong><small>${schema.length} labeled source fields loaded · form ${escapeHtml(draft.formId)}</small></span>
+          <span><strong>${escapeHtml(draft.organizationName)}</strong><small>${escapeHtml(connectorProvider(draft).name)} · ${schema.length} labeled source fields loaded · source ${escapeHtml(connectorSourceId(draft))}</small></span>
         </div>
         <form id="connector-mapping-form">
           ${categories.map((category) => `
@@ -425,13 +481,13 @@
               ${connectorEngine.CANONICAL_FIELDS.filter((field) => field.category === category).map((canonical) => `
                 <label class="mapping-row">
                   <span><strong>${escapeHtml(canonical.label)}</strong>${canonical.sensitive ? '<small>Sensitive · masked in review</small>' : '<small>Canonical destination</small>'}</span>
-                  <select name="map-${escapeHtml(canonical.key)}" aria-label="Apricot field for ${escapeHtml(canonical.label)}">
+                  <select name="map-${escapeHtml(canonical.key)}" aria-label="Source field for ${escapeHtml(canonical.label)}">
                     <option value="">Not mapped</option>
                     ${schema.map((field) => `<option value="${escapeHtml(field.id)}" ${draft.mappings?.[canonical.key] === field.id ? 'selected' : ''}>${escapeHtml(field.label)} — ${escapeHtml(field.id)}</option>`).join('')}
                   </select>
                 </label>`).join('')}
             </div>`).join('')}
-          <div class="notice warning" style="margin-top:18px"><span aria-hidden="true">!</span><span>Saving authorizes read-only lookup through this mapping. It does not grant the extension permission to edit Apricot.</span></div>
+          <div class="notice warning" style="margin-top:18px"><span aria-hidden="true">!</span><span>Saving authorizes read-only lookup through this reviewed mapping. It does not grant the extension permission to edit the source system.</span></div>
           <div class="form-actions">
             <button class="primary-button" type="submit">Save read-only connection</button>
           </div>
@@ -1356,10 +1412,11 @@
     }
     if (action === 'back-connector') state.view = 'connector';
     if (action === 'local-connector-settings') {
+      document.getElementById('connector-provider').value = 'apricot360';
       document.getElementById('connector-org').value = 'Riverside Community Services';
       document.getElementById('connector-url').value = 'http://127.0.0.1:4789';
       document.getElementById('connection-id').value = 'nava-demo';
-      document.getElementById('connector-form-id').value = '99';
+      document.getElementById('connector-source-id').value = '99';
       return;
     }
     if (action === 'reset-connector') {
@@ -1517,11 +1574,11 @@
     if (form.id === 'connector-form') {
       const data = new FormData(form);
       const config = {
-        provider: 'apricot360',
+        provider: String(data.get('provider') || '').trim(),
         organizationName: String(data.get('organizationName') || '').trim(),
         backendUrl: String(data.get('backendUrl') || '').trim(),
         connectionId: String(data.get('connectionId') || '').trim(),
-        formId: Number(data.get('formId')),
+        sourceId: String(data.get('sourceId') || '').trim(),
         maxAgeDays: Number(data.get('maxAgeDays')),
         mappings: managedConnector() ? state.connector.mappings : {},
         mappingVersion: managedConnector() ? Number(state.connector.mappingVersion || 1) + 1 : 1,
@@ -1669,7 +1726,7 @@
         const schema = connectorEngine.normalizeSchemaFields(PREVIEW_CONNECTOR_SCHEMA);
         return Promise.resolve({
           ok: true,
-          health: { organizationName: config.organizationName, provider: 'apricot360' },
+          health: { organizationName: config.organizationName, provider: config.provider },
           config,
           schema,
           suggestions: connectorEngine.suggestMappings(schema, config.mappings),
@@ -1699,7 +1756,7 @@
           return Promise.resolve({
             ok: mapped.found,
             record: mapped.record,
-            provider: 'apricot360',
+            provider: state.connector.provider,
             connector: { organizationName: state.connector.organizationName, stale: mapped.stale, mappedFields: Object.keys(mapped.provenance).length },
             message: 'Record loaded from the preview connector.',
           });

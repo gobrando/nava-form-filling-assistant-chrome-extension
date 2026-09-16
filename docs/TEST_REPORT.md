@@ -1,6 +1,6 @@
 # Test report
 
-Date: 2026-09-15
+Date: 2026-09-16
 
 ## Automated checks
 
@@ -11,7 +11,7 @@ npm run check
 npm test
 ```
 
-The 45-test suite covers canonical client and business records, field mapping and formatting, masked-value verification, document and OCR extraction, OCR resource budgets and default-review behavior, bundled-parser and storage boundaries, connector configuration sanitization, labeled-schema mapping, source provenance/freshness, Manifest V3 configuration, and the no-submit contract. It also verifies the connector's read-only boundary, the multi-page runner's allowlisted continuation, OTP/CAPTCHA checkpoints, restart recovery, tab closure, changed-page rejection, stale/expired sources, pending handoffs, competing leases, durable metadata sanitization, and value-free audit export.
+The 49-test suite covers canonical client and business records, field mapping and formatting, masked-value verification, document and OCR extraction, OCR resource budgets and default-review behavior, bundled-parser and storage boundaries, provider-neutral connector configuration, labeled-schema mapping, source provenance/freshness, Manifest V3 configuration, and the no-submit contract. It also verifies the connector's read-only boundary, the multi-page runner's allowlisted continuation, OTP/CAPTCHA checkpoints, restart recovery, tab closure, changed-page rejection, stale/expired sources, pending handoffs, competing leases, durable metadata sanitization, value-free audit export, the provider catalog, and a 28-field extensive benefits flow.
 
 ## Resumable queue and handoff walkthrough
 
@@ -52,16 +52,31 @@ Chrome loaded the regular-page preview with the bundled worker, WebAssembly core
 
 ## Self-service connector walkthrough
 
-Chrome ran the regular-page side-panel preview against the fictional Apricot-shaped connector fixture on 2026-09-14:
+Chrome ran the regular-page side-panel preview against the fictional Apricot-shaped connector fixture on 2026-09-16:
 
-1. Opened **Connect Apricot 360** and supplied the loopback service URL, opaque connection ID, form ID, organization label, and 30-day freshness window.
-2. Loaded 13 labeled fields from form `99`; numeric IDs were normalized to explicit `field_###` source keys.
-3. Confirmed 13 label/reference-tag suggestions in the mapping UI. Sensitive destinations remained visibly marked and unmapped when the source schema did not contain them.
+1. Opened **Connect a client data source**, confirmed the eight-provider catalog, and supplied the loopback service URL, opaque connection ID, form/resource key, organization label, and 30-day freshness window.
+2. Loaded 28 labeled fields from Apricot form `99`; numeric IDs were normalized to explicit `field_###` source keys.
+3. Confirmed 28 label/reference-tag suggestions in the mapping UI, including SSN, citizenship, and income destinations marked as sensitive.
 4. Saved the read-only mapping. The client-choice screen reported the connected organization and mapped-field count.
-5. Retrieved fictional record `339619`, reviewed all 13 mapped values with their source labels/IDs and freshness, and explicitly confirmed the import.
+5. Retrieved fictional record `339619`, reviewed all 28 mapped values with their source labels/IDs and freshness, and explicitly confirmed the import.
 6. Reached program selection with the normalized Celeste record, organization provenance, and retrieval timestamp intact.
 
-The mock service was also probed directly for health, schema, and record responses. It binds only to `127.0.0.1`, rejects non-GET methods, contains no credentials, and sends `Cache-Control: no-store`.
+The mock service was also probed directly for health, schema, and record responses. It returned 28 schema fields and 28 record values, binds only to `127.0.0.1`, rejects non-GET methods with HTTP 405, contains no credentials, and sends `Cache-Control: no-store`.
+
+## Six-page extensive browser fixture
+
+Chrome ran `demo/extensive-application.html?step=1&autorun=1&reset=1` with the fictional Celeste record. It autonomously advanced across five data-entry pages, retained the record without reloading, and stopped at page six for human review.
+
+| Page | Result | Continuation decision |
+| --- | --- | --- |
+| Applicant identity | 5 of 5 completed | Exact **Next** activated |
+| Contact and address | 9 of 9 completed | Exact **Save and continue** activated |
+| Demographics | 7 of 7 completed | Exact **Continue** activated |
+| Household | 4 of 4 completed | Exact **Next** activated |
+| Income and expenses | 3 of 3 completed | Exact **Continue** activated |
+| Review and submit | 28-field completion summary present | Stopped at final review |
+
+The run exposed and fixed a real classification defect caused by a `<select>` label concatenating its option text with “Gender.” A regression test now covers the corrected classification. The certification checkbox remained unchecked and **Submit application** was not activated.
 
 ## Three-page browser fixture
 

@@ -215,7 +215,7 @@
     if (hasWord('country') || has('country-name')) return 'country';
     if (has('primary language', 'preferred language', 'language')) return 'primaryLanguage';
     if (has('ethnicity', 'hispanic')) return 'ethnicity';
-    if (hasWord('gender', 'sex')) return 'gender';
+    if (has('gender', 'sex assigned at birth') || hasWord('sex')) return 'gender';
     if (has('marital status', 'married')) return 'maritalStatus';
     if (has('special needs', 'disability', 'disabled')) return 'specialNeeds';
     if (has('farm worker', 'farmworker', 'migrant worker')) return 'farmWorker';

@@ -1,14 +1,16 @@
 # Connector service contract
 
-The extension never connects directly to Apricot and never accepts an Apricot secret. It talks to a Nava-controlled, organization-authenticated service using an opaque connection ID.
+The extension never connects directly to a provider and never accepts provider secrets. It talks to a Nava-controlled, organization-authenticated service using an opaque connection ID. Provider selection and source identifiers are metadata; OAuth grants, API keys, refresh tokens, and vendor sessions remain server-side.
 
 Required read-only endpoints:
 
 ```text
 GET /v1/connectors/{connectionId}/health
-GET /v1/connectors/{connectionId}/schema?formId={formId}
-GET /v1/connectors/{connectionId}/records/{recordId}?formId={formId}
+GET /v1/connectors/{connectionId}/schema?sourceId={sourceId}
+GET /v1/connectors/{connectionId}/records/{recordId}?sourceId={sourceId}
 ```
+
+For backward compatibility, the fictional Apricot adapter also accepts `formId`. Production adapters may translate the opaque `sourceId` into a provider object, form, dataset, TouchPoint, or resource key.
 
 The service must:
 
@@ -36,7 +38,8 @@ Then configure the extension with:
 Organization: Riverside Community Services
 Service URL: http://127.0.0.1:4789
 Connection ID: nava-demo
-Apricot form ID: 99
+Provider: Bonterra Apricot 360
+Form / resource key: 99
 ```
 
-The archived application used a Sidekick-hosted Apricot API proxy and server-side OAuth client credentials. A production implementation can reuse that service pattern, subject to current Bonterra/partner access, security review, organization authorization, and an explicit data-processing agreement.
+The archived application used a Sidekick-hosted Apricot API proxy and server-side OAuth client credentials. A production Apricot adapter can reuse that service pattern, subject to current Bonterra/partner access, security review, organization authorization, and an explicit data-processing agreement. Other catalog providers require their own authorized adapters; see [`../docs/CONNECTOR_COVERAGE.md`](../docs/CONNECTOR_COVERAGE.md).

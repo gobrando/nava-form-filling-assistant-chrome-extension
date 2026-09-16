@@ -23,11 +23,40 @@ test('sanitizes connector configuration and rejects secrets in Chrome', () => {
   const safe = connector.sanitizeConfig(baseConfig);
   assert.equal(safe.backendUrl, 'https://connectors.example.org');
   assert.equal(safe.mode, 'managed');
+  assert.equal(safe.sourceId, '99');
   assert.throws(() => connector.sanitizeConfig({ ...baseConfig, clientSecret: 'never-store-this' }), /never be stored/);
   assert.throws(() => connector.sanitizeConfig({ ...baseConfig, access_token: 'never-store-this' }), /never be stored/);
   assert.throws(() => connector.sanitizeConfig({ ...baseConfig, backendUrl: 'http://connectors.example.org' }), /must use HTTPS/);
   assert.throws(() => connector.sanitizeConfig({ ...baseConfig, backendUrl: 'https://user:password@connectors.example.org' }), /Do not place credentials/);
   assert.equal(connector.sanitizeConfig({ ...baseConfig, backendUrl: 'http://127.0.0.1:4789' }).backendUrl, 'http://127.0.0.1:4789');
+});
+
+test('catalogs common nonprofit and HMIS providers without claiming a deployed adapter', () => {
+  const ids = new Set(connector.PROVIDER_CATALOG.map((provider) => provider.id));
+  assert.ok(ids.has('apricot360'));
+  assert.ok(ids.has('salesforce_nonprofit'));
+  assert.ok(ids.has('bitfocus_clarity'));
+  assert.ok(ids.has('wellsky_community_services'));
+  assert.ok(ids.has('eccovia_clienttrack'));
+  assert.ok(ids.has('caseworthy'));
+  assert.ok(ids.has('foothold_awards'));
+  assert.ok(ids.has('bonterra_eto'));
+  assert.equal(connector.providerDefinition('apricot360').readiness, 'demo-tested');
+  assert.ok(connector.PROVIDER_CATALOG.filter((provider) => provider.id !== 'apricot360').every((provider) => provider.readiness === 'adapter-required'));
+});
+
+test('accepts provider-neutral resource and record identifiers through the managed contract', () => {
+  const safe = connector.sanitizeConfig({
+    provider: 'salesforce_nonprofit',
+    organizationName: 'Fictional Community Services',
+    backendUrl: 'https://connectors.example.org',
+    connectionId: 'fictional-salesforce',
+    sourceId: 'Contact.Client_Profile__c',
+  });
+  assert.equal(safe.provider, 'salesforce_nonprofit');
+  assert.equal(safe.sourceId, 'Contact.Client_Profile__c');
+  assert.equal(safe.formId, undefined);
+  assert.throws(() => connector.sanitizeConfig({ ...safe, provider: 'unknown_vendor' }), /supported data-source type/);
 });
 
 test('normalizes numeric Apricot schema IDs to explicit record attribute IDs', () => {
