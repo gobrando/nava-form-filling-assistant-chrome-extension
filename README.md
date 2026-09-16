@@ -1,6 +1,10 @@
 # Nava Form-Filling Assistant — Chrome prototype
 
-![Animated demo of the Nava assistant completing a benefits application and stopping at final review](docs/assets/nava-form-filling-demo.gif)
+[![Watch the Nava assistant complete a six-page benefits application and stop at final review](docs/assets/nava-form-filling-assistant-demo-poster.png)](docs/assets/nava-form-filling-assistant-demo.mp4)
+
+▶ **[Watch the full Screen Studio product demo](docs/assets/nava-form-filling-assistant-demo.mp4)** — a fictional Apricot-shaped client record, 28 verified fields across six pages, and an automatic stop before certification or submission.
+
+The recording uses fictional, local-only data. The assistant never checks the certification box or activates **Submit application**.
 
 This is a loadable Manifest V3 Chrome extension that adapts Foad's `form-completion` skill to Jillian's side-panel design.
 
