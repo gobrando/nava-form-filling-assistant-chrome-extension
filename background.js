@@ -18,9 +18,12 @@ const DEMO_RECORDS = [
       special_needs: false,
       marital_status: 'Single parent household',
       farm_worker: false,
+      pregnant: false,
+      housing_status: 'Stable housing',
+      ssn: '123-45-6789',
     },
     contact_information: {
-      preferred_method: null,
+      preferred_method: 'Email',
       phones: { cell: '777-777-7777' },
       email: 'testnava@email.com',
     },
@@ -32,6 +35,7 @@ const DEMO_RECORDS = [
         state: 'California',
         county: 'Riverside',
         zip: '92595',
+        country: 'United States',
       },
       mailing: {
         street: '5556 Test Blvd',
@@ -40,8 +44,14 @@ const DEMO_RECORDS = [
         state: 'California',
         county: 'Riverside',
         zip: '92595',
+        country: 'United States',
       },
     },
+    householdSize: '3',
+    immigrationStatus: 'U.S. citizen',
+    income: '1850',
+    childcare: true,
+    unemployment: false,
   },
   {
     record_id: '338618',
@@ -159,6 +169,14 @@ function connectorUrl(config, resource, query = {}) {
   return url.toString();
 }
 
+function connectorSourceQuery(config) {
+  const sourceId = config.sourceId ?? config.formId;
+  return {
+    sourceId,
+    ...(config.provider === 'apricot360' && config.formId ? { formId: config.formId } : {}),
+  };
+}
+
 async function connectorRequest(configInput, resource, query = {}) {
   const config = connectorEngine.sanitizeConfig(configInput);
   const controller = new AbortController();
@@ -185,12 +203,16 @@ async function connectorRequest(configInput, resource, query = {}) {
 async function discoverConnector(configInput) {
   const config = connectorEngine.sanitizeConfig(configInput);
   const health = await connectorRequest(config, 'health');
-  if (health.provider && health.provider !== 'apricot360') throw new Error('The connector is not an Apricot 360 connection.');
+  if (health.provider && health.provider !== config.provider) {
+    const expected = connectorEngine.providerDefinition(config.provider)?.name || config.provider;
+    const actual = connectorEngine.providerDefinition(health.provider)?.name || health.provider;
+    throw new Error(`This connection reports ${actual}, not ${expected}.`);
+  }
   const authoritativeConfig = {
     ...config,
     organizationName: String(health.organizationName || config.organizationName).trim(),
   };
-  const schemaPayload = await connectorRequest(authoritativeConfig, 'schema', { formId: authoritativeConfig.formId });
+  const schemaPayload = await connectorRequest(authoritativeConfig, 'schema', connectorSourceQuery(authoritativeConfig));
   const schema = connectorEngine.normalizeSchemaFields(schemaPayload);
   if (!schema.length) throw new Error('The connector returned no labeled fields for that form.');
   return {
@@ -206,7 +228,7 @@ async function discoverConnector(configInput) {
 }
 
 async function lookupManagedRecord(recordId, saved) {
-  const payload = await connectorRequest(saved.config, `records/${encodeURIComponent(recordId)}`, { formId: saved.config.formId });
+  const payload = await connectorRequest(saved.config, `records/${encodeURIComponent(recordId)}`, connectorSourceQuery(saved.config));
   const mapped = connectorEngine.mapRecord(payload, saved.config, saved.schema);
   return {
     ok: mapped.found,
@@ -307,8 +329,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === 'LOOKUP_RECORD') {
     const recordId = String(message.recordId || '').trim();
-    if (!/^\d+$/.test(recordId)) {
-      sendResponse({ ok: false, record: null, message: 'Enter a numeric Apricot record ID.' });
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,119}$/.test(recordId)) {
+      sendResponse({ ok: false, record: null, message: 'Enter a valid client record ID.' });
       return false;
     }
     storedConnector()
@@ -322,7 +344,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           connector: { organizationName: 'Nava fictional test data', stale: false },
           message: record
             ? 'Fictional demo record loaded.'
-            : 'No fictional record matched. Configure a managed connector or paste client JSON.',
+            : 'No fictional record matched. Configure a managed data source or paste client JSON.',
         };
       })
       .then(sendResponse)

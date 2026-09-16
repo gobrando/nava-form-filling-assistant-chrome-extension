@@ -2,11 +2,13 @@
 
 ## Status of the three candidate areas
 
-### Self-service database connector — vertical slice complete
+### Self-service database connector — provider-neutral extension slice complete
 
-Version 0.4 delivers the extension-side connector milestone against a loopback contract fixture. An organization can enter a managed service URL and opaque connection ID, test access, load labeled Apricot fields, review suggested mappings, retrieve and confirm a fictional record with field-level provenance and freshness, and launch the existing multi-page runner without pasting JSON.
+Version 0.7 generalizes the extension-side connector milestone against a provider-neutral contract. An organization can choose a source type, enter a managed service URL and opaque connection ID, test access, load labeled source fields, review suggested mappings, retrieve and confirm a fictional record with field-level provenance and freshness, and launch the multi-page runner without pasting JSON.
 
-The extension rejects secret-like configuration, requires HTTPS outside localhost, keeps participant records in session storage, and never assigns meaning from a numeric Apricot field ID. The production backend remains separate work: organization authentication, provider credential custody, a sandbox tenant, revocation, rate limits, audit events without values, and current Bonterra/partner approval.
+The extension rejects secret-like configuration, requires HTTPS outside localhost, keeps participant records in session storage, and never assigns meaning from an opaque provider field ID. The catalog covers Apricot, Salesforce Nonprofit, Bitfocus Clarity, WellSky Community Services, Eccovia ClientTrack, CaseWorthy, Foothold AWARDS, and Bonterra ETO. Only the fictional Apricot-shaped loopback adapter is runnable; the production backend and every authorized provider adapter remain separate work.
+
+This is not yet a Plaid-like provider network. That requires organization authentication, provider discovery, OAuth/admin authorization, secret custody, live adapters, connection health and revocation, schema-drift review, tenant isolation, and provider sandbox/contract validation.
 
 ### Document upload extractor — OCR and evaluation vertical slice complete
 
@@ -42,22 +44,24 @@ Version 0.6 makes the existing multi-application dashboard operational across or
 
 Because client values intentionally expire at browser-session end, a full browser restart requires source reauthorization/reload before filling can continue. This is a deliberate safety tradeoff, not silent loss: application progress and the exact checkpoint remain visible.
 
-## Recommended next milestone: authenticated pilot operations
+## Recommended next milestone: one authenticated connector pilot
 
 The next meaningful step crosses the extension/backend boundary. Build the organization-authenticated queue and connector service needed for real multi-caseworker operation.
 
 1. Synchronize encrypted, metadata-only assignments across authorized caseworkers; keep participant values in the source system rather than copying them into the queue.
 2. Enforce server-side ownership leases, role-based access, handoff acceptance, revocation, retention, and immutable value-free audit events.
 3. Add policy-controlled, PII-free notifications for actionable human checkpoints.
-4. Pilot one Apricot organization in a sandbox tenant with current source freshness, mapping-drift detection, and approved application domains.
-5. Complete accessibility, privacy, security, incident-response, and representative-document evaluation before any real-client use.
+4. Pilot one Apricot organization in a sandbox tenant with synthetic records, current source freshness, mapping-drift detection, and approved application domains.
+5. Exercise one sanctioned, non-production benefits application end to end with the extensive demographic and household test matrix; preserve the human final-submit boundary.
+6. Complete accessibility, privacy, security, incident-response, and representative-document evaluation before any real-client use.
 
 ## Suggested sequence
 
 - **Completed:** OCR and extraction-quality evaluation baseline.
 - **Completed:** local resumable multi-application queue and same-profile handoff vertical slice.
-- **Next:** productionize the authenticated Nava connector and work-queue service; pilot one Apricot organization.
-- **Later:** additional source systems through the same connector contract.
+- **Completed:** provider-neutral source catalog/contract and 28-field fictional adapter validation.
+- **Next:** productionize the authenticated Nava connector and work-queue service; pilot one Apricot organization in a sandbox.
+- **Later:** add provider adapters in priority order using the published [coverage matrix](CONNECTOR_COVERAGE.md).
 
 ## Connector follow-through before production
 

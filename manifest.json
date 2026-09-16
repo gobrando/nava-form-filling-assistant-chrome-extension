@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Nava Form-Filling Assistant",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "A local-first form assistant that finds gaps, fills verified values, and always leaves submission to the caseworker.",
   "minimum_chrome_version": "114",
   "permissions": [

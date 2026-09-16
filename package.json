@@ -1,10 +1,10 @@
 {
   "name": "nava-form-filling-assistant-chrome-extension",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Local-first Chrome side-panel prototype for Nava's form-completion protocol.",
   "scripts": {
-    "check": "node --check background.js && node --check shared/form-engine.js && node --check shared/connector-engine.js && node --check shared/work-queue-engine.js && node --check content/form-agent.js && node --check sidepanel/ocr-engine.js && node --check sidepanel/document-parser.js && node --check sidepanel/sidepanel.js && node --check connector-service/mock-server.mjs && node --check scripts/vendor-ocr-assets.mjs && node --check scripts/generate-ocr-fixtures.mjs && node --check scripts/run-extraction-eval.mjs && node -e \"JSON.parse(require('node:fs').readFileSync('manifest.json','utf8'))\"",
+    "check": "node --check background.js && node --check shared/form-engine.js && node --check shared/connector-engine.js && node --check shared/work-queue-engine.js && node --check content/form-agent.js && node --check sidepanel/ocr-engine.js && node --check sidepanel/document-parser.js && node --check sidepanel/sidepanel.js && node --check demo/extensive-application.js && node --check connector-service/mock-server.mjs && node --check scripts/vendor-ocr-assets.mjs && node --check scripts/generate-ocr-fixtures.mjs && node --check scripts/run-extraction-eval.mjs && node -e \"JSON.parse(require('node:fs').readFileSync('manifest.json','utf8'))\"",
     "connector:mock": "node connector-service/mock-server.mjs",
     "ocr:fixtures": "node scripts/generate-ocr-fixtures.mjs",
     "ocr:assets": "node scripts/vendor-ocr-assets.mjs",

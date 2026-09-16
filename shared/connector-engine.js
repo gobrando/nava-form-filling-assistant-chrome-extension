@@ -1,6 +1,73 @@
 (function installConnectorEngine(root) {
   'use strict';
 
+  const PROVIDER_CATALOG = [
+    {
+      id: 'apricot360',
+      name: 'Bonterra Apricot 360',
+      category: 'Case management',
+      sourceLabel: 'Apricot form ID',
+      recordLabel: 'Apricot record ID',
+      readiness: 'demo-tested',
+    },
+    {
+      id: 'salesforce_nonprofit',
+      name: 'Salesforce / Agentforce Nonprofit',
+      category: 'CRM and case management',
+      sourceLabel: 'Object or dataset key',
+      recordLabel: 'Client record ID',
+      readiness: 'adapter-required',
+    },
+    {
+      id: 'bitfocus_clarity',
+      name: 'Bitfocus Clarity Human Services',
+      category: 'HMIS',
+      sourceLabel: 'Client resource key',
+      recordLabel: 'Clarity client ID',
+      readiness: 'adapter-required',
+    },
+    {
+      id: 'wellsky_community_services',
+      name: 'WellSky Community Services / ServicePoint',
+      category: 'HMIS',
+      sourceLabel: 'Client resource key',
+      recordLabel: 'Community Services client ID',
+      readiness: 'adapter-required',
+    },
+    {
+      id: 'eccovia_clienttrack',
+      name: 'Eccovia ClientTrack',
+      category: 'HMIS and case management',
+      sourceLabel: 'Client resource key',
+      recordLabel: 'ClientTrack client ID',
+      readiness: 'adapter-required',
+    },
+    {
+      id: 'caseworthy',
+      name: 'CaseWorthy',
+      category: 'HMIS and case management',
+      sourceLabel: 'Form or resource key',
+      recordLabel: 'CaseWorthy client ID',
+      readiness: 'adapter-required',
+    },
+    {
+      id: 'foothold_awards',
+      name: 'Foothold AWARDS',
+      category: 'Human services and EHR',
+      sourceLabel: 'Client resource key',
+      recordLabel: 'AWARDS client ID',
+      readiness: 'adapter-required',
+    },
+    {
+      id: 'bonterra_eto',
+      name: 'Bonterra ETO',
+      category: 'Impact and case management',
+      sourceLabel: 'TouchPoint or resource key',
+      recordLabel: 'ETO participant ID',
+      readiness: 'adapter-required',
+    },
+  ];
+
   const CANONICAL_FIELDS = [
     { key: 'firstName', label: 'First name', category: 'Identity', aliases: ['first name', 'given name', 'client first name'] },
     { key: 'middleName', label: 'Middle name', category: 'Identity', aliases: ['middle name', 'client middle name'] },
@@ -15,13 +82,35 @@
     { key: 'state', label: 'State', category: 'Address', aliases: ['state', 'residential state', 'home state'] },
     { key: 'county', label: 'County', category: 'Address', aliases: ['county', 'residential county'] },
     { key: 'postalCode', label: 'ZIP code', category: 'Address', aliases: ['zip code', 'postal code', 'zip'] },
+    { key: 'country', label: 'Country', category: 'Address', aliases: ['country', 'residential country', 'home country'] },
+    { key: 'mailingDifferent', label: 'Mailing address differs', category: 'Address', aliases: ['mailing address different', 'different mailing address', 'mailing different'] },
     { key: 'gender', label: 'Gender', category: 'Demographics', aliases: ['gender', 'sex'] },
     { key: 'ethnicity', label: 'Ethnicity', category: 'Demographics', aliases: ['ethnicity', 'race ethnicity'] },
     { key: 'primaryLanguage', label: 'Primary language', category: 'Demographics', aliases: ['primary language', 'preferred language', 'language'] },
     { key: 'maritalStatus', label: 'Marital status', category: 'Demographics', aliases: ['marital status'] },
+    { key: 'specialNeeds', label: 'Special needs or disability', category: 'Demographics', aliases: ['special needs', 'disability status', 'disabled'] },
+    { key: 'farmWorker', label: 'Farm worker', category: 'Demographics', aliases: ['farm worker', 'farmworker', 'migrant worker'] },
+    { key: 'pregnant', label: 'Pregnancy', category: 'Demographics', aliases: ['pregnant', 'pregnancy status'] },
+    { key: 'preferredContact', label: 'Preferred contact method', category: 'Contact', aliases: ['preferred contact method', 'contact preference', 'best way to contact'] },
+    { key: 'housingStatus', label: 'Housing status', category: 'Household and eligibility', aliases: ['housing status', 'homelessness status', 'experiencing homelessness'] },
+    { key: 'householdSize', label: 'Household size', category: 'Household and eligibility', aliases: ['household size', 'people in household', 'number in household'] },
+    { key: 'immigrationStatus', label: 'Immigration or citizenship status', category: 'Household and eligibility', sensitive: true, aliases: ['immigration status', 'citizenship status'] },
+    { key: 'income', label: 'Monthly household income', category: 'Household and eligibility', sensitive: true, aliases: ['monthly household income', 'monthly income', 'gross income'] },
+    { key: 'childcare', label: 'Pays for childcare', category: 'Household and eligibility', aliases: ['pays for childcare', 'childcare expenses', 'child care expenses'] },
+    { key: 'unemployment', label: 'Unemployment benefits', category: 'Household and eligibility', aliases: ['unemployment benefits', 'receives unemployment'] },
     { key: 'businessName', label: 'Business legal name', category: 'Business', aliases: ['business legal name', 'legal business name', 'business name'] },
     { key: 'ein', label: 'Employer Identification Number', category: 'Business', sensitive: true, aliases: ['employer identification number', 'ein', 'federal tax id'] },
     { key: 'businessType', label: 'Business type', category: 'Business', aliases: ['business type', 'entity type', 'legal structure'] },
+    { key: 'dba', label: 'Doing business as', category: 'Business', aliases: ['doing business as', 'dba'] },
+    { key: 'businessAddressLine1', label: 'Business street address', category: 'Business', aliases: ['business street address', 'business address', 'company address'] },
+    { key: 'businessAddressLine2', label: 'Business suite or unit', category: 'Business', aliases: ['business address line 2', 'business suite', 'company suite'] },
+    { key: 'businessCity', label: 'Business city', category: 'Business', aliases: ['business city', 'company city'] },
+    { key: 'businessState', label: 'Business state', category: 'Business', aliases: ['business state', 'company state'] },
+    { key: 'businessPostalCode', label: 'Business ZIP code', category: 'Business', aliases: ['business zip code', 'business postal code', 'company zip'] },
+    { key: 'businessPhone', label: 'Business phone', category: 'Business', aliases: ['business phone', 'company phone'] },
+    { key: 'businessEmail', label: 'Business email', category: 'Business', aliases: ['business email', 'company email'] },
+    { key: 'incorporationDate', label: 'Formation date', category: 'Business', aliases: ['formation date', 'date of formation', 'incorporation date'] },
+    { key: 'stateOfFormation', label: 'State of formation', category: 'Business', aliases: ['state of formation', 'state of incorporation', 'formation state'] },
   ];
 
   const FORBIDDEN_CONFIG_KEYS = /secret|password|access.?token|refresh.?token|api.?key|credential/i;
@@ -33,6 +122,10 @@
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, ' ')
       .trim();
+  }
+
+  function providerDefinition(providerId) {
+    return PROVIDER_CATALOG.find((provider) => provider.id === providerId) || null;
   }
 
   function sourceId(field) {
@@ -109,19 +202,24 @@
     Object.keys(input).forEach((key) => {
       if (FORBIDDEN_CONFIG_KEYS.test(key)) throw new Error('Credentials and tokens must never be stored in the extension.');
     });
-    const formId = Number(input.formId);
+    const provider = String(input.provider || 'apricot360').trim();
+    const providerInfo = providerDefinition(provider);
+    if (!providerInfo) throw new Error('Choose a supported data-source type.');
+    const sourceId = String(input.sourceId ?? input.formId ?? '').trim();
     const connectionId = String(input.connectionId || '').trim();
     const organizationName = String(input.organizationName || '').trim();
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{1,79}$/.test(connectionId)) throw new Error('Enter a valid connection ID.');
     if (!organizationName) throw new Error('Enter the organization name.');
-    if (!Number.isInteger(formId) || formId < 1) throw new Error('Enter a positive Apricot form ID.');
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,119}$/.test(sourceId)) throw new Error(`Enter a valid ${providerInfo.sourceLabel.toLowerCase()}.`);
+    if (provider === 'apricot360' && (!/^\d+$/.test(sourceId) || Number(sourceId) < 1)) throw new Error('Enter a positive Apricot form ID.');
     return {
       mode: 'managed',
-      provider: 'apricot360',
+      provider,
       backendUrl: validateBackendUrl(input.backendUrl),
       connectionId,
       organizationName,
-      formId,
+      sourceId,
+      formId: provider === 'apricot360' ? Number(sourceId) : undefined,
       mappings: Object.fromEntries(Object.entries(input.mappings || {}).filter(([key, value]) =>
         CANONICAL_FIELDS.some((field) => field.key === key) && String(value || '').trim()).map(([key, value]) => [key, String(value)])),
       mappingVersion: Number(input.mappingVersion) || 1,
@@ -135,7 +233,7 @@
     const known = new Set(fields.map((field) => field.id));
     const selected = Object.values(config.mappings);
     if (selected.length < 2) throw new Error('Map at least two labeled source fields before saving.');
-    if (new Set(selected).size !== selected.length) throw new Error('Each Apricot field can map to only one destination field.');
+    if (new Set(selected).size !== selected.length) throw new Error('Each source field can map to only one destination field.');
     const unknown = selected.find((id) => !known.has(id));
     if (unknown) throw new Error(`Mapped field ${unknown} is not present in the confirmed schema.`);
     return config;
@@ -185,7 +283,8 @@
           provider: config.provider,
           connectionId: config.connectionId,
           organizationName: config.organizationName,
-          formId: config.formId,
+          sourceId: config.sourceId,
+          ...(config.formId ? { formId: config.formId } : {}),
           retrievedAt,
           sourceModifiedAt,
           stale,
@@ -203,9 +302,11 @@
 
   const api = {
     CANONICAL_FIELDS,
+    PROVIDER_CATALOG,
     mapRecord,
     normalize,
     normalizeSchemaFields,
+    providerDefinition,
     sanitizeConfig,
     suggestMappings,
     validateBackendUrl,
