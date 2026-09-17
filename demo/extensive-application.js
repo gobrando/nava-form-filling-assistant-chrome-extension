@@ -3,7 +3,6 @@
 
   const params = new URLSearchParams(location.search);
   const step = Math.min(6, Math.max(1, Number(params.get('step')) || 1));
-  const autoRun = params.get('autorun') === '1';
   const form = document.getElementById('application-form');
   const output = document.getElementById('test-output');
   const historyKey = 'nava:extensive-fixture-history';
@@ -16,53 +15,6 @@
     'Income and expenses',
     'Review and submit',
   ];
-  const participant = {
-    record_id: '339619',
-    participant: {
-      name: { first: 'Celeste', middle: 'NAVA', last: 'Thomas II' },
-      date_of_birth: '2000-01-02',
-      ssn: '123-45-6789',
-      gender: 'Female',
-      ethnicity: 'Hispanic/Latino',
-      primary_language: 'English',
-      marital_status: 'Single',
-      special_needs: false,
-      farm_worker: false,
-      pregnant: false,
-      housing_status: 'Stable housing',
-    },
-    contact_information: {
-      preferred_method: 'Email',
-      phones: { cell: '777-777-7777' },
-      email: 'testnava@email.com',
-    },
-    address: {
-      residential: {
-        street: '5556 Test Blvd',
-        unit: 'Apt 556',
-        city: 'WILDOMAR',
-        state: 'California',
-        county: 'Riverside',
-        zip: '92595',
-        country: 'United States',
-      },
-      mailing: {
-        street: '5556 Test Blvd',
-        unit: 'Apt 556',
-        city: 'WILDOMAR',
-        state: 'California',
-        county: 'Riverside',
-        zip: '92595',
-        country: 'United States',
-      },
-    },
-    householdSize: '3',
-    immigrationStatus: 'U.S. citizen',
-    income: '1850',
-    childcare: true,
-    unemployment: false,
-  };
-
   const yesNo = (name, question) => `
     <fieldset>
       <legend>${question}</legend>
@@ -126,7 +78,7 @@
       <button type="button" data-next>Continue</button>`,
     6: `
       <div class="intro"><p class="eyebrow">Step 6</p><h1>Review and submit</h1><p>The assistant must stop here for human review.</p></div>
-      <div class="notice"><strong>28 source-backed fields completed.</strong><p>Review every answer before certification.</p></div>
+      <div class="notice"><strong id="completion-summary">No field history is available yet.</strong><p>Review every answer before certification.</p></div>
       <label class="inline"><input type="checkbox" id="certify"> I certify that the information is correct.</label>
       <button type="submit">Submit application</button>
       <p id="result" role="status"></p>`,
@@ -138,6 +90,12 @@
 
   function renderHistory() {
     const entries = history();
+    const completed = entries.reduce((sum, item) => sum + Number(item.completed || 0), 0);
+    const total = entries.reduce((sum, item) => sum + Number(item.fields || 0), 0);
+    const completionSummary = document.getElementById('completion-summary');
+    if (completionSummary) {
+      completionSummary.textContent = `${completed} of ${total || 28} fixture fields recorded across ${entries.length} of 5 data-entry pages.`;
+    }
     output.textContent = entries.length
       ? `${entries.map((item) => `Page ${item.step}: ${item.completed}/${item.fields} completed${item.missing?.length ? ` · missing ${item.missing.join(', ')}` : ''}`).join('\n')}\nFinal submission remains human-controlled.`
       : 'Waiting for the Chrome extension…';
@@ -174,21 +132,4 @@
     document.getElementById('result').textContent = 'Fixture only: nothing was submitted.';
   });
 
-  async function exercisePage() {
-    const scan = await globalThis.NavaPageAgentTestApi.scan(participant);
-    const fill = await globalThis.NavaPageAgentTestApi.fill(scan.analysis.assignments);
-    document.body.dataset.testResult = `${fill.blockedCount === 0 ? 'verified' : 'blocked'}:${fill.navigationGate.kind}`;
-    if (fill.blockedCount > 0) throw new Error(`${fill.blockedCount} field writes were blocked.`);
-    if (fill.navigationGate.kind === 'next') {
-      setTimeout(() => globalThis.NavaPageAgentTestApi.advance(), 250);
-      return;
-    }
-    if (fill.navigationGate.kind !== 'final_review') throw new Error(`Unexpected final gate: ${fill.navigationGate.kind}`);
-    renderHistory();
-  }
-
-  if (autoRun) exercisePage().catch((error) => {
-    document.body.dataset.testResult = 'error';
-    output.textContent = error.message;
-  });
 })();

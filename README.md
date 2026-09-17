@@ -1,16 +1,10 @@
 # Nava Form-Filling Assistant — Chrome prototype
 
-[![Watch the Nava assistant complete a six-page benefits application and stop at final review](docs/assets/nava-form-filling-assistant-demo-poster.png)](docs/assets/nava-form-filling-assistant-demo.mp4)
-
-▶ **[Watch the full Screen Studio product demo](docs/assets/nava-form-filling-assistant-demo.mp4)** — a fictional Apricot-shaped client record, 28 verified fields across six pages, and an automatic stop before certification or submission.
-
-The recording uses fictional, local-only data. The assistant never checks the certification box or activates **Submit application**.
-
 This is a loadable Manifest V3 Chrome extension that adapts Foad's `form-completion` skill to Jillian's side-panel design.
 
-It is a working local prototype, not a production deployment. It can connect to a read-only organization data service, map labeled source fields, import a client or business document, inspect an application, ask for missing answers, fill and verify approved multi-page flows, and show one provenance review. It has no submit command.
+It is a working local prototype, not a production deployment. It implements flows for a read-only organization data service, labeled source mapping, client or business document import, application inspection, missing-answer collection, approved multi-page filling, readback verification, and provenance review. It has no submit command.
 
-> **Evidence boundary:** the current build autonomously completed a six-page local benefits fixture through final review with 28 of 28 source-backed fields verified. It has not been connected to a production Apricot tenant or completed a live BenefitsCal application in a sanctioned test environment. Use only fictional or approved test data. See [production-readiness evidence](docs/PRODUCTION_READINESS.md).
+> **Evidence boundary:** the field-mapping engine has 28-of-28 synthetic source-field coverage, and the extension code path for the local fixtures uses the real scan/fill/navigation messages. The fixtures contain no client record and no embedded autofill runner. A fresh installed-extension end-to-end run is still required after loading this version. This build has not been connected to a production Apricot tenant or completed a live BenefitsCal, IHSS, or WIC application in a sanctioned test environment. Use only fictional or approved test data. See [production-readiness evidence](docs/PRODUCTION_READINESS.md).
 
 ## What is implemented
 
@@ -25,11 +19,12 @@ It is a working local prototype, not a production deployment. It can connect to 
 - A hard credential boundary. Chrome accepts only an organization label, HTTPS service URL, opaque connection ID, form ID, reviewed mappings, and freshness policy. Provider secrets stay server-side.
 - One session-only client record shared across application tabs.
 - One writer per tab. Each application is tracked independently.
+- Selecting several known applications opens their tabs and immediately starts up to three independent runs. CalFresh, Medi-Cal, and CalWORKs are grouped into one BenefitsCal workflow because BenefitsCal collects those program selections in a single application.
 - Guided multi-page completion for approved site playbooks. The runner keeps the client record loaded, fills each page, reads every write back, and activates only exact safe continuation labels such as **Begin**, **Next**, or **Save and continue**.
-- Cross-page progress history, loop detection, a 12-page safety ceiling, and automatic pauses when a field needs direct help.
+- Cross-page progress history, loop detection, playbook-specific page limits capped at 60, and automatic pauses when a field needs direct help.
 - A durable multi-application work queue with stable workflow IDs, explicit checkpoints, tab-closure recovery, and restart-safe progress metadata.
 - Verified resume: the assistant rescans the live tab and compares its URL and page signature before it permits another write.
-- Caseworker/team ownership, pending and accepted handoffs, and a short per-application lease that prevents two assistant windows from writing to the same workflow at once.
+- Caseworker/team ownership, pending and accepted handoffs, and a service-worker-coordinated per-application lease designed to prevent two assistant windows from writing to the same workflow at once. A two-panel Chrome validation is still pending.
 - A value-free activity log for scan, fill, verification, safe navigation, pause, resume, handoff, review, and tab-closure events. Caseworkers can export it as JSON.
 - A hard final-action boundary: certification, attestation, signature, Finish, Complete, Apply, and Submit controls are never activated.
 - Live field inventory using labels, ARIA text, autocomplete, field types, required markers, options, masks, and maxlength.
@@ -63,16 +58,18 @@ python3 -m http.server 4173
 
 Then open `http://localhost:4173/demo/demo-form.html`, open the extension, and use demo client ID `339619`. The demo's submit button never sends anything.
 
-The automated three-page DOM fixture runs at:
+These pages contain no self-fill logic. Any automated scanning, typing, verification, or navigation shown in a demo must originate from the installed extension. On the trusted localhost multi-page fixtures, presentation mode highlights and scrolls each field long enough to make individual writes visible, then waits for page-level validation before continuation. This is demo pacing, not a production-duration estimate.
+
+The passive three-page DOM fixture is available at:
 
 ```text
-http://localhost:4173/demo/multi-page.html?step=1&autorun=1
+http://localhost:4173/demo/multi-page.html?step=1
 ```
 
 The extensive six-page, 28-field validation flow runs at:
 
 ```text
-http://localhost:4173/demo/extensive-application.html?step=1&autorun=1&reset=1
+http://localhost:4173/demo/extensive-application.html?step=1&reset=1
 ```
 
 To preview only the side-panel UI without loading the extension, serve the extension root and open:
@@ -89,7 +86,7 @@ The repository includes a provider-neutral extension contract and a loopback-onl
 npm run connector:mock
 ```
 
-In the extension, select **Connect**, then configure:
+In the extension, choose **Connect an organization database**, select **Bonterra Apricot 360**, then configure:
 
 ```text
 Organization: Riverside Community Services
@@ -123,10 +120,10 @@ Run `npm run eval:extraction` to reproduce the published [quality report](evalua
 
 ## Resumable work queues and handoff
 
-Version 0.7 retains the version 0.6 privacy boundary between short-lived client values and durable operational state:
+Version 0.8 retains the privacy boundary between short-lived client values and durable operational state:
 
 - Participant values, document proposals, raw page signatures, and full page URLs remain in `chrome.storage.session` and expire with the browser session.
-- `chrome.storage.local` retains only sanitized queue metadata: workflow ID, application label, origin, status, progress counts, checkpoint, owner/handoff state, tab ID, timestamps, and opaque checksums of the saved path and page signature.
+- `chrome.storage.local` retains only sanitized queue metadata: workflow/program IDs, application label, approved origin and catalog route prefixes, status, progress counts, checkpoint, owner/handoff state, tab ID, timestamps, and opaque checksums of the saved location and page signature.
 - Closing a tab creates a recoverable checkpoint. Restarting Chrome preserves the queue, but the assistant requires the caseworker to reload the authorized source record before resuming because participant values were intentionally not retained.
 - Resume always performs a read-only live scan first. A changed location, changed page signature, stale source, expired source, unaccepted handoff, or missing tab blocks writes.
 - CAPTCHA, one-time codes, direct-entry fields, certification, signature, and final review are named checkpoints rather than background automation steps.
@@ -135,7 +132,7 @@ The current handoff is a same-Chrome-profile workflow and ownership prototype. I
 
 ## Production integration boundary
 
-Version 0.7 implements the extension half of a provider-neutral managed connector, bounded local OCR, an extraction-quality gate, an extensive synthetic benefits-flow test, and a resumable metadata-only work queue. It ships a fictional loopback connector service for contract testing, not a production credential broker, organization-authentication service, provider network, or cross-device queue backend.
+Version 0.8 implements the extension half of a provider-neutral managed connector, bounded local OCR, an extraction-quality gate, passive synthetic benefits fixtures, and a resumable metadata-only work queue. It ships a fictional loopback connector service for contract testing, not a production credential broker, organization-authentication service, provider network, or cross-device queue backend.
 
 - `background.js` uses credentialed, read-only `GET` requests to the configured Nava connector service. It does not call Apricot directly.
 - `shared/connector-engine.js` accepts only labeled schema fields, rejects secret-like configuration, requires HTTPS outside localhost, and will not infer meaning from an opaque source field ID.
@@ -151,7 +148,9 @@ The browser extension also cannot produce genuinely trusted hardware keystrokes.
 - Human checkpoints—including CAPTCHA, one-time codes, certifications, signatures, and the final submission—always pause the run.
 - It scans the top document, not cross-origin frames or closed shadow roots.
 - Playbook signals identify known sites and known freshness fields; the live DOM scan remains authoritative for every write.
-- Opening known applications is implemented. Background parallel autonomous agents are not: local Chrome tabs share a human browser and extension service worker, so this build enforces one writer per tab instead.
+- Known applications start automatically after their tabs open, with up to three tab-bound runs in parallel. The side panel must stay open during an active run; moving runner execution into a durable service-worker or authenticated server job is still required for close-the-panel-and-return-later operation.
+- A run proceeds only while required answers are present and an allowlisted continuation control is visible. The runner is designed to pause on WIC and IHSS application-specific questions, CAPTCHA, or affirmation checkpoints that the generic record cannot answer rather than pretending to have reached review; this behavior still needs an installed-extension validation on those live flows.
+- Live validation in this repository is limited to route and public-page compatibility. There has been no sanctioned, end-to-end production application run and no real applicant data should be entered for testing.
 - Handoff metadata is local to one Chrome profile. It demonstrates the ownership and acceptance flow but is not an authenticated cross-device assignment system.
 - The included connector server is a fictional loopback fixture. A real organization still needs the Nava-controlled service, provider partnership/access, authentication, security review, and data-processing controls.
 - Provider selection is not the same as a live connection. Only the fictional Apricot-shaped adapter is runnable in this repository; all other listed systems require authorized backend adapters and sandbox validation.

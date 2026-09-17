@@ -7,6 +7,10 @@ const sample = {
   id: 'workflow:abc',
   name: 'Benefits application — Maria Santos',
   queueLabel: 'California benefits application',
+  workflowId: 'benefitscal',
+  programIds: ['calfresh', 'medical'],
+  allowedOrigins: ['https://benefitscal.com'],
+  allowedPathPrefixes: ['/ApplyForBenefits/'],
   url: 'https://benefitscal.com/ApplyForBenefits/step?record=123-45-6789#client',
   tabId: 42,
   status: 'needs_attention',
@@ -22,14 +26,54 @@ test('durable queue strips participant values, URL queries, and raw page signatu
   const serialized = JSON.stringify(durable);
   assert.equal(durable.name, 'California benefits application');
   assert.equal(durable.location, 'https://benefitscal.com');
+  assert.equal(durable.workflowId, 'benefitscal');
+  assert.deepEqual(durable.programIds, ['calfresh', 'medical']);
+  assert.deepEqual(durable.allowedOrigins, ['https://benefitscal.com']);
+  assert.deepEqual(durable.allowedPathPrefixes, ['/ApplyForBenefits/']);
   assert.match(durable.resumePoint.locationHash, /^fnv1a32:/);
   assert.match(durable.resumePoint.pageSignatureHash, /^fnv1a32:/);
   assert.doesNotMatch(serialized, /123-45-6789|secret-field-value|Maria Santos|"provenance"/);
   assert.equal(durable.completedPages, 1);
 });
 
+test('durable queue preserves missing versus intentionally empty program metadata', () => {
+  const missingPrograms = { ...sample };
+  delete missingPrograms.programIds;
+  const missingDurable = queue.durableApplication(missingPrograms);
+  const emptyDurable = queue.durableApplication({ ...sample, programIds: [] });
+
+  assert.equal(Object.prototype.hasOwnProperty.call(missingDurable, 'programIds'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(emptyDurable, 'programIds'), true);
+  assert.deepEqual(emptyDurable.programIds, []);
+});
+
+test('legacy BenefitsCal queues with unknown programs pause for reselection', () => {
+  const legacySaved = queue.durableApplication(sample);
+  delete legacySaved.workflowId;
+  delete legacySaved.programIds;
+  const legacySession = { ...sample, status: 'ready_to_fill', autoRun: true, checkpoint: null };
+  const restored = queue.restoreApplications({ version: 1, applications: [legacySaved] }, [legacySession]);
+
+  assert.equal(restored[0].status, 'paused');
+  assert.equal(restored[0].autoRun, false);
+  assert.equal(restored[0].programSelectionRequired, true);
+  assert.equal(Object.prototype.hasOwnProperty.call(restored[0], 'programIds'), false);
+  assert.equal(restored[0].checkpoint.kind, 'human_input');
+  assert.match(restored[0].error, /BenefitsCal programs/);
+});
+
+test('explicitly empty BenefitsCal selection remains known during restore', () => {
+  const durable = queue.buildQueue([{ ...sample, programIds: [] }]);
+  const restored = queue.restoreApplications(durable, [{ ...sample, programIds: ['calfresh'], autoRun: true }]);
+
+  assert.deepEqual(restored[0].programIds, []);
+  assert.equal(restored[0].programSelectionRequired, undefined);
+  assert.equal(restored[0].status, sample.status);
+});
+
 test('restart recovery preserves queue metadata but marks source data expired', () => {
   const durable = queue.buildQueue([sample]);
+  assert.equal(durable.version, 2);
   const restored = queue.restoreApplications(durable, []);
   assert.equal(restored.length, 1);
   assert.equal(restored[0].status, 'source_expired');

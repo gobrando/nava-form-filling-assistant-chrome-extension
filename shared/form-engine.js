@@ -31,6 +31,7 @@
     businessCity: 'Business city', businessState: 'Business state', businessPostalCode: 'Business ZIP code',
     businessPhone: 'Business phone', businessEmail: 'Business email',
     incorporationDate: 'Formation date', stateOfFormation: 'State of formation',
+    applyCalFresh: 'Apply for CalFresh', applyMediCal: 'Apply for Medi-Cal', applyCalWORKs: 'Apply for CalWORKs',
   };
 
   const DO_NOT_DERIVE = new Set([
@@ -137,6 +138,9 @@
       income: firstValue(record, ['income', 'monthlyIncome', 'monthly_income']),
       childcare: firstValue(record, ['childcare', 'paysForChildcare', 'pays_for_childcare']),
       unemployment: firstValue(record, ['unemployment', 'appliedForUnemployment', 'applied_for_unemployment']),
+      applyCalFresh: firstValue(record, ['applicationSelection.calfresh']),
+      applyMediCal: firstValue(record, ['applicationSelection.medical']),
+      applyCalWORKs: firstValue(record, ['applicationSelection.calworks']),
       mailingDifferent: sameAddress(residential, mailing) === undefined
         ? undefined
         : !sameAddress(residential, mailing),
@@ -179,6 +183,9 @@
 
     if (signal === 'ein' || has('employer identification', 'federal tax id', 'federal tax identification', 'business tax id')) return 'ein';
     if (signal === 'ssn' || has('social security', ' ssn', 'ssn ')) return 'ssn';
+    if (has('calfresh', 'cal fresh')) return 'applyCalFresh';
+    if (has('medi cal', 'medi-cal', 'medical benefits')) return 'applyMediCal';
+    if (has('calworks', 'cal works')) return 'applyCalWORKs';
     if (has('doing business as', ' dba', 'dba ')) return 'dba';
     if (has('business legal name', 'legal business name', 'company legal name', 'business name', 'company name')) return 'businessName';
     if (has('entity type', 'business type', 'legal structure')) return 'businessType';
@@ -299,7 +306,7 @@
       detail = 'Street and apartment are combined because the form has one address box';
     }
 
-    if (['specialNeeds', 'farmWorker', 'pregnant', 'childcare', 'unemployment', 'mailingDifferent'].includes(purpose)) {
+    if (['specialNeeds', 'farmWorker', 'pregnant', 'childcare', 'unemployment', 'mailingDifferent', 'applyCalFresh', 'applyMediCal', 'applyCalWORKs'].includes(purpose)) {
       value = booleanWord(rawValue);
     }
 
@@ -351,6 +358,16 @@
       const members = fields
         .map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
         .filter(({ candidate }) => candidate.type === field.type && candidate.groupKey === field.groupKey);
+      const checkboxBooleanChoice = field.type === 'checkbox'
+        && members.length === 2
+        && members.every(({ candidate }) => /^(yes|no|y|n|true|false)$/i.test(normalize(candidate.optionLabel || candidate.label)));
+      if (field.type === 'checkbox' && members.length > 1 && !checkboxBooleanChoice) {
+        members.forEach(({ candidate, candidateIndex }) => {
+          consumed.add(candidateIndex);
+          result.push({ ...candidate, groupKey: '' });
+        });
+        return;
+      }
       members.forEach(({ candidateIndex }) => consumed.add(candidateIndex));
       if (members.length === 1 && field.type === 'checkbox') {
         result.push(field);

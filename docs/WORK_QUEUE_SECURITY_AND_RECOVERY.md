@@ -1,6 +1,6 @@
 # Work-queue security and recovery
 
-Version 0.6 adds resumable multi-application work and a same-Chrome-profile caseworker handoff prototype. This document defines what survives interruption, what must expire, and which checks run before filling resumes.
+Version 0.8 includes resumable multi-application work and a same-Chrome-profile caseworker handoff prototype. This document defines what survives interruption, what must expire, and which checks run before filling resumes.
 
 ## Storage boundary
 
@@ -9,7 +9,7 @@ Version 0.6 adds resumable multi-application work and a same-Chrome-profile case
 | Participant and business values | `chrome.storage.session` | Current browser session |
 | Parsed document proposals and provenance | `chrome.storage.session` after import; raw file is never stored | Current browser session |
 | Live field inventory, assignments, and verification results | `chrome.storage.session` | Current browser session |
-| Workflow ID, application label and origin, status, bounded progress counts, checkpoint, owner/handoff, tab ID, timestamps | `chrome.storage.local` | Until the caseworker ends or clears the session |
+| Workflow ID, program IDs, application label, approved origin and catalog route prefixes, status, bounded progress counts, checkpoint, owner/handoff, tab ID, timestamps | `chrome.storage.local` | Until the caseworker ends or clears the session |
 | Full URL path and query, raw page signature | Not stored durably | Live/session memory only |
 | Opaque checksums of normalized origin/path and page signature | `chrome.storage.local` | Same as queue metadata |
 | Audit event type, timestamp, workflow ID, approved enum details, bounded counts | `chrome.storage.local`; optional JSON export | Same as queue metadata or organization policy |
@@ -34,7 +34,7 @@ CAPTCHA, incomplete one-time codes, direct-entry fields, missing answers, certif
 
 ## Ownership and concurrency
 
-A handoff records a caseworker/team label, a constrained reason, creation time, and acceptance time. The recipient must accept before resume. A short renewable lease prevents two extension panels in the same Chrome profile from writing to one application simultaneously; an expired lease can be reclaimed after interruption.
+A handoff records a caseworker/team label, a constrained reason, creation time, and acceptance time. The recipient must accept before resume. Installed mode gives each loaded client an exclusive session token and each application a generation, revision, and central write lease. The service worker validates those values and starts the document-bound tab command in one serialized operation; a pause that wins the race prevents dispatch, while a pause after dispatch sends a cancellation command. Application-scoped reconciliation leaves unrelated workers running. Deterministic coordinator tests cover these races and lease expiry/release, but a two-panel installed-browser exercise is still pending.
 
 This is not cross-device identity or authorization. Production handoff requires an authenticated organization queue service with server-enforced leases, role-based access, assignment visibility, revocation, immutable audits, and PII-free notifications.
 
