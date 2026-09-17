@@ -45,6 +45,17 @@ body {
   overflow-anchor: none;
 }
 
+.preview-banner {
+  padding: 8px 14px;
+  border-bottom: 1px solid #d79b51;
+  background: #fff4db;
+  color: #6d450f;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.35;
+  text-align: center;
+}
+
 button,
 input,
 select,
@@ -493,6 +504,26 @@ textarea {
   background: var(--canvas);
 }
 
+button.connector-status {
+  width: 100%;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+button.connector-status:hover {
+  border-color: var(--plum);
+  background: var(--plum-wash);
+}
+
+.connector-status-action {
+  color: var(--plum-dark);
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
 .connector-status.connected,
 .connector-summary {
   border-color: #bcd3c3;
@@ -530,8 +561,82 @@ textarea {
   font-size: 11px;
 }
 
-.connector-status .link-button {
+.provider-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.provider-card {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 42px minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--white);
+  cursor: pointer;
+  text-align: left;
+}
+
+.provider-card:hover {
+  border-color: var(--plum);
+  background: var(--plum-wash);
+}
+
+.provider-card:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+  background: #faf8fa;
+}
+
+.provider-card:disabled:hover {
+  border-color: var(--line);
+  background: #faf8fa;
+}
+
+.provider-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--plum-light);
+  color: var(--plum-dark);
   font-size: 12px;
+  font-weight: 850;
+}
+
+.provider-copy strong,
+.provider-copy small {
+  display: block;
+}
+
+.provider-copy small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.readiness-chip {
+  max-width: 110px;
+  padding: 4px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.readiness-chip.demo-tested {
+  background: var(--success-light);
+  color: var(--success);
+}
+
+.readiness-chip.adapter-required {
+  background: var(--warning-light);
+  color: var(--warning);
 }
 
 .connector-form {

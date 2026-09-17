@@ -1,6 +1,6 @@
 # Test report
 
-Date: 2026-09-16
+Date: 2026-09-17
 
 ## Automated checks
 
@@ -11,7 +11,7 @@ npm run check
 npm test
 ```
 
-The 49-test suite covers canonical client and business records, field mapping and formatting, masked-value verification, document and OCR extraction, OCR resource budgets and default-review behavior, bundled-parser and storage boundaries, provider-neutral connector configuration, labeled-schema mapping, source provenance/freshness, Manifest V3 configuration, and the no-submit contract. It also verifies the connector's read-only boundary, the multi-page runner's allowlisted continuation, OTP/CAPTCHA checkpoints, restart recovery, tab closure, changed-page rejection, stale/expired sources, pending handoffs, competing leases, durable metadata sanitization, value-free audit export, the provider catalog, and a 28-field extensive benefits flow.
+The 79-test suite exercises mapping, parsing, connector, queue, and recovery logic; deterministically tests exclusive client sessions, per-application revisions and leases, sibling-safe partial persistence during an in-flight command, revoke/command ordering, tab closure, and connector invalidation; and checks safety invariants around the no-submit boundary, bounded fill batches, document-bound messaging, allowlisted continuation, OTP/CAPTCHA checkpoints, provider grouping/current routes, and the passive 28-field fixture. A VM harness runs the real content-agent fill path and confirms that benign help text stays valid while a delayed 900 ms value reversion or asynchronous invalid state is blocked. The suite does not run an installed Chrome extension, visual pacing, live-site filling, or real parallel tabs; those require the installed-extension rerun described below.
 
 ## Resumable queue and handoff walkthrough
 
@@ -24,7 +24,7 @@ Chrome ran the regular-page queue preview on 2026-09-15:
 5. Simulated an expired browser session. The durable queue retained both workflows and progress, but the BenefitsCal card exposed only **Reload client data** rather than a fill or resume action.
 6. The browser console reported no errors during the resume, accept, handoff, or recovery flows.
 
-Unit tests additionally confirm that the durable payload contains no participant values, raw paths/query strings, or raw page signatures; an active lease blocks a second assistant panel; and expired leases can be safely reclaimed.
+Unit tests additionally confirm that the durable payload contains no participant values, raw paths/query strings, or raw page signatures. Deterministic service-worker tests cover exclusive participant claims, stale session clears, per-application compare-and-swap revisions, lease ownership/release, command-versus-revoke ordering, tab closure, participant updates, and connector invalidation. A two-panel installed-browser concurrency exercise is still pending.
 
 ## OCR and extraction-quality gate
 
@@ -52,7 +52,7 @@ Chrome loaded the regular-page preview with the bundled worker, WebAssembly core
 
 ## Self-service connector walkthrough
 
-Chrome ran the regular-page side-panel preview against the fictional Apricot-shaped connector fixture on 2026-09-16:
+Chrome ran the regular-page side-panel preview's simulated connector UI on 2026-09-16. Preview mode did not contact the loopback service:
 
 1. Opened **Connect a client data source**, confirmed the eight-provider catalog, and supplied the loopback service URL, opaque connection ID, form/resource key, organization label, and 30-day freshness window.
 2. Loaded 28 labeled fields from Apricot form `99`; numeric IDs were normalized to explicit `field_###` source keys.
@@ -61,52 +61,57 @@ Chrome ran the regular-page side-panel preview against the fictional Apricot-sha
 5. Retrieved fictional record `339619`, reviewed all 28 mapped values with their source labels/IDs and freshness, and explicitly confirmed the import.
 6. Reached program selection with the normalized Celeste record, organization provenance, and retrieval timestamp intact.
 
-The mock service was also probed directly for health, schema, and record responses. It returned 28 schema fields and 28 record values, binds only to `127.0.0.1`, rejects non-GET methods with HTTP 405, contains no credentials, and sends `Cache-Control: no-store`.
+Separately, the mock service was probed directly for health, schema, and record responses. It returned 28 schema fields and 28 record values, binds only to `127.0.0.1`, rejects non-GET methods with HTTP 405, contains no credentials, and sends `Cache-Control: no-store`. These two checks validate the UI state machine and service contract independently; they do not constitute an installed-extension network walkthrough.
+
+On 2026-09-17, the updated preview also confirmed that all eight provider cards are keyboard-reachable and open the provider-neutral setup form. Non-Apricot providers are labeled **Provisioned Nava adapter required** rather than pretending that an adapter ships in this repository. The header Home control returned from that setup screen immediately. A separate preview opened the OCR fixture, activated Home while OCR was still running, waited 4.5 seconds, and remained on Home after the OCR result completed; the cancelled operation did not replace the screen.
 
 ## Six-page extensive browser fixture
 
-Chrome ran `demo/extensive-application.html?step=1&autorun=1&reset=1` with the fictional Celeste record. It autonomously advanced across five data-entry pages, retained the record without reloading, and stopped at page six for human review.
+The fixture is now deliberately passive at `demo/extensive-application.html?step=1&reset=1`. It contains no participant record, form engine, page agent, or URL-triggered autofill routine. Any automated scan, fill, verification, or advance shown on it must come from the installed extension. Presentation mode scrolls to and highlights each field long enough to make individual writes visible, then waits for page-level validation before continuation. This is demo pacing, not a production-duration estimate.
 
-| Page | Result | Continuation decision |
+A Chrome regression check also opened the fixture with the obsolete `autorun=1` query, waited 2.2 seconds, and confirmed that all five page-one controls remained empty. That check demonstrates that the page cannot manufacture the prior instant-completion result; it does not replace the pending installed-extension run.
+
+| Page | Engine-covered fields | Fixture guard |
 | --- | --- | --- |
-| Applicant identity | 5 of 5 completed | Exact **Next** activated |
-| Contact and address | 9 of 9 completed | Exact **Save and continue** activated |
-| Demographics | 7 of 7 completed | Exact **Continue** activated |
-| Household | 4 of 4 completed | Exact **Next** activated |
-| Income and expenses | 3 of 3 completed | Exact **Continue** activated |
-| Review and submit | 28-field completion summary present | Stopped at final review |
+| Applicant identity | 5 of 5 mappings tested | Exact **Next** is an allowlisted fixture control |
+| Contact and address | 9 of 9 mappings tested | Exact **Save and continue** is allowlisted |
+| Demographics | 7 of 7 mappings tested | Exact **Continue** is allowlisted |
+| Household | 4 of 4 mappings tested | Exact **Next** is allowlisted |
+| Income and expenses | 3 of 3 mappings tested | Exact **Continue** is allowlisted |
+| Review and submit | 28-field summary is rendered from page storage | Certification and submission remain human-only |
 
-The run exposed and fixed a real classification defect caused by a `<select>` label concatenating its option text with “Gender.” A regression test now covers the corrected classification. The certification checkbox remained unchecked and **Submit application** was not activated.
+The mapping-engine regression test verifies all 28 source-backed values without inventions. The prior `autorun=1` evidence was removed because it exercised a fixture-local runner rather than proving that the installed extension performed the work. A fresh installed-extension browser run is required after reloading the unpacked extension; the certification checkbox and **Submit application** remain outside the extension's command set.
 
 ## Three-page browser fixture
 
-Chrome ran `demo/multi-page.html?step=1&autorun=1` with fictional Nava test record `339619` (Celeste NAVA Thomas II).
+The passive three-page fixture is available at `demo/multi-page.html?step=1`. Static safety tests confirm its exact safe continuation controls and final submit guard, and confirm it contains no embedded page agent or participant record.
 
-| Page | Result | Continuation decision |
+| Page | Expected extension writes | Fixture guard |
 | --- | --- | --- |
-| About the applicant | 4 of 4 writes verified | Exact **Next** activated |
-| Home address | 5 of 5 writes verified | Exact **Save and continue** activated |
-| Review and submit | 3 of 3 writes verified | Stopped at final review |
+| About the applicant | 4 mapped controls | Exact **Next** is allowlisted |
+| Home address | 5 mapped controls | Exact **Save and continue** is allowlisted |
+| Review and submit | 3 mapped controls | Submit and certification are never allowlisted |
 
-The certification checkbox remained a human-only control. The fixture's **Submit application** button was visible, but the page agent returned `final_review` and did not activate it.
-
-The side-panel preview independently completed the same three-page flow, retained one client record across all pages, archived per-page provenance, and produced one final review containing 12 verified values.
+The side-panel preview independently exercises the three-page state machine, retains one client record across pages, archives per-page provenance, and stops at final review. It is a UI/state-machine preview, not evidence about a live government form.
 
 ## Live BenefitsCal compatibility check
 
 BenefitsCal is an appropriate real-world target: the official portal supports applications for CalFresh, CalWORKs, Medi-Cal, and other California assistance programs. CDSS also directs applicants to BenefitsCal for online benefits applications.
 
-Read-only Chrome check on 2026-09-14:
+Read-only Chrome checks on 2026-09-17:
 
 1. Opened `https://benefitscal.com/` and selected **APPLY FOR BENEFITS**.
 2. Opened the public “Ready to do this? Here's how it works” page and selected **BEGIN**.
 3. Inspected the public **Helpful Tips** page. It displays an exact **Next** button and tells applicants that clicking Next saves their information.
 4. Followed that public navigation to the **Diversity, Equity, and Inclusion Statement**, which again exposes an exact **Next** button.
-5. Stopped without entering participant data, accepting an attestation, creating an account, or submitting an application.
+5. Continued through the public Statement of Non-Discrimination and navigation summary, where the site exposes **Start Your Information**, then reached language preferences.
+6. Loaded the current Riverside IHSS intake route at `https://riversideihss.org/IntakeApp`; the old `/Home/IHSS` route returned an error.
+7. Loaded the Riverside WIC form and confirmed that its `www`/apex redirect pair must both be approved.
+8. Stopped without entering participant data, accepting an attestation, solving a CAPTCHA, creating an account, or submitting an application.
 
-Observed checkpoint URL: `https://benefitscal.com/ApplyForBenefits/ABDEI`
+Observed BenefitsCal checkpoint URL: `https://benefitscal.com/ApplyForBenefits/ABLPR`
 
-This confirms the live host, the current public application landing route (`/ApplyForBenefits/begin/ABOVR`), and the exact **Begin**/**Next** labels used by the BenefitsCal playbook. It is not a claim that every current BenefitsCal question was filled in production; that requires a sanctioned test environment and non-production account/data.
+This confirms current public routes and the **Begin**, **Next**, and route-specific **Start Your Information** transitions used by the playbook. Some BenefitsCal transitions took roughly 12–15 seconds, so the runner now allows up to 60 seconds for a stable next page. It is not a claim that any live applicant question was filled correctly; that requires a sanctioned test environment and non-production account/data.
 
 References:
 
@@ -122,4 +127,4 @@ The extension can automate page-to-page continuation without automating legal as
 - the visible, enabled control's normalized label exactly matches the safe allowlist;
 - no CAPTCHA or equivalent human check is incomplete;
 - no final-review, certification, attestation, signature, or submit signal is present; and
-- the page signature has not already been visited and the run remains below 12 pages.
+- the page signature has not already been visited and the run remains below its playbook-specific limit, which is capped at 60 pages.

@@ -5,9 +5,12 @@
   const engine = globalThis.NavaFormEngine;
   const connectorEngine = globalThis.NavaConnectorEngine;
   const workQueueEngine = globalThis.NavaWorkQueueEngine;
+  const programCatalog = globalThis.NavaProgramCatalog;
   const previewMode = new URLSearchParams(location.search).get('preview') === '1'
     || !globalThis.chrome?.runtime?.id;
   const demoMode = new URLSearchParams(location.search).get('demo') === '1';
+  const previewBanner = document.getElementById('preview-banner');
+  if (previewBanner) previewBanner.hidden = !previewMode;
 
   const state = {
     view: 'choice',
@@ -24,11 +27,34 @@
     pendingConnectorRecord: null,
     audit: [],
     handoffApplicationId: null,
+    sessionEpoch: 0,
+    participantSessionId: '',
+    coordinatorRevision: 0,
     workerId: globalThis.crypto?.randomUUID?.() || `panel-${Date.now()}-${Math.random().toString(36).slice(2)}`,
   };
 
-  const MAX_AUTOMATED_PAGES = 12;
+  const MAX_AUTOMATED_PAGES = 60;
+  const DEFAULT_AUTOMATED_PAGES = 12;
+  const MAX_PARALLEL_APPLICATIONS = 3;
+  const TAB_READY_TIMEOUT_MS = 60_000;
+  const NAVIGATION_TIMEOUT_MS = 60_000;
+  const APPLICATION_LEASE_MS = 2 * 60 * 1000;
   const QUEUE_STORAGE_KEY = 'nava:work-queue';
+  const COORDINATOR_STORAGE_KEY = 'nava:assistant-coordinator';
+  const activeRunTokens = new Map();
+  let sessionGeneration = 0;
+  let uiGeneration = 0;
+  let persistChain = Promise.resolve();
+  let coordinatorMutationDepth = 0;
+  let coordinatorSyncPending = false;
+  let coordinatorSyncPromise = null;
+  let pendingCoordinatorSnapshot = null;
+  let automaticWorkersActive = 0;
+  const pendingApplicationSyncIds = new Set();
+  const leaseRetryTimers = new Map();
+  const coordinatorRetryIds = new Set();
+  const automaticRunQueue = [];
+  const queuedAutomaticApplicationIds = new Set();
 
   const DEMO_RECORDS = {
     '339619': {
@@ -190,15 +216,23 @@
     return String(config?.sourceId ?? config?.formId ?? '');
   }
 
+  function providerInitials(name) {
+    return (String(name).match(/[A-Za-z0-9]+/g) || [])
+      .slice(0, 2)
+      .map((word) => word[0])
+      .join('')
+      .toUpperCase();
+  }
+
   function renderConnectorStatus() {
     const managed = managedConnector();
     const mapped = Object.keys(state.connector?.mappings || {}).length;
     return `
-      <div class="connector-status ${managed ? 'connected' : ''}">
+      <button class="connector-status ${managed ? 'connected' : ''}" type="button" data-action="configure-connector">
         <span class="connector-status-icon" aria-hidden="true">${managed ? '✓' : 'DB'}</span>
-        <span><strong>${escapeHtml(connectorTitle())}</strong><small>${managed ? `${escapeHtml(connectorProvider().name)} · ${mapped} mapped fields · read-only` : 'Bundled demo records · no external connection'}</small></span>
-        <button class="link-button" type="button" data-action="configure-connector">${managed ? 'Manage' : 'Connect'}</button>
-      </div>`;
+        <span><strong>${managed ? escapeHtml(connectorTitle()) : 'Connect an organization database'}</strong><small>${managed ? `${escapeHtml(connectorProvider().name)} · ${mapped} mapped fields · read-only` : 'Browse Apricot, Salesforce, HMIS, and other catalog sources'}</small></span>
+        <span class="connector-status-action">${managed ? 'Manage' : 'Choose'} <span aria-hidden="true">›</span></span>
+      </button>`;
   }
 
   function hostLabel(url) {
@@ -222,26 +256,310 @@
     return chrome.runtime.sendMessage(message);
   }
 
-  async function ensurePageAgent(tab) {
+  async function probeTabDocument(tabId) {
+    const [probe] = await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [0] },
+      func: () => ({ url: location.href, origin: location.origin, path: location.pathname }),
+    });
+    if (!probe?.documentId || !probe?.result?.url) {
+      throw new Error('The application page changed before the assistant could bind to it. Try again after it finishes loading.');
+    }
+    return probe;
+  }
+
+  function assertSameDocumentLocation(expectedUrl, observedUrl) {
+    if (commandLocation(expectedUrl) !== commandLocation(observedUrl)) {
+      throw new Error('The browser tab navigated before the assistant could safely read or write it. Review the current page and try again.');
+    }
+  }
+
+  async function ensurePageAgent(tab, documentId = null) {
     if (previewMode) return;
     if (!tab?.id || !/^https?:/i.test(tab.url || '')) {
       throw new Error('Open a regular website with a form, then try again. Chrome system pages cannot be filled.');
     }
+    const messageOptions = documentId ? { documentId } : undefined;
     try {
-      const pong = await chrome.tabs.sendMessage(tab.id, { type: 'NAVA_PING' });
+      const pong = await chrome.tabs.sendMessage(tab.id, { type: 'NAVA_PING' }, messageOptions);
       if (pong?.ok) return;
     } catch {
       await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
+        target: documentId ? { tabId: tab.id, documentIds: [documentId] } : { tabId: tab.id },
         files: ['shared/form-engine.js', 'content/form-agent.js'],
       });
     }
   }
 
-  async function sendToTab(tab, message) {
+  async function sendToTab(tab, message, { application = null, requireLease = false } = {}) {
     if (previewMode) return previewTabMessage(message);
-    await ensurePageAgent(tab);
-    return chrome.tabs.sendMessage(tab.id, message);
+    const probe = await probeTabDocument(tab.id);
+    assertSameDocumentLocation(tab.url, probe.result.url);
+    if (application) assertApprovedApplicationLocation(application, probe.result.url);
+    const boundTab = { ...tab, url: probe.result.url };
+    await ensurePageAgent(boundTab, probe.documentId);
+    const routePolicy = application ? {
+      origins: application.allowedOrigins?.length ? application.allowedOrigins : [urlOrigin(application.url)],
+      pathPrefixes: application.allowedPathPrefixes || [],
+      expectedPath: urlPath(probe.result.url),
+      expectedSearch: urlSearch(probe.result.url),
+      expectedHash: urlHash(probe.result.url),
+    } : {
+      origins: [urlOrigin(probe.result.url)],
+      exactPaths: [urlPath(probe.result.url)],
+      expectedPath: urlPath(probe.result.url),
+      expectedSearch: urlSearch(probe.result.url),
+      expectedHash: urlHash(probe.result.url),
+    };
+    const command = { ...message, routePolicy };
+    if (!application) {
+      return chrome.tabs.sendMessage(tab.id, command, { documentId: probe.documentId });
+    }
+    const response = await sendRuntime({
+      type: 'EXECUTE_APPLICATION_COMMAND',
+      tabId: tab.id,
+      documentId: probe.documentId,
+      command,
+      sessionEpoch: state.sessionEpoch,
+      participantSessionId: state.participantSessionId,
+      applicationId: application.id,
+      applicationGeneration: Number(application.controlGeneration || 0),
+      applicationRevision: Number(application.controlRevision || 0),
+      holder: state.workerId,
+      requireLease,
+    });
+    if (!response?.ok && response?.stale) {
+      cancelApplicationRun(application);
+      scheduleCoordinatorSync(application.id);
+      throw coordinatorStaleError(response.error);
+    }
+    return response;
+  }
+
+  function runCancelledError() {
+    const error = new Error('The automated run was stopped.');
+    error.name = 'RunCancelledError';
+    return error;
+  }
+
+  function coordinatorStaleError(message = 'This application run changed in another assistant window.') {
+    const error = new Error(message);
+    error.name = 'RunCancelledError';
+    return error;
+  }
+
+  function leaseConflictError(message = 'Another assistant window is already working on this application.', lease = null) {
+    const error = new Error(message);
+    error.name = 'LeaseConflictError';
+    error.lease = lease;
+    return error;
+  }
+
+  function uiCancelledError() {
+    const error = new Error('That screen was closed before the operation finished.');
+    error.name = 'UiCancelledError';
+    return error;
+  }
+
+  function cancelPendingUiWork() {
+    uiGeneration += 1;
+    return uiGeneration;
+  }
+
+  function assertUiGeneration(generation) {
+    if (generation !== uiGeneration) throw uiCancelledError();
+  }
+
+  async function beginApplicationRun(application, { uiBound = false } = {}) {
+    const requestedSessionGeneration = sessionGeneration;
+    const requestedSessionEpoch = state.sessionEpoch;
+    while (activeRunTokens.has(application.id)) {
+      const existing = activeRunTokens.get(application.id);
+      cancelApplicationRun(application);
+      await existing.settled;
+    }
+    if (requestedSessionGeneration !== sessionGeneration
+      || requestedSessionEpoch !== state.sessionEpoch
+      || !state.apps.some((item) => item.id === application.id)) {
+      throw runCancelledError();
+    }
+    let resolveSettled;
+    const settled = new Promise((resolve) => { resolveSettled = resolve; });
+    const token = {
+      id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+      sessionGeneration,
+      sessionEpoch: state.sessionEpoch,
+      applicationGeneration: Number(application.controlGeneration || 0),
+      uiBound,
+      cancelled: false,
+      settled,
+      resolveSettled,
+      settledResolved: false,
+    };
+    activeRunTokens.set(application.id, token);
+    return token;
+  }
+
+  function assertApplicationRun(application, token) {
+    if (!token) return;
+    const current = activeRunTokens.get(application.id);
+    if (token.cancelled
+      || token.sessionGeneration !== sessionGeneration
+      || token.sessionEpoch !== state.sessionEpoch
+      || token.applicationGeneration !== Number(application.controlGeneration || 0)
+      || current !== token
+      || !state.apps.some((item) => item.id === application.id)) {
+      throw runCancelledError();
+    }
+  }
+
+  function endApplicationRun(application, token) {
+    if (activeRunTokens.get(application.id) === token) activeRunTokens.delete(application.id);
+    if (!token.settledResolved) {
+      token.settledResolved = true;
+      token.resolveSettled();
+    }
+  }
+
+  async function withNewApplicationRun(application, action, options = {}) {
+    const requestedUiGeneration = uiGeneration;
+    const token = await beginApplicationRun(application, options);
+    if (options.uiBound && requestedUiGeneration !== uiGeneration) {
+      cancelApplicationRun(application);
+      endApplicationRun(application, token);
+      throw uiCancelledError();
+    }
+    try {
+      return await action(token);
+    } finally {
+      endApplicationRun(application, token);
+    }
+  }
+
+  function cancelApplicationRun(application) {
+    const token = activeRunTokens.get(application.id);
+    if (token) token.cancelled = true;
+    if (!previewMode && application.tabId && application.lease?.holder === state.workerId) {
+      void chrome.tabs.sendMessage(application.tabId, { type: 'NAVA_CANCEL' }).catch(() => {});
+    }
+  }
+
+  function cancelAllRuns() {
+    sessionGeneration += 1;
+    state.apps.forEach(cancelApplicationRun);
+    leaseRetryTimers.forEach((timer) => clearTimeout(timer));
+    leaseRetryTimers.clear();
+    coordinatorRetryIds.clear();
+    automaticRunQueue.splice(0);
+    queuedAutomaticApplicationIds.clear();
+  }
+
+  async function cancelUiBoundRuns() {
+    const applications = [];
+    [...activeRunTokens.entries()].forEach(([applicationId, token]) => {
+      if (!token.uiBound) return;
+      const application = state.apps.find((item) => item.id === applicationId);
+      if (application) {
+        application.autoRun = false;
+        cancelApplicationRun(application);
+        applications.push(application);
+      }
+      else {
+        token.cancelled = true;
+      }
+    });
+    for (const application of applications) {
+      await revokeApplicationRun(application);
+      application.autoRun = false;
+      application.status = 'paused';
+      application.checkpoint = checkpoint('voluntary_pause', 'Paused when the assistant returned home');
+      application.runStopReason = 'Paused when the assistant returned home.';
+      application.updatedAt = new Date().toISOString();
+    }
+  }
+
+  async function revokeApplicationRun(application) {
+    cancelApplicationRun(application);
+    if (previewMode) {
+      application.controlGeneration = Number(application.controlGeneration || 0) + 1;
+      return;
+    }
+    await persistChain.catch(() => {});
+    await withCoordinatorMutation(async () => {
+      const response = await sendRuntime({
+        type: 'REVOKE_APPLICATION_RUN',
+        sessionEpoch: state.sessionEpoch,
+        participantSessionId: state.participantSessionId,
+        applicationId: application.id,
+        applicationGeneration: Number(application.controlGeneration || 0),
+        applicationRevision: Number(application.controlRevision || 0),
+      });
+      if (!response?.ok) {
+        scheduleCoordinatorSync(application.id);
+        throw coordinatorStaleError(response?.error);
+      }
+      applyCoordinatorMetadata(response);
+      application.controlGeneration = Number(response.applicationGeneration ?? application.controlGeneration ?? 0);
+      application.controlRevision = Number(response.applicationRevision ?? application.controlRevision ?? 0);
+    });
+  }
+
+  function applicationGenerations() {
+    return Object.fromEntries(state.apps.map((application) => [application.id, Number(application.controlGeneration || 0)]));
+  }
+
+  function applicationRevisions() {
+    return Object.fromEntries(state.apps.map((application) => [application.id, Number(application.controlRevision || 0)]));
+  }
+
+  function applyCoordinatorMetadata(response) {
+    if (!response) return;
+    if (Number.isSafeInteger(Number(response.sessionEpoch))) state.sessionEpoch = Number(response.sessionEpoch);
+    if (typeof response.participantSessionId === 'string') state.participantSessionId = response.participantSessionId;
+    if (Number.isSafeInteger(Number(response.stateRevision))) state.coordinatorRevision = Number(response.stateRevision);
+    state.apps.forEach((application) => {
+      if (Object.hasOwn(response.applicationGenerations || {}, application.id)) {
+        application.controlGeneration = Number(response.applicationGenerations[application.id] || 0);
+      }
+      if (Object.hasOwn(response.applicationRevisions || {}, application.id)) {
+        application.controlRevision = Number(response.applicationRevisions[application.id] || 0);
+      }
+    });
+  }
+
+  async function assertCoordinatorAuthorization(application, { requireLease = false } = {}) {
+    if (previewMode || !application?.id) return;
+    const response = await sendRuntime({
+      type: 'CHECK_APPLICATION_RUN',
+      sessionEpoch: state.sessionEpoch,
+      participantSessionId: state.participantSessionId,
+      applicationId: application.id,
+      applicationGeneration: Number(application.controlGeneration || 0),
+      applicationRevision: Number(application.controlRevision || 0),
+      holder: state.workerId,
+      requireLease,
+    });
+    if (!response?.ok || !response.allowed) {
+      cancelApplicationRun(application);
+      scheduleCoordinatorSync(application.id);
+      throw coordinatorStaleError(response?.error);
+    }
+  }
+
+  async function withCoordinatorMutation(action) {
+    coordinatorMutationDepth += 1;
+    try {
+      return await action();
+    } finally {
+      coordinatorMutationDepth -= 1;
+      if (coordinatorMutationDepth === 0 && pendingCoordinatorSnapshot) {
+        const snapshot = pendingCoordinatorSnapshot;
+        pendingCoordinatorSnapshot = null;
+        observeCoordinator(snapshot);
+      }
+      if (coordinatorMutationDepth === 0 && (coordinatorSyncPending || pendingApplicationSyncIds.size)) {
+        scheduleCoordinatorSync(coordinatorSyncPending ? null : []);
+      }
+    }
   }
 
   function newWorkflowId() {
@@ -269,46 +587,365 @@
     });
   }
 
-  function durableQueue() {
-    return workQueueEngine.buildQueue(state.apps, state.audit);
+  function durableQueue(applicationIds = null) {
+    const selectedIds = applicationIds === null ? null : new Set(applicationIds);
+    const applications = selectedIds === null
+      ? state.apps
+      : state.apps.filter((application) => selectedIds.has(application.id));
+    return workQueueEngine.buildQueue(applications, state.audit);
   }
 
-  async function persist() {
-    if (previewMode) return;
-    await Promise.all([
-      chrome.storage.session.set({
-        'nava:session': {
-          participant: state.participant,
-          apps: state.apps,
-          currentAppId: state.currentAppId,
-        },
-      }),
-      chrome.storage.local.set({ [QUEUE_STORAGE_KEY]: durableQueue() }),
-    ]);
+  async function commitParticipant(participant) {
+    if (previewMode) {
+      state.participant = participant;
+      markSourceReloaded();
+      return;
+    }
+    await withCoordinatorMutation(async () => {
+      const updating = Boolean(state.participant && state.participantSessionId);
+      const response = await sendRuntime({
+        type: updating ? 'UPDATE_SESSION_PARTICIPANT' : 'CLAIM_CLIENT_SESSION',
+        sessionEpoch: state.sessionEpoch,
+        participantSessionId: state.participantSessionId,
+        stateRevision: state.coordinatorRevision,
+        participant,
+      });
+      if (!response?.ok) {
+        if (response?.stale || response?.code === 'PARTICIPANT_ALREADY_CLAIMED') scheduleCoordinatorSync();
+        throw coordinatorStaleError(response?.error || 'Another assistant window changed the client session.');
+      }
+      applyCoordinatorMetadata(response);
+      if (response.claimed) {
+        state.apps.forEach((application) => {
+          application.controlGeneration = 0;
+          application.controlRevision = 0;
+        });
+      }
+      if (response.revokedApplicationIds?.length) await restore({ preserveView: true });
+      else state.participant = participant;
+      markSourceReloaded();
+    });
   }
 
-  async function restore() {
+  async function persist({ applicationIds = null, includeCurrentAppId = applicationIds === null } = {}) {
     if (previewMode) return;
-    const [sessionResult, queueResult] = await Promise.all([
-      chrome.storage.session.get('nava:session'),
-      chrome.storage.local.get(QUEUE_STORAGE_KEY),
-    ]);
-    const saved = sessionResult['nava:session'];
-    const queue = queueResult[QUEUE_STORAGE_KEY];
-    state.participant = saved?.participant || null;
-    state.apps = queue?.applications?.length
+    const write = persistChain.catch(() => {}).then(async () => {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        let retryAfterGlobalSync = false;
+        await withCoordinatorMutation(async () => {
+          const selectedIds = applicationIds === null ? null : new Set(applicationIds);
+          const applications = selectedIds === null
+            ? state.apps
+            : state.apps.filter((application) => selectedIds.has(application.id));
+          const sessionSnapshot = structuredClone({
+            apps: applications,
+            ...(includeCurrentAppId ? { currentAppId: state.currentAppId } : {}),
+          });
+          const queueSnapshot = durableQueue(applicationIds);
+          const response = await sendRuntime({
+            type: 'PERSIST_ASSISTANT_STATE',
+            sessionEpoch: state.sessionEpoch,
+            participantSessionId: state.participantSessionId,
+            stateRevision: state.coordinatorRevision,
+            applicationGenerations: applicationGenerations(),
+            applicationRevisions: applicationRevisions(),
+            workerId: state.workerId,
+            holder: state.workerId,
+            session: sessionSnapshot,
+            queue: queueSnapshot,
+          });
+          if (!response?.ok) {
+            if (response?.code === 'STALE_STATE_REVISION' && attempt === 0) {
+              retryAfterGlobalSync = true;
+              scheduleCoordinatorSync();
+              return;
+            }
+            if (response?.stale) {
+              applyCoordinatorMetadata(response);
+              scheduleCoordinatorSync(response.applicationId || null);
+              throw coordinatorStaleError(response?.error);
+            }
+            throw new Error(response?.error || 'The assistant could not save its current checkpoint.');
+          }
+          applyCoordinatorMetadata(response);
+          if (response.rejectedApplicationIds?.length) {
+            response.rejectedApplicationIds.forEach((id) => {
+              const application = state.apps.find((item) => item.id === id);
+              if (application) cancelApplicationRun(application);
+            });
+            scheduleCoordinatorSync(response.rejectedApplicationIds);
+            throw coordinatorStaleError('An application was paused or changed in another assistant window.');
+          }
+        });
+        if (!retryAfterGlobalSync) return;
+        if (!coordinatorSyncPromise) scheduleCoordinatorSync();
+        await waitForCoordinatorSync();
+        if (attempt === 1) throw coordinatorStaleError('Assistant state kept changing while this checkpoint was being saved.');
+      }
+      throw coordinatorStaleError('Assistant state could not be reconciled before saving.');
+    });
+    persistChain = write;
+    await write;
+  }
+
+  async function clearAssistantState() {
+    if (previewMode) return;
+    const clear = persistChain.catch(() => {}).then(async () => {
+      await withCoordinatorMutation(async () => {
+        const response = await sendRuntime({
+          type: 'CLEAR_ASSISTANT_STATE',
+          sessionEpoch: state.sessionEpoch,
+        });
+        if (!response?.ok) {
+          if (response?.stale) scheduleCoordinatorSync();
+          throw new Error(response?.error || 'The previous browser session could not be cleared.');
+        }
+        applyCoordinatorMetadata(response);
+        state.participantSessionId = '';
+      });
+    });
+    persistChain = clear;
+    await clear;
+  }
+
+  function applicationsFromStateResponse(response) {
+    const saved = response.session;
+    const queue = response.queue;
+    return (queue?.applications?.length
       ? workQueueEngine.restoreApplications(queue, saved?.apps || [])
-      : Array.isArray(saved?.apps) ? saved.apps : [];
+      : Array.isArray(saved?.apps) ? saved.apps : [])
+      .map((application) => attachApplicationPolicy({
+        ...application,
+        controlGeneration: Number(response.applicationGenerations?.[application.id] || 0),
+        controlRevision: Number(response.applicationRevisions?.[application.id] || 0),
+      }));
+  }
+
+  async function restore({ preserveView = false } = {}) {
+    if (previewMode) return;
+    const previousView = state.view;
+    const response = await sendRuntime({ type: 'GET_ASSISTANT_STATE' });
+    if (!response?.ok) throw new Error(response?.error || 'The assistant session could not be restored.');
+    const saved = response.session;
+    const queue = response.queue;
+    state.participant = saved?.participant || null;
+    state.apps = applicationsFromStateResponse(response);
+    applyCoordinatorMetadata(response);
     state.audit = Array.isArray(queue?.audit) ? queue.audit : [];
     state.currentAppId = state.apps.some((application) => application.id === saved?.currentAppId) ? saved.currentAppId : null;
-    if (state.apps.length) state.view = 'dashboard';
+    if (preserveView) state.view = previousView;
+    else if (state.apps.length) state.view = 'dashboard';
     else if (state.participant) state.view = 'programs';
+    else state.view = 'choice';
+  }
+
+  async function synchronizeCoordinator() {
+    if (previewMode || coordinatorMutationDepth > 0) {
+      coordinatorSyncPending = true;
+      return;
+    }
+    const previousEpoch = state.sessionEpoch;
+    const previousParticipantSessionId = state.participantSessionId;
+    const previousView = state.view;
+    const response = await sendRuntime({ type: 'GET_ASSISTANT_STATE' });
+    if (!response?.ok) throw new Error(response?.error || 'The assistant session could not be restored.');
+    const authoritativeAudit = Array.isArray(response.queue?.audit) ? response.queue.audit : [];
+    const identityChanged = previousEpoch !== Number(response.sessionEpoch)
+      || previousParticipantSessionId !== String(response.participantSessionId || '');
+    const authoritativeApps = applicationsFromStateResponse(response);
+    if (identityChanged) {
+      cancelAllRuns();
+      state.apps = authoritativeApps;
+      state.audit = authoritativeAudit;
+    } else {
+      const localById = new Map(state.apps.map((application) => [application.id, application]));
+      const authoritativeIds = new Set(authoritativeApps.map((application) => application.id));
+      const locallyUnpersistedIds = new Set(state.apps.filter((application) => (
+        !authoritativeIds.has(application.id)
+        && !Object.hasOwn(response.applicationGenerations || {}, application.id)
+        && !Object.hasOwn(response.applicationRevisions || {}, application.id)
+      )).map((application) => application.id));
+      const changedIds = new Set(state.apps.filter((application) => (
+        (!authoritativeIds.has(application.id) && !locallyUnpersistedIds.has(application.id))
+        || Number(response.applicationGenerations?.[application.id] || 0) !== Number(application.controlGeneration || 0)
+        || Number(response.applicationRevisions?.[application.id] || 0) !== Number(application.controlRevision || 0)
+      )).map((application) => application.id));
+      changedIds.forEach((id) => {
+        const application = localById.get(id);
+        if (application) cancelApplicationRun(application);
+      });
+      state.apps = authoritativeApps.map((authoritative) => {
+        const local = localById.get(authoritative.id);
+        return local && !changedIds.has(authoritative.id)
+          ? local
+          : authoritative;
+      }).concat([...locallyUnpersistedIds].map((id) => localById.get(id)).filter(Boolean));
+      const preservedIds = new Set(state.apps
+        .filter((application) => localById.get(application.id) === application)
+        .map((application) => application.id));
+      const mergedAudit = new Map(authoritativeAudit.map((event) => [event.id, event]));
+      state.audit
+        .filter((event) => !event.applicationId || preservedIds.has(event.applicationId))
+        .forEach((event) => mergedAudit.set(event.id, event));
+      state.audit = workQueueEngine.buildQueue([], [...mergedAudit.values()]
+        .sort((left, right) => Date.parse(left.at || 0) - Date.parse(right.at || 0))).audit;
+      if (state.currentAppId && changedIds.has(state.currentAppId)
+        && !['choice', 'programs', 'dashboard'].includes(previousView)) {
+        state.view = 'dashboard';
+      }
+    }
+    state.participant = response.session?.participant || null;
+    if (!state.apps.some((application) => application.id === state.currentAppId)) {
+      state.currentAppId = state.apps.some((application) => application.id === response.session?.currentAppId)
+        ? response.session.currentAppId
+        : null;
+    }
+    applyCoordinatorMetadata(response);
+    if (identityChanged) state.view = canonicalHomeView();
+    else if (!state.apps.length && state.view === 'dashboard') state.view = canonicalHomeView();
+    render();
+  }
+
+  function coordinatorDelta(coordinator) {
+    if (!coordinator || !state.sessionEpoch) return { full: false, applicationIds: [] };
+    if (Number(coordinator.sessionEpoch) !== Number(state.sessionEpoch)
+      || String(coordinator.participantSessionId || '') !== state.participantSessionId) {
+      return { full: true, applicationIds: [] };
+    }
+    const localIds = new Set(state.apps.map((application) => application.id));
+    const coordinatedIds = new Set([
+      ...Object.keys(coordinator.applicationGenerations || {}),
+      ...Object.keys(coordinator.applicationRevisions || {}),
+    ]);
+    if ([...coordinatedIds].some((id) => !localIds.has(id))) return { full: true, applicationIds: [] };
+    const applicationIds = state.apps.filter((application) => (
+      Number(coordinator.applicationGenerations?.[application.id] || 0) !== Number(application.controlGeneration || 0)
+      || Number(coordinator.applicationRevisions?.[application.id] || 0) !== Number(application.controlRevision || 0)
+    )).map((application) => application.id);
+    if (applicationIds.length) return { full: false, applicationIds };
+    return {
+      full: Number(coordinator.stateRevision || 0) !== Number(state.coordinatorRevision || 0),
+      applicationIds: [],
+    };
+  }
+
+  async function synchronizeApplications(applicationIds) {
+    const requestedIds = [...new Set(applicationIds)].filter(Boolean);
+    if (!requestedIds.length) return;
+    if (previewMode || coordinatorMutationDepth > 0) {
+      requestedIds.forEach((id) => pendingApplicationSyncIds.add(id));
+      return;
+    }
+    const response = await sendRuntime({ type: 'GET_ASSISTANT_STATE' });
+    if (!response?.ok) throw new Error(response?.error || 'The application state could not be refreshed.');
+    const delta = coordinatorDelta(response);
+    if (delta.full) {
+      coordinatorSyncPending = true;
+      return;
+    }
+    delta.applicationIds.forEach((id) => requestedIds.push(id));
+    const ids = [...new Set(requestedIds)];
+    const targetedCurrentApplication = ids.includes(state.currentAppId);
+    const authoritativeApps = applicationsFromStateResponse(response);
+    const authoritativeById = new Map(authoritativeApps.map((application) => [application.id, application]));
+    ids.forEach((id) => {
+      const currentIndex = state.apps.findIndex((application) => application.id === id);
+      if (currentIndex >= 0) cancelApplicationRun(state.apps[currentIndex]);
+      const authoritative = authoritativeById.get(id);
+      if (currentIndex >= 0 && authoritative) state.apps.splice(currentIndex, 1, authoritative);
+      else if (currentIndex >= 0) state.apps.splice(currentIndex, 1);
+      else if (authoritative) state.apps.push(authoritative);
+    });
+    state.participant = response.session?.participant || null;
+    state.audit = Array.isArray(response.queue?.audit) ? response.queue.audit : [];
+    if (!state.apps.some((application) => application.id === state.currentAppId)) state.currentAppId = null;
+    applyCoordinatorMetadata(response);
+    if (targetedCurrentApplication && !['choice', 'programs', 'dashboard'].includes(state.view)) state.view = 'dashboard';
+    render();
+  }
+
+  function observeCoordinator(coordinator) {
+    const delta = coordinatorDelta(coordinator);
+    if (!delta.full && !delta.applicationIds.length) return;
+    if (coordinatorMutationDepth > 0) {
+      pendingCoordinatorSnapshot = coordinator;
+      return;
+    }
+    scheduleCoordinatorSync(delta.full ? null : delta.applicationIds);
+  }
+
+  function scheduleCoordinatorSync(applicationIds = null) {
+    if (applicationIds === null) coordinatorSyncPending = true;
+    else (Array.isArray(applicationIds) ? applicationIds : [applicationIds])
+      .filter(Boolean)
+      .forEach((id) => pendingApplicationSyncIds.add(id));
+    if (previewMode || coordinatorMutationDepth > 0 || coordinatorSyncPromise) return;
+    coordinatorSyncPromise = Promise.resolve()
+      .then(async () => {
+        const full = coordinatorSyncPending;
+        coordinatorSyncPending = false;
+        const ids = [...pendingApplicationSyncIds];
+        pendingApplicationSyncIds.clear();
+        if (full) await synchronizeCoordinator();
+        else await synchronizeApplications(ids);
+      })
+      .catch((error) => {
+        state.error = error.message;
+        render();
+      })
+      .finally(() => {
+        coordinatorSyncPromise = null;
+        if ((coordinatorSyncPending || pendingApplicationSyncIds.size) && coordinatorMutationDepth === 0) {
+          scheduleCoordinatorSync(coordinatorSyncPending ? null : []);
+        }
+      });
+  }
+
+  async function waitForCoordinatorSync() {
+    for (let pass = 0; pass < 4; pass += 1) {
+      const pending = coordinatorSyncPromise;
+      if (!pending) return;
+      await pending;
+    }
+    if (coordinatorSyncPromise) throw coordinatorStaleError('Assistant state kept changing while it was being reconciled.');
   }
 
   async function restoreConnector() {
     const response = await sendRuntime({ type: 'GET_CONNECTOR_STATUS' });
     if (!response?.ok) throw new Error(response?.error || 'The data-source status could not be loaded.');
     state.connector = response.connector;
+  }
+
+  async function reconcileConnectorMutation(response, uiToken, nextView) {
+    if (!response?.ok) {
+      if (response?.stale) scheduleCoordinatorSync();
+      throw new Error(response?.error || 'The data-source change could not be saved.');
+    }
+    const previewInvalidation = previewMode && Boolean(state.participant?._connector);
+    const returnedEpoch = Number(response.sessionEpoch);
+    const coordinatorChanged = !previewMode
+      && Number.isSafeInteger(returnedEpoch)
+      && returnedEpoch > 0
+      && returnedEpoch !== Number(state.sessionEpoch);
+    if (response.assistantInvalidated || coordinatorChanged) {
+      cancelAllRuns();
+      await restore({ preserveView: true });
+    } else if (previewInvalidation) {
+      cancelAllRuns();
+      state.participant = null;
+      state.currentAppId = null;
+      state.apps.forEach((application) => {
+        application.error = 'The connected data source or field mapping changed. Reload the client before resuming.';
+        setCheckpoint(application, 'source_expired', 'Reload client data after connector change', 'source_expired');
+      });
+    } else {
+      applyCoordinatorMetadata(response);
+    }
+    state.connector = response.connector;
+    state.connectorDraft = null;
+    state.connectorSchema = [];
+    state.pendingConnectorRecord = null;
+    if (uiToken === uiGeneration) state.view = nextView || canonicalHomeView();
   }
 
   function setBusy(message = 'Checking this form…') {
@@ -354,7 +991,33 @@
             <span class="chevron" aria-hidden="true">›</span>
           </button>
         </div>
-        <div class="notice" style="margin-top:16px"><span aria-hidden="true">i</span><span>${managedConnector() ? 'Record lookup uses the organization’s read-only connector. Credentials remain in the Nava connector service, never in Chrome.' : 'Connect a managed data source to replace fictional records. Credentials are never stored in this extension.'}</span></div>
+        <div class="notice" style="margin-top:16px"><span aria-hidden="true">i</span><span>${managedConnector() ? 'Record lookup uses the organization’s read-only connector. Credentials remain in the Nava connector service, never in Chrome.' : 'No production database is connected. All bundled records are fictional.'}</span></div>
+      </section>`;
+  }
+
+  function renderProviderCatalog() {
+    appRoot.innerHTML = `
+      <section>
+        <button class="back-button" type="button" data-action="home"><span aria-hidden="true">←</span> Home</button>
+        <div class="intro">
+          <p class="eyebrow">Data source</p>
+          <h1>Choose your database</h1>
+          <p class="lede">Select the system your organization uses. The extension connects only through a Nava-managed, read-only service; provider credentials never enter Chrome.</p>
+        </div>
+        ${renderError()}
+        <div class="provider-grid">
+          ${connectorEngine.PROVIDER_CATALOG.map((provider) => {
+            const available = provider.readiness === 'demo-tested';
+            return `
+            <button class="provider-card" type="button" data-action="select-provider" data-provider="${escapeHtml(provider.id)}" aria-describedby="provider-readiness-${escapeHtml(provider.id)}">
+              <span class="provider-icon" aria-hidden="true">${escapeHtml(providerInitials(provider.name))}</span>
+              <span class="provider-copy"><strong>${escapeHtml(provider.name)}</strong><small>${escapeHtml(provider.category)}</small></span>
+              <span id="provider-readiness-${escapeHtml(provider.id)}" class="readiness-chip ${available ? 'demo-tested' : 'adapter-required'}">${available ? 'Fictional demo available' : 'Provisioned Nava adapter required'}</span>
+              <span class="chevron" aria-hidden="true">›</span>
+            </button>`;
+          }).join('')}
+        </div>
+        <div class="notice warning" style="margin-top:18px"><span aria-hidden="true">!</span><span>Only the fictional Apricot-shaped adapter runs in this repository. The other providers require an authorized Nava connector service before real records can be retrieved.</span></div>
       </section>`;
   }
 
@@ -398,12 +1061,18 @@
     };
   }
 
+  function canonicalHomeView() {
+    if (state.apps.length) return 'dashboard';
+    if (state.participant) return 'programs';
+    return 'choice';
+  }
+
   function renderConnectorSetup() {
     const draft = connectorDraft();
     const provider = connectorProvider(draft);
     appRoot.innerHTML = `
       <section>
-        <button class="back-button" type="button" data-action="back-choice"><span aria-hidden="true">←</span> Back</button>
+        <button class="back-button" type="button" data-action="back-providers"><span aria-hidden="true">←</span> Databases</button>
         <div class="intro">
           <p class="eyebrow">Data source</p>
           <h1>Connect a client data source</h1>
@@ -415,7 +1084,7 @@
           <div class="field">
             <label for="connector-provider">Database provider</label>
             <select id="connector-provider" name="provider" required>
-              ${connectorEngine.PROVIDER_CATALOG.map((item) => `<option value="${escapeHtml(item.id)}" ${draft.provider === item.id ? 'selected' : ''}>${escapeHtml(item.name)} — ${escapeHtml(item.category)}</option>`).join('')}
+              ${connectorEngine.PROVIDER_CATALOG.map((item) => `<option value="${escapeHtml(item.id)}" ${draft.provider === item.id ? 'selected' : ''}>${escapeHtml(item.name)} — ${item.readiness === 'demo-tested' ? 'fictional demo' : 'provisioned adapter required'}</option>`).join('')}
             </select>
             <p class="field-hint">Apricot has a tested fictional adapter. Every provider requires a separately deployed, authorized Nava connector before real records can be used.</p>
           </div>
@@ -684,24 +1353,19 @@
           <p class="section-label">This browser tab</p>
           <div class="program-list">
             <label class="program-option">
-              <input type="checkbox" name="program" value="current" ${currentAllowed ? 'checked' : 'disabled'}>
+              <input type="checkbox" name="program" value="current" ${currentAllowed ? '' : 'disabled'}>
               <span><strong>Analyze this form</strong><small>${escapeHtml(currentAllowed ? hostLabel(tabUrl) : 'Open a website first')}</small></span>
             </label>
           </div>
           <p class="section-label">Known application sites</p>
           <div class="program-list">
-            ${[
-              ['calfresh', 'CalFresh', 'BenefitsCal'],
-              ['medical', 'Medi-Cal', 'BenefitsCal'],
-              ['wic', 'WIC', 'Riverside University Health System'],
-              ['calworks', 'CalWORKs', 'BenefitsCal'],
-              ['ihss', 'IHSS', 'Riverside County'],
-            ].map(([value, name, source]) => `
+            ${programCatalog.PROGRAMS.map((program) => `
               <label class="program-option">
-                <input type="checkbox" name="program" value="${value}">
-                <span><strong>${name}</strong><small>${source}</small></span>
+                <input type="checkbox" name="program" value="${escapeHtml(program.id)}">
+                <span><strong>${escapeHtml(program.name)}</strong><small>${escapeHtml(program.provider)}${program.workflowId === 'benefitscal' ? ' · combined BenefitsCal application' : ''}</small></span>
               </label>`).join('')}
           </div>
+          <div class="notice" style="margin-top:14px"><span aria-hidden="true">i</span><span>CalFresh, Medi-Cal, and CalWORKs share one BenefitsCal application. Selecting more than one opens one tab and carries all selected program names in the same workflow.</span></div>
           <div class="form-actions">
             <button class="primary-button" type="submit">Continue</button>
           </div>
@@ -718,6 +1382,7 @@
   }
 
   function statusLabel(application) {
+    if (activeRunTokens.has(application.id)) return 'Running automatically';
     if (application.status === 'ready_for_review') return 'Ready for review';
     if (application.status === 'needs_attention') return 'Needs your attention';
     if (application.status === 'ready_to_fill') return 'Ready to fill';
@@ -725,26 +1390,35 @@
     if (application.status === 'paused') return 'Paused safely';
     if (application.status === 'handoff_pending') return 'Handoff waiting';
     if (application.status === 'source_expired') return 'Reload source data';
+    if (application.status === 'not_started' && application.autoRun) return 'Starting automatically';
     return 'Not started';
   }
 
   function applicationCard(application) {
+    const running = activeRunTokens.has(application.id);
     const review = application.status === 'ready_for_review';
     const attention = ['needs_attention', 'no_form', 'paused', 'handoff_pending', 'source_expired'].includes(application.status);
     const gaps = application.analysis?.gaps?.length || 0;
     const blocked = application.blocked?.length || 0;
     const completedPages = application.completedPages?.length || 0;
     const note = application.error
+      || application.runStopReason
       || (blocked ? `${blocked} fields need direct help` : '')
       || (gaps ? `${gaps} answers are needed before this page is complete` : '')
       || (review ? (application.runStopReason || 'All writes were read back and verified') : 'Ready to fill the values found in the client record');
     let actions = '';
-    if (application.status === 'source_expired') {
+    if (running) {
+      actions = '<span class="automation-badge">Scanning, filling, and continuing in this application tab…</span>';
+    } else if (application.status === 'source_expired') {
       actions = '<button class="small-button" type="button" data-action="reload-source">Reload client data</button>';
     } else if (application.status === 'handoff_pending') {
       actions = `<button class="small-button" type="button" data-action="accept-handoff" data-app="${encoded(application.id)}">Accept handoff</button>`;
+    } else if (application.programSelectionRequired) {
+      actions = '<button class="small-button" type="button" data-action="add-application">Choose programs in a new BenefitsCal application</button>';
     } else if (application.status === 'paused') {
       actions = `<button class="small-button" type="button" data-action="${application.tabId ? 'resume' : 'resume-current'}" data-app="${encoded(application.id)}">${application.tabId ? 'Verify and resume' : 'Reconnect current tab'}</button>`;
+    } else if (application.status === 'not_started' && application.autoRun) {
+      actions = '<span class="automation-badge">Opening, scanning, and continuing in this tab…</span>';
     } else if (application.status === 'not_started' && application.tabId) {
       actions = `<button class="small-button" type="button" data-action="scan-application" data-app="${encoded(application.id)}">Scan application</button>`;
     } else if (attention && gaps) {
@@ -755,8 +1429,10 @@
         <button class="small-button secondary" type="button" data-action="fill" data-app="${encoded(application.id)}">This page only</button>`;
     } else if (review) {
       actions = `<button class="small-button secondary" type="button" data-action="review" data-app="${encoded(application.id)}">Review details</button>`;
+    } else if (application.tabId) {
+      actions = `<button class="small-button" type="button" data-action="scan-application" data-app="${encoded(application.id)}">Scan this application</button>`;
     } else {
-      actions = `<button class="small-button" type="button" data-action="analyze-current">Analyze current tab</button>`;
+      actions = `<button class="small-button" type="button" data-action="resume-current" data-app="${encoded(application.id)}">Reconnect current tab</button>`;
     }
     if (!['source_expired', 'handoff_pending', 'ready_for_review'].includes(application.status)) {
       actions += `<button class="small-button secondary" type="button" data-action="open-handoff" data-app="${encoded(application.id)}">Pause or hand off</button>`;
@@ -970,6 +1646,7 @@
   function render() {
     const renderView = {
       connector: renderConnectorSetup,
+      providers: renderProviderCatalog,
       'connector-mapping': renderConnectorMapping,
       'record-review': renderConnectorRecordReview,
       record: renderRecordId,
@@ -990,6 +1667,10 @@
     resetScroll();
     requestAnimationFrame(() => requestAnimationFrame(resetScroll));
     setTimeout(resetScroll, 100);
+  }
+
+  function renderDashboardIfVisible() {
+    if (state.view === 'dashboard') render();
   }
 
   function checkpoint(kind, label) {
@@ -1019,58 +1700,226 @@
     return null;
   }
 
+  function automatedPageLimit(application) {
+    if (application.workflowId === 'benefitscal') return MAX_AUTOMATED_PAGES;
+    if (application.workflowId === 'riverside-ihss') return 20;
+    if (application.workflowId === 'riverside-wic') return 10;
+    return DEFAULT_AUTOMATED_PAGES;
+  }
+
   async function acquireApplicationLease(application) {
-    let candidate = application;
-    if (!previewMode) {
-      const result = await chrome.storage.local.get(QUEUE_STORAGE_KEY);
-      const current = result[QUEUE_STORAGE_KEY]?.applications?.find((item) => item.id === application.id);
-      if (current) candidate = { ...application, lease: current.lease };
+    const decision = previewMode
+      ? workQueueEngine.acquireLease(application, state.workerId, { leaseMs: APPLICATION_LEASE_MS })
+      : await sendRuntime({
+        type: 'ACQUIRE_APPLICATION_LEASE',
+        sessionEpoch: state.sessionEpoch,
+        participantSessionId: state.participantSessionId,
+        applicationId: application.id,
+        applicationGeneration: Number(application.controlGeneration || 0),
+        applicationRevision: Number(application.controlRevision || 0),
+        holder: state.workerId,
+        leaseMs: APPLICATION_LEASE_MS,
+      });
+    if (!decision?.allowed) {
+      if (decision?.stale) {
+        scheduleCoordinatorSync(application.id);
+        throw coordinatorStaleError(decision?.error);
+      }
+      throw leaseConflictError(decision?.reason || decision?.error, decision?.lease || null);
     }
-    const decision = workQueueEngine.acquireLease(candidate, state.workerId);
-    if (!decision.allowed) throw new Error(decision.reason);
+    if (!previewMode) {
+      applyCoordinatorMetadata(decision);
+      application.controlGeneration = Number(decision.applicationGeneration ?? application.controlGeneration ?? 0);
+      application.controlRevision = Number(decision.applicationRevision ?? application.controlRevision ?? 0);
+    }
     application.lease = decision.lease;
-    await persist();
   }
 
   async function releaseApplicationLease(application) {
     const current = state.apps.find((item) => item.id === application.id) || application;
-    const released = workQueueEngine.releaseLease(current, state.workerId);
-    current.lease = released.lease;
-    await persist();
+    if (previewMode) {
+      const released = workQueueEngine.releaseLease(current, state.workerId);
+      current.lease = released.lease;
+    } else {
+      const released = await sendRuntime({
+        type: 'RELEASE_APPLICATION_LEASE',
+        sessionEpoch: state.sessionEpoch,
+        participantSessionId: state.participantSessionId,
+        applicationId: current.id,
+        applicationGeneration: Number(current.controlGeneration || 0),
+        applicationRevision: Number(current.controlRevision || 0),
+        holder: state.workerId,
+      });
+      if (!released?.ok) {
+        current.lease = null;
+        if (released?.stale) {
+          scheduleCoordinatorSync(current.id);
+          return;
+        }
+        throw new Error(released?.error || 'The application write lease could not be released.');
+      }
+      applyCoordinatorMetadata(released);
+      current.controlGeneration = Number(released.applicationGeneration ?? current.controlGeneration ?? 0);
+      current.controlRevision = Number(released.applicationRevision ?? current.controlRevision ?? 0);
+      current.lease = released.lease;
+    }
   }
 
   async function withApplicationLease(application, action) {
     await acquireApplicationLease(application);
     try {
+      await persist({ applicationIds: [application.id] });
       return await action();
     } finally {
       await releaseApplicationLease(application);
     }
   }
 
-  async function lookupRecord(recordId) {
+  async function renewApplicationLease(application, runToken) {
+    assertApplicationRun(application, runToken);
+    await acquireApplicationLease(application);
+    assertApplicationRun(application, runToken);
+  }
+
+  async function lookupRecord(recordId, uiToken) {
+    assertUiGeneration(uiToken);
     setBusy('Finding the client record…');
     const response = await sendRuntime({ type: 'LOOKUP_RECORD', recordId });
+    assertUiGeneration(uiToken);
     if (!response?.ok || !response.record) throw new Error(response?.message || 'No client record was found.');
     if (response.record._connector) {
       state.pendingConnectorRecord = response.record;
       state.view = 'record-review';
       return;
     }
-    state.participant = response.record;
-    markSourceReloaded();
-    state.activeTab = await getActiveTab();
+    const activeTab = await getActiveTab();
+    assertUiGeneration(uiToken);
+    await commitParticipant(response.record);
+    assertUiGeneration(uiToken);
+    state.activeTab = activeTab;
     state.view = 'programs';
     await persist();
   }
 
-  async function scanTab(tab, { quiet = false, applicationId = null } = {}) {
+  function urlOrigin(value) {
+    try { return new URL(value).origin; } catch { return ''; }
+  }
+
+  function urlPath(value) {
+    try { return new URL(value).pathname; } catch { return ''; }
+  }
+
+  function urlSearch(value) {
+    try {
+      const url = new URL(value);
+      const params = new URLSearchParams(url.search);
+      params.sort();
+      const normalized = params.toString();
+      return normalized ? `?${normalized}` : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function urlHash(value) {
+    try { return new URL(value).hash; } catch { return ''; }
+  }
+
+  function commandLocation(value) {
+    try {
+      const url = new URL(value);
+      return `${url.origin}${url.pathname}${urlSearch(url.href)}${url.hash}`;
+    } catch {
+      return '';
+    }
+  }
+
+  function pathMatchesPrefix(path, prefix) {
+    if (!path || !prefix) return false;
+    if (prefix.endsWith('/')) return path.startsWith(prefix);
+    return path === prefix || path.startsWith(`${prefix}/`);
+  }
+
+  function participantForApplication(application) {
+    if (application?.workflowId !== 'benefitscal') return state.participant;
+    if (!Array.isArray(application.programIds) || application.programSelectionRequired) return state.participant;
+    const selected = new Set(application.programIds);
+    return {
+      ...state.participant,
+      applicationSelection: {
+        calfresh: selected.has('calfresh'),
+        medical: selected.has('medical'),
+        calworks: selected.has('calworks'),
+      },
+    };
+  }
+
+  function attachApplicationPolicy(application) {
+    const currentOrigin = urlOrigin(application.url);
+    const matchingProgram = programCatalog.PROGRAMS.find((program) => (
+      program.workflowId === application.workflowId
+      || program.allowedOrigins?.includes(currentOrigin)
+    ));
+    return {
+      ...application,
+      workflowId: application.workflowId || matchingProgram?.workflowId || '',
+      allowedOrigins: matchingProgram?.allowedOrigins
+        || (application.allowedOrigins?.length ? application.allowedOrigins : (currentOrigin ? [currentOrigin] : [])),
+      allowedPathPrefixes: matchingProgram?.allowedPathPrefixes
+        || (application.allowedPathPrefixes || []).filter((prefix) => prefix !== '/'),
+    };
+  }
+
+  function assertApprovedApplicationLocation(application, observedUrl) {
+    if (!application?.id) return;
+    const observedOrigin = urlOrigin(observedUrl);
+    const observedPath = urlPath(observedUrl);
+    const approvedOrigins = application.allowedOrigins || [];
+    const approvedPathPrefixes = application.allowedPathPrefixes || [];
+    const originalOrigin = urlOrigin(application.url);
+    const originApproved = approvedOrigins.length
+      ? approvedOrigins.includes(observedOrigin)
+      : !originalOrigin || originalOrigin === observedOrigin;
+    const pathApproved = !approvedPathPrefixes.length
+      || approvedPathPrefixes.some((prefix) => pathMatchesPrefix(observedPath, prefix));
+    if (!originApproved || !pathApproved) {
+      throw new Error(`The ${application.name || 'application'} tab left its approved site. The assistant paused without reading or writing ${hostLabel(observedUrl)}.`);
+    }
+  }
+
+  async function scanTab(tab, { quiet = false, applicationId = null, runToken = null, uiToken = null } = {}) {
+    if (uiToken !== null) assertUiGeneration(uiToken);
     if (!quiet) setBusy('Checking this form and its required fields…');
-    const response = await sendToTab(tab, { type: 'NAVA_SCAN', participant: state.participant });
+    const requestedApplication = applicationId ? state.apps.find((item) => item.id === applicationId) : null;
+    const tabApplication = state.apps.find((item) => item.tabId === tab.id);
+    let previous = requestedApplication || tabApplication || {};
+    if (requestedApplication) {
+      assertApprovedApplicationLocation(requestedApplication, tab.url);
+      assertApplicationRun(requestedApplication, runToken);
+    } else if (tabApplication) {
+      try {
+        assertApprovedApplicationLocation(tabApplication, tab.url);
+        if (urlPath(tabApplication.url) !== urlPath(tab.url)) throw new Error('This tab now shows a different application page.');
+      } catch {
+        cancelApplicationRun(tabApplication);
+        tabApplication.tabId = null;
+        tabApplication.runStopReason = 'The tab navigated to a different page. The saved workflow was detached before any client data was read or written.';
+        setCheckpoint(tabApplication, 'page_changed', 'Application tab changed', 'paused');
+        previous = {};
+      }
+    }
+    const response = await sendToTab(
+      tab,
+      { type: 'NAVA_SCAN', participant: participantForApplication(previous) },
+      { application: requestedApplication || (previous.id ? previous : null), requireLease: Boolean(runToken) },
+    );
+    if (uiToken !== null) assertUiGeneration(uiToken);
     if (!response?.ok) throw new Error(response?.error || 'The form could not be read.');
-    const previous = state.apps.find((item) => item.id === applicationId)
-      || state.apps.find((item) => item.tabId === tab.id)
-      || {};
+    assertApplicationRun(requestedApplication || previous, runToken);
+    const observedUrl = response.page?.url || tab.url;
+    if (requestedApplication) {
+      assertApprovedApplicationLocation(requestedApplication, observedUrl);
+    }
     const id = previous.id || newWorkflowId();
     const fieldsFound = response.analysis?.counts?.fields || 0;
     const canContinue = response.navigationGate?.kind === 'next';
@@ -1079,9 +1928,9 @@
       ...previous,
       id,
       tabId: tab.id,
-      name: response.playbook?.name || response.page?.title || hostLabel(tab.url),
-      queueLabel: response.playbook?.name || hostLabel(response.page?.url || tab.url),
-      url: response.page?.url || tab.url,
+      name: previous.requestedName || previous.name || response.playbook?.name || response.page?.title || hostLabel(tab.url),
+      queueLabel: previous.requestedName || previous.queueLabel || response.playbook?.name || hostLabel(observedUrl),
+      url: observedUrl,
       page: response.page,
       status: fieldsFound === 0 && !canContinue
         ? 'no_form'
@@ -1100,8 +1949,11 @@
       completedPages: previous.completedPages || [],
       autoRun: Boolean(previous.autoRun),
       visitedSignatures: previous.visitedSignatures || [],
+      allowedOrigins: previous.allowedOrigins?.length ? previous.allowedOrigins : [urlOrigin(observedUrl)].filter(Boolean),
+      allowedPathPrefixes: previous.allowedPathPrefixes?.length ? previous.allowedPathPrefixes : [urlPath(observedUrl)].filter(Boolean),
       resumePoint: {
         location: response.page?.url || tab.url,
+        commandLocationHash: workQueueEngine.signatureHash(commandLocation(response.page?.url || tab.url)),
         pageSignature: response.navigationGate?.pageSignature || '',
         pageSignatureHash: workQueueEngine.signatureHash(response.navigationGate?.pageSignature || ''),
         capturedAt: new Date().toISOString(),
@@ -1121,40 +1973,210 @@
       recordAudit('questions_required', application, { gapCount: response.analysis.gaps.length, checkpointKind: 'human_input' });
     }
     state.currentAppId = id;
-    state.view = 'dashboard';
-    await persist();
+    if (!quiet) state.view = 'dashboard';
+    assertApplicationRun(application, runToken);
+    if (uiToken !== null) assertUiGeneration(uiToken);
+    await persist({ applicationIds: [id], includeCurrentAppId: !quiet });
     return application;
   }
 
   async function openSelectedPrograms(values) {
     const known = values.filter((value) => value !== 'current');
-    if (!known.length) return;
+    if (!known.length) return [];
     const response = await sendRuntime({ type: 'OPEN_PROGRAMS', programs: known });
     if (!response?.ok) throw new Error(response?.error || 'The application tabs could not be opened.');
-    response.opened.forEach((item) => {
+    return response.opened.map((item) => {
       const application = {
         id: newWorkflowId(),
         tabId: item.tabId,
         name: item.name,
+        requestedName: item.name,
         queueLabel: item.name,
         url: item.url,
+        workflowId: item.workflowId,
+        programIds: item.programIds || [],
+        allowedOrigins: item.allowedOrigins || [],
+        allowedPathPrefixes: item.allowedPathPrefixes || [],
+        controlGeneration: 0,
+        controlRevision: 0,
         status: 'not_started',
+        autoRun: true,
+        runStopReason: 'Waiting for the application tab to finish loading.',
         updatedAt: new Date().toISOString(),
       };
       state.apps.push(application);
       recordAudit('application_added', application, { toStatus: 'not_started' });
+      return application;
     });
   }
 
-  async function fillCurrentPage(application, userAssignments = [], unresolved = []) {
+  async function waitForApplicationTab(application, runToken) {
+    if (previewMode) return { id: application.tabId, url: application.url, status: 'complete' };
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < TAB_READY_TIMEOUT_MS) {
+      assertApplicationRun(application, runToken);
+      let tab = null;
+      try {
+        tab = await chrome.tabs.get(application.tabId);
+      } catch {
+        tab = null;
+      }
+      if (tab?.status === 'complete' && /^https?:/i.test(tab.url || '')) {
+        assertApprovedApplicationLocation(application, tab.url);
+        try {
+          const probe = await probeTabDocument(tab.id);
+          assertSameDocumentLocation(tab.url, probe.result.url);
+          assertApprovedApplicationLocation(application, probe.result.url);
+          await ensurePageAgent({ ...tab, url: probe.result.url }, probe.documentId);
+          assertApplicationRun(application, runToken);
+          return { ...tab, url: probe.result.url };
+        } catch {
+          // The document may still be replacing itself during a redirect. Retry.
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    assertApplicationRun(application, runToken);
+    throw new Error('The application tab did not become ready within one minute.');
+  }
+
+  async function runQueuedApplication(applicationId) {
+    let application = state.apps.find((item) => item.id === applicationId);
+    if (!application) return;
+    const existingRun = activeRunTokens.get(applicationId);
+    if (existingRun && !existingRun.cancelled) return;
+    let runToken = null;
+    try {
+      runToken = await beginApplicationRun(application);
+      application.runStopReason = 'Opening and checking this application automatically…';
+      application.autoRun = true;
+      application.updatedAt = new Date().toISOString();
+      renderDashboardIfVisible();
+      await withApplicationLease(application, async () => {
+        assertApplicationRun(application, runToken);
+        const tab = await waitForApplicationTab(application, runToken);
+        assertApplicationRun(application, runToken);
+        application = await scanTab(tab, { quiet: true, applicationId, runToken });
+        renderDashboardIfVisible();
+        if (application.status !== 'ready_to_fill') return;
+        await runThroughApplication(application, [], [], { background: true, runToken });
+      });
+    } catch (error) {
+      if (error?.name === 'RunCancelledError') {
+        scheduleCoordinatorRetry(applicationId);
+        return;
+      }
+      if (error?.name === 'LeaseConflictError') {
+        scheduleLeaseRetry(applicationId, error.lease);
+        return;
+      }
+      application = state.apps.find((item) => item.id === applicationId) || application;
+      application.error = error.message;
+      application.runStopReason = error.message;
+      setCheckpoint(application, 'navigation_unknown', 'Automatic run paused', 'needs_attention');
+      await persist({ applicationIds: [application.id] });
+      renderDashboardIfVisible();
+    } finally {
+      if (runToken) endApplicationRun(application, runToken);
+      renderDashboardIfVisible();
+    }
+  }
+
+  function eligibleAutomaticApplication(application) {
+    return Boolean(application?.autoRun
+      && application.tabId
+      && ['not_started', 'ready_to_fill'].includes(application.status));
+  }
+
+  function scheduleCoordinatorRetry(applicationId) {
+    if (coordinatorRetryIds.has(applicationId)) return;
+    coordinatorRetryIds.add(applicationId);
+    const sessionEpoch = state.sessionEpoch;
+    scheduleCoordinatorSync(applicationId);
+    void waitForCoordinatorSync()
+      .then(() => {
+        coordinatorRetryIds.delete(applicationId);
+        if (state.sessionEpoch !== sessionEpoch) return;
+        const application = state.apps.find((item) => item.id === applicationId);
+        if (!eligibleAutomaticApplication(application)) return;
+        void enqueueApplicationBatch([applicationId]).catch((error) => {
+          state.error = error.message;
+          if (state.view === 'dashboard') render();
+        });
+      })
+      .catch((error) => {
+        coordinatorRetryIds.delete(applicationId);
+        state.error = error.message;
+        if (state.view === 'dashboard') render();
+      });
+  }
+
+  function scheduleLeaseRetry(applicationId, lease) {
+    const expiresAt = Date.parse(lease?.expiresAt || '');
+    if (!Number.isFinite(expiresAt)) return;
+    const existing = leaseRetryTimers.get(applicationId);
+    if (existing) clearTimeout(existing);
+    const delay = Math.max(250, Math.min(APPLICATION_LEASE_MS + 1000, expiresAt - Date.now() + 250));
+    const timer = setTimeout(() => {
+      leaseRetryTimers.delete(applicationId);
+      const application = state.apps.find((item) => item.id === applicationId);
+      if (!eligibleAutomaticApplication(application) || activeRunTokens.has(applicationId)) return;
+      void enqueueApplicationBatch([applicationId]).catch((error) => {
+        state.error = error.message;
+        if (state.view === 'dashboard') render();
+      });
+    }, delay);
+    leaseRetryTimers.set(applicationId, timer);
+  }
+
+  function pumpAutomaticRunQueue() {
+    while (automaticWorkersActive < MAX_PARALLEL_APPLICATIONS && automaticRunQueue.length) {
+      automaticWorkersActive += 1;
+      void (async () => {
+        try {
+          while (automaticRunQueue.length) {
+            const applicationId = automaticRunQueue.shift();
+            queuedAutomaticApplicationIds.delete(applicationId);
+            await runQueuedApplication(applicationId);
+          }
+        } catch (error) {
+          state.error = error.message;
+          if (state.view === 'dashboard') render();
+        } finally {
+          automaticWorkersActive -= 1;
+          pumpAutomaticRunQueue();
+          renderDashboardIfVisible();
+        }
+      })();
+    }
+  }
+
+  function enqueueApplicationBatch(applicationIds) {
+    const ids = [...new Set(applicationIds)].filter(Boolean);
+    if (!ids.length) return Promise.resolve();
+    ids.forEach((applicationId) => {
+      if (queuedAutomaticApplicationIds.has(applicationId)) return;
+      queuedAutomaticApplicationIds.add(applicationId);
+      automaticRunQueue.push(applicationId);
+    });
+    pumpAutomaticRunQueue();
+    return Promise.resolve();
+  }
+
+  async function fillCurrentPage(application, userAssignments = [], unresolved = [], { background = false, runToken = null } = {}) {
+    assertApplicationRun(application, runToken);
     const tab = previewMode
       ? { id: application.tabId, url: application.url }
       : await chrome.tabs.get(application.tabId);
-    setBusy('Filling the page and checking every value…');
+    assertApprovedApplicationLocation(application, tab.url);
+    if (!background) setBusy('Filling the page and checking every value…');
     const assignments = [...(application.analysis?.assignments || []), ...userAssignments];
     recordAudit('fill_started', application, { fieldCount: assignments.length, fromStatus: application.status });
-    const response = await sendToTab(tab, { type: 'NAVA_FILL', assignments });
+    const response = await sendToTab(tab, { type: 'NAVA_FILL', assignments }, { application, requireLease: true });
     if (!response?.ok) throw new Error(response?.error || 'The page could not be filled.');
+    if (response.cancelled) throw runCancelledError();
+    assertApplicationRun(application, runToken);
+    if (response.presentationMode) await new Promise((resolve) => setTimeout(resolve, 1200));
     const provenanceByField = new Map();
     [...(application.provenance || []), ...(application.analysis?.observed || []), ...(response.provenance || [])]
       .forEach((item) => provenanceByField.set(item.fieldKey, item));
@@ -1183,7 +2205,8 @@
       toStatus: application.status,
     });
     state.currentAppId = application.id;
-    await persist();
+    assertApplicationRun(application, runToken);
+    await persist({ applicationIds: [application.id] });
     return response;
   }
 
@@ -1204,59 +2227,83 @@
     ];
   }
 
-  async function navigationStatusFor(tab) {
-    const response = await sendToTab(tab, { type: 'NAVA_NAVIGATION_STATUS' });
+  async function navigationStatusFor(tab, application) {
+    const response = await sendToTab(tab, { type: 'NAVA_NAVIGATION_STATUS' }, { application, requireLease: true });
     if (!response?.ok) throw new Error(response?.error || 'The next-step control could not be checked.');
     return response.navigationGate;
   }
 
-  async function waitForNextPage(tabId, previousSignature) {
+  async function waitForNextPage(application, previousSignature, runToken) {
+    const tabId = application.tabId;
     if (previewMode) return { id: tabId, url: `https://benefitscal.com/ApplyForBenefits/step-${state.previewPage}` };
-    for (let attempt = 0; attempt < 25; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 400));
+    const startedAt = Date.now();
+    let candidateSignature = '';
+    let candidateSince = 0;
+    while (Date.now() - startedAt < NAVIGATION_TIMEOUT_MS) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      assertApplicationRun(application, runToken);
       try {
         const tab = await chrome.tabs.get(tabId);
         if (tab.status !== 'complete') continue;
-        const gate = await navigationStatusFor(tab);
-        if (gate?.pageSignature && gate.pageSignature !== previousSignature) return tab;
+        const gate = await navigationStatusFor(tab, application);
+        if (!gate?.pageSignature || gate.pageSignature === previousSignature) {
+          candidateSignature = '';
+          candidateSince = 0;
+          continue;
+        }
+        if (gate.pageSignature !== candidateSignature) {
+          candidateSignature = gate.pageSignature;
+          candidateSince = Date.now();
+          continue;
+        }
+        if (Date.now() - candidateSince >= 500) return tab;
       } catch {
+        candidateSignature = '';
+        candidateSince = 0;
         // Full-page navigations briefly disconnect the content agent. Keep polling.
       }
     }
-    throw new Error('The site did not reach a new page after the safe continuation control was activated. The assistant stopped so the caseworker can inspect the application.');
+    throw new Error('The site did not reach a stable new page within one minute after the approved continuation control was activated. The assistant stopped so the caseworker can inspect the application.');
   }
 
-  async function runThroughApplication(application, userAssignments = [], unresolved = []) {
+  async function runThroughApplication(application, userAssignments = [], unresolved = [], { background = false, runToken = null } = {}) {
+    assertApplicationRun(application, runToken);
     application.autoRun = true;
     application.runStopReason = '';
+    await persist({ applicationIds: [application.id] });
     let current = application;
     let suppliedAssignments = userAssignments;
     let suppliedUnresolved = unresolved;
 
     for (;;) {
+      assertApplicationRun(current, runToken);
+      await renewApplicationLease(current, runToken);
       if ((current.analysis?.gaps?.length || 0) && !suppliedAssignments.length && !suppliedUnresolved.length) {
         setCheckpoint(current, 'human_input', 'Caseworker answers required', 'needs_attention');
         state.currentAppId = current.id;
-        state.view = 'questions';
-        await persist();
+        if (!background) state.view = 'questions';
+        await persist({ applicationIds: [current.id] });
         return;
       }
 
-      await fillCurrentPage(current, suppliedAssignments, suppliedUnresolved);
+      await fillCurrentPage(current, suppliedAssignments, suppliedUnresolved, { background, runToken });
       suppliedAssignments = [];
       suppliedUnresolved = [];
 
       if (current.empty.length || current.blocked.length) {
         current.runStopReason = 'The automated run paused because at least one field needs a caseworker answer or direct entry.';
-        state.view = 'dashboard';
-        await persist();
+        if (!background) state.view = 'dashboard';
+        await persist({ applicationIds: [current.id] });
         return;
       }
 
       const tab = previewMode
         ? { id: current.tabId, url: current.url }
         : await chrome.tabs.get(current.tabId);
-      current.navigationGate = await navigationStatusFor(tab);
+      assertApprovedApplicationLocation(current, tab.url);
+      assertApplicationRun(current, runToken);
+      current.navigationGate = await navigationStatusFor(tab, current);
+      assertApplicationRun(current, runToken);
 
       if (current.navigationGate?.kind !== 'next') {
         current.runStopReason = current.navigationGate?.reason || 'No approved continuation control is visible. Review the application before taking the next action.';
@@ -1266,20 +2313,24 @@
             : /signature|sign\b/i.test(signal) ? 'signature'
             : /certif|attest|declaration|affirm/i.test(signal) ? 'certification'
               : current.navigationGate?.kind === 'final_review' ? 'final_review' : 'navigation_unknown';
-        setCheckpoint(current, kind, kind === 'navigation_unknown' ? 'Manual page continuation required' : 'Human final review required', 'ready_for_review');
-        recordAudit('review_reached', current, { checkpointKind: kind, pageCount: (current.completedPages?.length || 0) + 1, toStatus: 'ready_for_review' });
+        const finalCheckpoint = ['signature', 'certification', 'final_review'].includes(kind);
+        const nextStatus = finalCheckpoint ? 'ready_for_review' : 'needs_attention';
+        setCheckpoint(current, kind, finalCheckpoint ? 'Human final review required' : 'Caseworker action required', nextStatus);
+        if (finalCheckpoint) recordAudit('review_reached', current, { checkpointKind: kind, pageCount: (current.completedPages?.length || 0) + 1, toStatus: nextStatus });
         state.currentAppId = current.id;
-        state.view = 'review';
-        await persist();
+        if (!background) state.view = finalCheckpoint ? 'review' : 'dashboard';
+        assertApplicationRun(current, runToken);
+        await persist({ applicationIds: [current.id] });
         return;
       }
 
-      if ((current.completedPages?.length || 0) >= MAX_AUTOMATED_PAGES - 1) {
-        current.runStopReason = `The assistant reached its ${MAX_AUTOMATED_PAGES}-page safety limit and stopped.`;
+      const pageLimit = automatedPageLimit(current);
+      if ((current.completedPages?.length || 0) >= pageLimit - 1) {
+        current.runStopReason = `The assistant reached this playbook’s ${pageLimit}-page safety limit and stopped.`;
         current.error = current.runStopReason;
         setCheckpoint(current, 'navigation_unknown', 'Automation page limit reached', 'needs_attention');
-        state.view = 'dashboard';
-        await persist();
+        if (!background) state.view = 'dashboard';
+        await persist({ applicationIds: [current.id] });
         return;
       }
 
@@ -1288,30 +2339,36 @@
         current.runStopReason = 'The application returned to a page it already completed. The assistant stopped to avoid a navigation loop.';
         current.error = current.runStopReason;
         setCheckpoint(current, 'page_changed', 'Repeated application page detected', 'needs_attention');
-        state.view = 'dashboard';
-        await persist();
+        if (!background) state.view = 'dashboard';
+        await persist({ applicationIds: [current.id] });
         return;
       }
 
-      setBusy(`Page ${(current.completedPages?.length || 0) + 1} verified. Moving to the next page…`);
-      const advanced = await sendToTab(tab, { type: 'NAVA_ADVANCE' });
+      if (!background) setBusy(`Page ${(current.completedPages?.length || 0) + 1} verified. Moving to the next page…`);
+      assertApplicationRun(current, runToken);
+      const advanced = await sendToTab(tab, { type: 'NAVA_ADVANCE' }, { application: current, requireLease: true });
+      assertApplicationRun(current, runToken);
       if (!advanced?.ok || !advanced.advanced) {
         throw new Error(advanced?.navigationGate?.reason || 'The approved continuation control was no longer available.');
       }
       recordAudit('safe_advance', current, { pageCount: (current.completedPages?.length || 0) + 1 });
-      const nextTab = await waitForNextPage(current.tabId, signature);
+      const nextTab = await waitForNextPage(current, signature, runToken);
+      assertApplicationRun(current, runToken);
       current.visitedSignatures = [...(current.visitedSignatures || []), signature];
       archiveCurrentPage(current);
-      await persist();
-      current = await scanTab(nextTab, { quiet: true, applicationId: current.id });
+      assertApplicationRun(current, runToken);
+      await persist({ applicationIds: [current.id] });
+      current = await scanTab(nextTab, { quiet: true, applicationId: current.id, runToken });
       current.autoRun = true;
     }
   }
 
-  async function fillApplication(application, userAssignments = [], unresolved = []) {
+  async function fillApplication(application, userAssignments = [], unresolved = [], { runToken = null } = {}) {
+    assertApplicationRun(application, runToken);
     application.autoRun = false;
     application.runStopReason = '';
-    await fillCurrentPage(application, userAssignments, unresolved);
+    await fillCurrentPage(application, userAssignments, unresolved, { runToken });
+    assertApplicationRun(application, runToken);
     if (application.empty.length) {
       application.status = 'needs_attention';
     } else {
@@ -1321,12 +2378,15 @@
           : /signature|sign\b/i.test(signal) ? 'signature'
           : /certif|attest|declaration|affirm/i.test(signal) ? 'certification'
             : application.navigationGate?.kind === 'final_review' ? 'final_review' : 'navigation_unknown';
-      setCheckpoint(application, kind, 'Human review required', 'ready_for_review');
-      recordAudit('review_reached', application, { checkpointKind: kind, pageCount: (application.completedPages?.length || 0) + 1, toStatus: 'ready_for_review' });
+      const finalCheckpoint = ['signature', 'certification', 'final_review'].includes(kind);
+      const nextStatus = finalCheckpoint ? 'ready_for_review' : 'needs_attention';
+      setCheckpoint(application, kind, finalCheckpoint ? 'Human review required' : 'Caseworker action required', nextStatus);
+      if (finalCheckpoint) recordAudit('review_reached', application, { checkpointKind: kind, pageCount: (application.completedPages?.length || 0) + 1, toStatus: nextStatus });
     }
     application.runStopReason = application.navigationGate?.reason || '';
+    assertApplicationRun(application, runToken);
     state.view = application.status === 'ready_for_review' ? 'review' : 'dashboard';
-    await persist();
+    await persist({ applicationIds: [application.id] });
   }
 
   async function goToApplication(application) {
@@ -1336,7 +2396,8 @@
     if (tab.windowId) await chrome.windows.update(tab.windowId, { focused: true });
   }
 
-  async function resumeApplication(application, useCurrentTab = false) {
+  async function resumeApplication(application, useCurrentTab = false, { runToken = null } = {}) {
+    assertApplicationRun(application, runToken);
     setBusy('Verifying the saved application page before resuming…');
     let tab = null;
     try {
@@ -1346,15 +2407,48 @@
     } catch {
       tab = null;
     }
+    assertApplicationRun(application, runToken);
+
+    if (tab?.id) {
+      try {
+        assertApprovedApplicationLocation(application, tab.url);
+        const expectedLocationHash = application.resumePoint?.locationHash;
+        if (expectedLocationHash && expectedLocationHash !== workQueueEngine.signatureHash(workQueueEngine.safeLocation(tab.url))) {
+          throw new Error('The open tab is not at the saved application location.');
+        }
+        const expectedCommandLocationHash = application.resumePoint?.commandLocationHash;
+        if (expectedCommandLocationHash && expectedCommandLocationHash !== workQueueEngine.signatureHash(commandLocation(tab.url))) {
+          throw new Error('The application query or page state changed since it was paused.');
+        }
+        if (!application.allowedPathPrefixes?.length) {
+          application.allowedOrigins = [urlOrigin(tab.url)].filter(Boolean);
+          application.allowedPathPrefixes = [urlPath(tab.url)].filter(Boolean);
+        }
+      } catch (error) {
+        assertApplicationRun(application, runToken);
+        application.error = error.message;
+        setCheckpoint(application, 'page_changed', 'Application tab changed', 'paused');
+        recordAudit('resume_rejected', application, { resumeOutcome: 'location_changed', checkpointKind: 'page_changed', toStatus: 'paused' });
+        state.view = 'dashboard';
+        await persist({ applicationIds: [application.id] });
+        return application;
+      }
+    }
+    assertApplicationRun(application, runToken);
 
     let response = null;
     if (tab?.id && state.participant && !state.participant?._connector?.stale) {
       try {
-        response = await sendToTab(tab, { type: 'NAVA_SCAN', participant: state.participant });
+        response = await sendToTab(
+          tab,
+          { type: 'NAVA_SCAN', participant: participantForApplication(application) },
+          { application },
+        );
       } catch {
         response = null;
       }
     }
+    assertApplicationRun(application, runToken);
     const decision = workQueueEngine.resumeDecision(application, response?.ok ? {
       url: response.page?.url || tab?.url,
       pageSignature: response.navigationGate?.pageSignature || '',
@@ -1368,23 +2462,25 @@
       setCheckpoint(application, decision.checkpointKind, decision.reason, decision.outcome === 'source_expired' ? 'source_expired' : 'paused');
       recordAudit('resume_rejected', application, { resumeOutcome: decision.outcome, checkpointKind: decision.checkpointKind, toStatus: application.status });
       state.view = 'dashboard';
-      await persist();
+      await persist({ applicationIds: [application.id] });
       return application;
     }
 
     application.tabId = tab.id;
-    const resumed = await scanTab(tab, { quiet: true, applicationId: application.id });
+    const resumed = await scanTab(tab, { quiet: true, applicationId: application.id, runToken });
+    assertApplicationRun(resumed, runToken);
     resumed.error = '';
     recordAudit('resume_verified', resumed, { resumeOutcome: 'verified', toStatus: resumed.status });
     state.currentAppId = resumed.id;
     state.view = 'dashboard';
-    await persist();
+    await persist({ applicationIds: [resumed.id] });
     return resumed;
   }
 
-  async function exportAuditLog() {
+  async function exportAuditLog(uiToken) {
     recordAudit('audit_exported', null);
-    await persist();
+    await persist({ applicationIds: [] });
+    assertUiGeneration(uiToken);
     const payload = workQueueEngine.exportAudit(durableQueue());
     const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1395,12 +2491,19 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  async function onClick(button) {
+  async function onClick(button, initialUiGeneration = uiGeneration) {
     const action = button.dataset.action;
+    let uiToken = initialUiGeneration;
     state.error = '';
-    if (action === 'close') {
-      window.close();
-      return;
+    if (action === 'home') {
+      await cancelUiBoundRuns();
+      uiToken = cancelPendingUiWork();
+      state.connectorDraft = null;
+      state.connectorSchema = [];
+      state.pendingConnectorRecord = null;
+      state.documentResult = null;
+      state.handoffApplicationId = null;
+      state.view = canonicalHomeView();
     }
     if (action === 'choose-id') state.view = 'record';
     if (action === 'choose-json') state.view = 'json';
@@ -1408,11 +2511,29 @@
       state.connectorDraft = null;
       state.connectorSchema = [];
       state.pendingConnectorRecord = null;
+      state.view = managedConnector() ? 'connector' : 'providers';
+    }
+    if (action === 'back-providers') state.view = 'providers';
+    if (action === 'select-provider') {
+      const provider = connectorEngine.providerDefinition(button.dataset.provider);
+      if (!provider) throw new Error('Choose a supported data source.');
+      state.connectorDraft = {
+        provider: provider.id,
+        organizationName: '',
+        backendUrl: '',
+        connectionId: '',
+        sourceId: '',
+        maxAgeDays: 30,
+        mappings: {},
+      };
+      state.connectorSchema = [];
       state.view = 'connector';
     }
     if (action === 'back-connector') state.view = 'connector';
     if (action === 'local-connector-settings') {
-      document.getElementById('connector-provider').value = 'apricot360';
+      const providerSelect = document.getElementById('connector-provider');
+      providerSelect.value = 'apricot360';
+      providerSelect.dispatchEvent(new Event('change', { bubbles: true }));
       document.getElementById('connector-org').value = 'Riverside Community Services';
       document.getElementById('connector-url').value = 'http://127.0.0.1:4789';
       document.getElementById('connection-id').value = 'nava-demo';
@@ -1421,13 +2542,10 @@
     }
     if (action === 'reset-connector') {
       setBusy('Disconnecting the data source…');
-      const response = await sendRuntime({ type: 'RESET_CONNECTOR' });
-      if (!response?.ok) throw new Error(response?.error || 'The connector could not be removed.');
-      state.connector = response.connector;
-      state.connectorDraft = null;
-      state.connectorSchema = [];
-      state.pendingConnectorRecord = null;
-      state.view = 'choice';
+      await withCoordinatorMutation(async () => {
+        const response = await sendRuntime({ type: 'RESET_CONNECTOR', sessionEpoch: state.sessionEpoch });
+        await reconcileConnectorMutation(response, uiToken, 'choice');
+      });
     }
     if (action === 'choose-document') {
       state.documentResult = null;
@@ -1440,10 +2558,13 @@
     }
     if (action === 'confirm-connector-record') {
       if (!state.pendingConnectorRecord) throw new Error('Retrieve and review a connector record first.');
-      state.participant = state.pendingConnectorRecord;
-      markSourceReloaded();
+      const participant = state.pendingConnectorRecord;
+      const activeTab = await getActiveTab();
+      assertUiGeneration(uiToken);
+      await commitParticipant(participant);
+      assertUiGeneration(uiToken);
       state.pendingConnectorRecord = null;
-      state.activeTab = await getActiveTab();
+      state.activeTab = activeTab;
       state.view = 'programs';
       await persist();
     }
@@ -1453,6 +2574,8 @@
       state.view = 'document';
     }
     if (action === 'change-client') {
+      cancelAllRuns();
+      uiToken = cancelPendingUiWork();
       state.participant = null;
       state.documentResult = null;
       state.pendingConnectorRecord = null;
@@ -1460,24 +2583,23 @@
       state.currentAppId = null;
       state.previewPage = 1;
       state.view = 'choice';
-      if (!previewMode) await Promise.all([
-        chrome.storage.session.remove('nava:session'),
-        chrome.storage.local.remove(QUEUE_STORAGE_KEY),
-      ]);
+      await clearAssistantState();
     }
     if (action === 'back-dashboard') {
       state.handoffApplicationId = null;
       state.view = 'dashboard';
     }
     if (action === 'add-application') {
-      state.activeTab = await getActiveTab();
+      const activeTab = await getActiveTab();
+      assertUiGeneration(uiToken);
+      state.activeTab = activeTab;
       state.view = 'programs';
     }
     if (action === 'reload-source') {
       state.view = 'choice';
     }
     if (action === 'export-audit') {
-      await exportAuditLog();
+      await exportAuditLog(uiToken);
       return;
     }
     if (action === 'use-sample') {
@@ -1485,6 +2607,8 @@
       return;
     }
     if (action === 'start-over') {
+      cancelAllRuns();
+      uiToken = cancelPendingUiWork();
       recordAudit('session_ended', null);
       state.participant = null;
       state.documentResult = null;
@@ -1493,10 +2617,7 @@
       state.currentAppId = null;
       state.previewPage = 1;
       state.view = 'choice';
-      if (!previewMode) await Promise.all([
-        chrome.storage.session.remove('nava:session'),
-        chrome.storage.local.remove(QUEUE_STORAGE_KEY),
-      ]);
+      await clearAssistantState();
     }
     if (['answer', 'answer-run', 'fill', 'run', 'review', 'rescan', 'go-tab', 'scan-application', 'resume', 'resume-current', 'open-handoff', 'pause', 'accept-handoff'].includes(action)) {
       const id = decoded(button.dataset.app);
@@ -1507,29 +2628,60 @@
         application.autoRun = action === 'answer-run';
         state.view = 'questions';
       }
-      if (action === 'fill') await withApplicationLease(application, () => fillApplication(application));
-      if (action === 'run') await withApplicationLease(application, () => runThroughApplication(application));
+      if (action === 'fill') {
+        await withNewApplicationRun(
+          application,
+          (runToken) => withApplicationLease(
+            application,
+            () => fillApplication(application, [], [], { runToken }),
+          ),
+          { uiBound: true },
+        );
+      }
+      if (action === 'run') {
+        await withNewApplicationRun(
+          application,
+          (runToken) => withApplicationLease(
+            application,
+            () => runThroughApplication(application, [], [], { runToken }),
+          ),
+          { uiBound: true },
+        );
+      }
       if (action === 'review') state.view = 'review';
       if (action === 'rescan') {
         const tab = previewMode ? { id: application.tabId, url: application.url } : await chrome.tabs.get(application.tabId);
-        await scanTab(tab, { applicationId: application.id });
+        assertUiGeneration(uiToken);
+        await scanTab(tab, { applicationId: application.id, uiToken });
       }
       if (action === 'scan-application') {
         const tab = previewMode ? { id: application.tabId, url: application.url } : await chrome.tabs.get(application.tabId);
-        await scanTab(tab, { applicationId: application.id });
+        assertUiGeneration(uiToken);
+        await scanTab(tab, { applicationId: application.id, uiToken });
       }
       if (action === 'resume' || action === 'resume-current') {
-        await withApplicationLease(application, () => resumeApplication(application, action === 'resume-current'));
+        await withNewApplicationRun(
+          application,
+          (runToken) => withApplicationLease(
+            application,
+            () => resumeApplication(application, action === 'resume-current', { runToken }),
+          ),
+          { uiBound: true },
+        );
       }
       if (action === 'open-handoff') {
+        await revokeApplicationRun(application);
+        setCheckpoint(application, 'voluntary_pause', 'Paused while caseworker chooses a handoff', 'paused');
         state.handoffApplicationId = application.id;
         state.view = 'handoff';
+        await persist({ applicationIds: [application.id] });
       }
       if (action === 'pause') {
+        await revokeApplicationRun(application);
         setCheckpoint(application, 'voluntary_pause', 'Paused by caseworker', 'paused');
         state.handoffApplicationId = null;
         state.view = 'dashboard';
-        await persist();
+        await persist({ applicationIds: [application.id] });
       }
       if (action === 'accept-handoff') {
         const acceptedAt = new Date().toISOString();
@@ -1539,18 +2691,22 @@
         application.checkpoint = checkpoint('voluntary_pause', 'Handoff accepted; verify page before resuming');
         application.updatedAt = acceptedAt;
         recordAudit('handoff_accepted', application, { actor: application.owner?.assignedTo, toStatus: 'paused' });
-        await persist();
+        await persist({ applicationIds: [application.id] });
       }
       if (action === 'go-tab') await goToApplication(application);
     }
     if (action === 'analyze-current') {
-      state.activeTab = await getActiveTab();
-      await scanTab(state.activeTab);
+      const activeTab = await getActiveTab();
+      assertUiGeneration(uiToken);
+      state.activeTab = activeTab;
+      await scanTab(state.activeTab, { uiToken });
     }
+    assertUiGeneration(uiToken);
     render();
   }
 
-  async function onSubmit(form) {
+  async function onSubmit(form, uiToken = uiGeneration) {
+    assertUiGeneration(uiToken);
     state.error = '';
     if (form.id === 'handoff-form') {
       const application = state.apps.find((item) => item.id === state.handoffApplicationId);
@@ -1569,22 +2725,30 @@
       recordAudit('handoff_created', application, { actor: assignedTo, checkpointKind: 'handoff', toStatus: 'handoff_pending' });
       state.handoffApplicationId = null;
       state.view = 'dashboard';
-      await persist();
+      await persist({ applicationIds: [application.id] });
+      assertUiGeneration(uiToken);
     }
     if (form.id === 'connector-form') {
       const data = new FormData(form);
-      const config = {
+      const submittedIdentity = {
         provider: String(data.get('provider') || '').trim(),
-        organizationName: String(data.get('organizationName') || '').trim(),
         backendUrl: String(data.get('backendUrl') || '').trim(),
         connectionId: String(data.get('connectionId') || '').trim(),
         sourceId: String(data.get('sourceId') || '').trim(),
+      };
+      const sameMappedSource = managedConnector()
+        && ['provider', 'backendUrl', 'connectionId', 'sourceId']
+          .every((key) => String(state.connector[key] || '').trim() === submittedIdentity[key]);
+      const config = {
+        ...submittedIdentity,
+        organizationName: String(data.get('organizationName') || '').trim(),
         maxAgeDays: Number(data.get('maxAgeDays')),
-        mappings: managedConnector() ? state.connector.mappings : {},
-        mappingVersion: managedConnector() ? Number(state.connector.mappingVersion || 1) + 1 : 1,
+        mappings: sameMappedSource ? state.connector.mappings : {},
+        mappingVersion: sameMappedSource ? Number(state.connector.mappingVersion || 1) + 1 : 1,
       };
       setBusy('Testing the connector and loading labeled fields…');
       const response = await sendRuntime({ type: 'DISCOVER_CONNECTOR', config });
+      assertUiGeneration(uiToken);
       if (!response?.ok) throw new Error(response?.error || 'The connector could not be verified.');
       state.connectorDraft = { ...response.config, mappings: response.suggestions || {} };
       state.connectorSchema = response.schema || [];
@@ -1599,15 +2763,18 @@
       });
       const config = { ...state.connectorDraft, mappings };
       setBusy('Saving the reviewed field mapping…');
-      const response = await sendRuntime({ type: 'SAVE_CONNECTOR', config, schema: state.connectorSchema });
-      if (!response?.ok) throw new Error(response?.error || 'The connector mapping could not be saved.');
-      state.connector = response.connector;
-      state.connectorDraft = null;
-      state.connectorSchema = [];
-      state.view = 'choice';
+      await withCoordinatorMutation(async () => {
+        const response = await sendRuntime({
+          type: 'SAVE_CONNECTOR',
+          sessionEpoch: state.sessionEpoch,
+          config,
+          schema: state.connectorSchema,
+        });
+        await reconcileConnectorMutation(response, uiToken);
+      });
     }
     if (form.id === 'record-form') {
-      await lookupRecord(new FormData(form).get('recordId'));
+      await lookupRecord(new FormData(form).get('recordId'), uiToken);
     }
     if (form.id === 'json-form') {
       const raw = new FormData(form).get('clientJson');
@@ -1618,22 +2785,27 @@
         throw new Error('That is not valid JSON. Check the commas and quotation marks, then try again.');
       }
       if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('Paste one client record as a JSON object.');
-      state.participant = parsed;
-      markSourceReloaded();
-      state.activeTab = await getActiveTab();
+      const activeTab = await getActiveTab();
+      assertUiGeneration(uiToken);
+      await commitParticipant(parsed);
+      assertUiGeneration(uiToken);
+      state.activeTab = activeTab;
       state.view = 'programs';
       await persist();
     }
     if (form.id === 'document-form') {
       const file = form.elements.clientDocument?.files?.[0];
       setBusy('Reading the document on this device…');
-      state.documentResult = await globalThis.NavaDocumentParser.parseDocument(file, {
+      const documentResult = await globalThis.NavaDocumentParser.parseDocument(file, {
         onProgress(update) {
+          if (uiToken !== uiGeneration) return;
           const page = update.pageNumber ? ` page ${update.pageNumber}${update.totalPages ? ` of ${update.totalPages}` : ''}` : '';
           const percent = Number.isFinite(update.progress) && update.progress > 0 ? ` · ${Math.round(update.progress * 100)}%` : '';
           setBusy(`On-device OCR${page}: ${update.status || 'working'}${percent}`);
         },
       });
+      assertUiGeneration(uiToken);
+      state.documentResult = documentResult;
       state.view = 'document-review';
     }
     if (form.id === 'document-review-form') {
@@ -1645,9 +2817,12 @@
       const currentValues = state.participant ? clientSummary().values : {};
       const existing = Object.fromEntries(Object.entries(currentValues).filter(([, value]) => value !== undefined && value !== null && value !== ''));
       const additions = Object.fromEntries(selected.map((field) => [field.key, field.value]));
-      state.participant = {
+      const activeTab = await getActiveTab();
+      assertUiGeneration(uiToken);
+      const participant = {
         ...existing,
         ...additions,
+        ...(state.participant?._connector ? { _connector: state.participant._connector } : {}),
         _documentSources: [
           ...(state.participant?._documentSources || []),
           {
@@ -1663,22 +2838,36 @@
           },
         ],
       };
-      markSourceReloaded();
+      await commitParticipant(participant);
+      assertUiGeneration(uiToken);
       state.documentResult = null;
-      state.activeTab = await getActiveTab();
+      state.activeTab = activeTab;
       state.view = 'programs';
       await persist();
     }
     if (form.id === 'program-form') {
       const values = new FormData(form).getAll('program');
       if (!values.length) throw new Error('Choose at least one application or the current form.');
+      const applicationsToRun = [];
       if (values.includes('current')) {
-        state.activeTab = await getActiveTab();
-        await scanTab(state.activeTab);
+        const activeTab = await getActiveTab();
+        assertUiGeneration(uiToken);
+        state.activeTab = activeTab;
+        applicationsToRun.push(await scanTab(state.activeTab, { uiToken }));
       }
-      await openSelectedPrograms(values);
-      state.view = 'dashboard';
-      await persist();
+      applicationsToRun.push(...await openSelectedPrograms(values));
+      const showDashboard = uiToken === uiGeneration;
+      if (showDashboard) state.view = 'dashboard';
+      await persist({
+        applicationIds: applicationsToRun.map((application) => application.id),
+        includeCurrentAppId: true,
+      });
+      if (showDashboard) render();
+      void enqueueApplicationBatch(applicationsToRun.map((application) => application.id)).catch((error) => {
+        state.error = error.message;
+        if (state.view === 'dashboard') render();
+      });
+      return;
     }
     if (form.id === 'questions-form') {
       const application = state.apps.find((item) => item.id === state.currentAppId);
@@ -1702,9 +2891,28 @@
           sensitive: gap.sensitive,
         });
       });
-      if (application.autoRun) await withApplicationLease(application, () => runThroughApplication(application, userAssignments, unresolved));
-      else await withApplicationLease(application, () => fillApplication(application, userAssignments, unresolved));
+      if (application.autoRun) {
+        await withNewApplicationRun(
+          application,
+          (runToken) => withApplicationLease(
+            application,
+            () => runThroughApplication(application, userAssignments, unresolved, { runToken }),
+          ),
+          { uiBound: true },
+        );
+      }
+      else {
+        await withNewApplicationRun(
+          application,
+          (runToken) => withApplicationLease(
+            application,
+            () => fillApplication(application, userAssignments, unresolved, { runToken }),
+          ),
+          { uiBound: true },
+        );
+      }
     }
+    assertUiGeneration(uiToken);
     render();
   }
 
@@ -1723,6 +2931,9 @@
     if (message.type === 'DISCOVER_CONNECTOR') {
       try {
         const config = connectorEngine.sanitizeConfig(message.config);
+        if (config.provider !== 'apricot360') {
+          return Promise.resolve({ ok: false, error: 'This simulated preview includes only the fictional Apricot-shaped adapter. Use a provisioned Nava connector service for this provider.' });
+        }
         const schema = connectorEngine.normalizeSchemaFields(PREVIEW_CONNECTOR_SCHEMA);
         return Promise.resolve({
           ok: true,
@@ -1772,17 +2983,11 @@
       });
     }
     if (message.type === 'OPEN_PROGRAMS') {
-      const names = { calfresh: 'CalFresh', medical: 'Medi-Cal', wic: 'WIC', calworks: 'CalWORKs', ihss: 'IHSS' };
       return Promise.resolve({
         ok: true,
-        opened: message.programs.map((key, index) => ({
+        opened: programCatalog.planWorkflows(message.programs).map((workflow, index) => ({
+          ...workflow,
           tabId: 8000 + index,
-          name: names[key],
-          url: key === 'wic'
-            ? 'https://www.ruhealth.org/appointments/apply-4-wic-form'
-            : key === 'ihss'
-              ? 'https://riversideihss.org/IntakeApp'
-              : 'https://benefitscal.com/',
         })),
       });
     }
@@ -1909,7 +3114,7 @@
     return true;
   }
 
-  async function loadPreviewDocumentFixture() {
+  async function loadPreviewDocumentFixture(uiToken = uiGeneration) {
     if (!previewMode) return false;
     const params = new URLSearchParams(location.search);
     const fixtureKey = params.get('fixture');
@@ -1925,16 +3130,20 @@
     const response = await fetch(`../demo/fixtures/${fixture.name}`);
     if (!response.ok) throw new Error('The local preview document could not be loaded.');
     const file = new File([await response.arrayBuffer()], fixture.name, { type: fixture.type });
-    state.documentResult = await globalThis.NavaDocumentParser.parseDocument(file);
+    const documentResult = await globalThis.NavaDocumentParser.parseDocument(file);
+    assertUiGeneration(uiToken);
+    state.documentResult = documentResult;
     if (params.get('conflict') === '1') state.participant = DEMO_RECORDS['339619'];
     state.view = 'document-review';
     return true;
   }
 
-  appRoot.addEventListener('click', (event) => {
+  document.addEventListener('click', (event) => {
     const button = event.target.closest('[data-action]');
     if (!button) return;
-    onClick(button).catch((error) => {
+    const uiToken = uiGeneration;
+    onClick(button, uiToken).catch((error) => {
+      if (error?.name === 'UiCancelledError' || uiToken !== uiGeneration) return;
       state.error = error.message;
       render();
     });
@@ -1942,22 +3151,74 @@
 
   appRoot.addEventListener('submit', (event) => {
     event.preventDefault();
-    onSubmit(event.target).catch((error) => {
+    const uiToken = uiGeneration;
+    onSubmit(event.target, uiToken).catch((error) => {
+      if (error?.name === 'UiCancelledError' || uiToken !== uiGeneration) return;
       state.error = error.message;
       render();
     });
   });
 
+  appRoot.addEventListener('change', (event) => {
+    if (event.target.id !== 'connector-provider') return;
+    const provider = connectorEngine.providerDefinition(event.target.value);
+    if (!provider) return;
+    const sourceLabel = document.querySelector('label[for="connector-source-id"]');
+    const sourceInput = document.getElementById('connector-source-id');
+    if (sourceLabel) sourceLabel.textContent = provider.sourceLabel;
+    if (sourceInput) sourceInput.placeholder = provider.sourceLabel;
+  });
+
+  async function refreshActiveTab() {
+    if (previewMode) return;
+    try {
+      state.activeTab = await getActiveTab();
+      if (state.view === 'programs') render();
+    } catch {
+      // Tabs can disappear between Chrome's event and the lookup.
+    }
+  }
+
+  if (!previewMode) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== 'local' || !changes[COORDINATOR_STORAGE_KEY]?.newValue) return;
+      observeCoordinator(changes[COORDINATOR_STORAGE_KEY].newValue);
+    });
+    chrome.tabs.onActivated.addListener(() => {
+      void refreshActiveTab();
+    });
+    chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+      if (!tab.active || (!changeInfo.url && changeInfo.status !== 'complete')) return;
+      void refreshActiveTab();
+    });
+  }
+
   async function bootstrap() {
+    const uiToken = uiGeneration;
     setBusy('Opening the assistant…');
     try {
       await restoreConnector();
       await restore();
       state.activeTab = await getActiveTab();
+      assertUiGeneration(uiToken);
       loadPreviewQueueFixture();
-      await loadPreviewDocumentFixture();
+      await loadPreviewDocumentFixture(uiToken);
+      assertUiGeneration(uiToken);
       render();
+      if (!previewMode) {
+        const interruptedRuns = state.apps
+          .filter((application) => application.autoRun && ['not_started', 'ready_to_fill'].includes(application.status) && application.tabId)
+          .map((application) => application.id);
+        if (interruptedRuns.length) {
+          void enqueueApplicationBatch(interruptedRuns).catch((error) => {
+            state.error = error.message;
+            state.view = 'dashboard';
+            render();
+          });
+        }
+      }
     } catch (error) {
+      if (error?.name === 'UiCancelledError' || uiToken !== uiGeneration) return;
       state.error = error.message;
       state.view = 'choice';
       render();

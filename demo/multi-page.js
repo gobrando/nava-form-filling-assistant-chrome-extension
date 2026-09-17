@@ -3,26 +3,8 @@
 
   const params = new URLSearchParams(location.search);
   const step = Math.min(3, Math.max(1, Number(params.get('step')) || 1));
-  const autoRun = params.get('autorun') === '1';
   const form = document.getElementById('application-form');
-  const output = document.getElementById('test-output');
   const stepNames = ['About the applicant', 'Home address', 'Review and submit'];
-  const participant = {
-    record_id: '339619',
-    participant: {
-      name: { first: 'Celeste', middle: 'NAVA', last: 'Thomas II' },
-      date_of_birth: '2000-01-02',
-      primary_language: 'English',
-    },
-    contact_information: {
-      phones: { cell: '777-777-7777' },
-      email: 'testnava@email.com',
-    },
-    address: {
-      residential: { street: '5556 Test Blvd', unit: 'Apt 556', city: 'WILDOMAR', state: 'California', zip: '92595' },
-    },
-  };
-
   const pageMarkup = {
     1: `
       <div class="intro"><p class="eyebrow">Step 1</p><h1>About the applicant</h1><p>Start with the client’s identity details.</p></div>
@@ -70,36 +52,4 @@
     document.getElementById('result').textContent = 'Fixture only: nothing was submitted.';
   });
 
-  async function exercisePage() {
-    const scan = await globalThis.NavaPageAgentTestApi.scan(participant);
-    const fill = await globalThis.NavaPageAgentTestApi.fill(scan.analysis.assignments);
-    const history = JSON.parse(sessionStorage.getItem('nava:fixture-history') || '[]');
-    const entry = {
-      step,
-      fields: scan.analysis.counts.fields,
-      verified: fill.verifiedCount,
-      blocked: fill.blockedCount,
-      gate: fill.navigationGate.kind,
-    };
-    const nextHistory = [...history.filter((item) => item.step !== step), entry].sort((a, b) => a.step - b.step);
-    sessionStorage.setItem('nava:fixture-history', JSON.stringify(nextHistory));
-    output.textContent = nextHistory.map((item) =>
-      `Page ${item.step}: ${item.verified}/${item.fields} verified · ${item.gate}`).join('\n');
-    document.body.dataset.testResult = `${fill.blockedCount === 0 ? 'verified' : 'blocked'}:${fill.navigationGate.kind}`;
-
-    if (fill.blockedCount > 0) return;
-    if (fill.navigationGate.kind === 'next' && autoRun) {
-      output.textContent += '\nContinuing with the approved control…';
-      setTimeout(() => globalThis.NavaPageAgentTestApi.advance(), 650);
-      return;
-    }
-    if (fill.navigationGate.kind === 'final_review') {
-      output.textContent += '\nStopped safely before Submit application.';
-    }
-  }
-
-  exercisePage().catch((error) => {
-    document.body.dataset.testResult = 'error';
-    output.textContent = error.message;
-  });
 })();

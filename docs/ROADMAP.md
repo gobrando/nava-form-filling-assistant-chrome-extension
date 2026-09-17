@@ -4,7 +4,7 @@
 
 ### Self-service database connector — provider-neutral extension slice complete
 
-Version 0.7 generalizes the extension-side connector milestone against a provider-neutral contract. An organization can choose a source type, enter a managed service URL and opaque connection ID, test access, load labeled source fields, review suggested mappings, retrieve and confirm a fictional record with field-level provenance and freshness, and launch the multi-page runner without pasting JSON.
+Version 0.8 exposes the provider catalog as a full clickable selection screen and generalizes the extension-side connector milestone against a provider-neutral contract. An organization can choose a source type, enter a managed service URL and opaque connection ID, test access, load labeled source fields, review suggested mappings, retrieve and confirm a fictional record with field-level provenance and freshness, and launch the multi-page runner without pasting JSON.
 
 The extension rejects secret-like configuration, requires HTTPS outside localhost, keeps participant records in session storage, and never assigns meaning from an opaque provider field ID. The catalog covers Apricot, Salesforce Nonprofit, Bitfocus Clarity, WellSky Community Services, Eccovia ClientTrack, CaseWorthy, Foothold AWARDS, and Bonterra ETO. Only the fictional Apricot-shaped loopback adapter is runnable; the production backend and every authorized provider adapter remain separate work.
 
@@ -14,9 +14,9 @@ This is not yet a Plaid-like provider network. That requires organization authen
 
 Version 0.5 adds bundled English OCR for PNG, JPEG, WebP, and image-only PDF pages; strict page/pixel/attempt/time budgets; rotation recovery; page/region/confidence provenance; default-unchecked OCR proposals; and an executable quality gate. The synthetic corpus currently passes at 100% precision, 91.2% recall, 100% expected-abstention accuracy, zero accepted wrong values, and zero sensitive evidence leaks. The next extraction work is pilot-grade hardening against representative, consented documents rather than broader automatic acceptance.
 
-### Multi-application UI — useful foundation complete
+### Multi-application UI — local coordinator implemented; browser concurrency validation pending
 
-The dashboard tracks separate application tabs, retains one session client, shows attention states, runs approved multi-page flows, and produces cross-page progress.
+The dashboard tracks separate application tabs, retains one session client, shows attention states, and now starts selected known applications immediately with up to three tab-bound workers. BenefitsCal programs are grouped into one workflow, current IHSS/WIC routes and redirects are cataloged, application actions cannot scan an unrelated focused tab, and commands are bound to an approved Chrome document and route. The service worker now serializes client claims, queue revisions, leases, command dispatch, revocation, and connector invalidation; an application-scoped conflict no longer stops healthy sibling workers. The side panel must still stay open to execute the runner, so the next queue step is moving runner lifetime and authenticated recovery into a durable backend.
 
 ## Completed milestone: OCR and extraction evaluation
 
@@ -33,14 +33,14 @@ The repository now provides the implementation and a reproducible synthetic base
 
 ## Completed milestone: resumable multi-application work queues and handoff
 
-Version 0.6 makes the existing multi-application dashboard operational across ordinary caseworker interruptions while preserving the session-only client-data boundary.
+Version 0.6 implements the local state machinery for ordinary caseworker interruptions while preserving the session-only client-data boundary; installed-browser interruption exercises are still pending.
 
 1. Durable local state contains sanitized queue metadata and opaque page checksums, never participant values, raw documents, raw page signatures, or query strings.
 2. A paused application resumes only after a live read-only scan verifies the saved URL fingerprint and page-signature fingerprint.
 3. Ownership, pending/accepted handoffs, and named CAPTCHA, OTP, direct-entry, certification, signature, final-review, tab-closure, stale-source, and expired-source checkpoints are explicit.
 4. A value-free audit export records workflow events and bounded counts, not answers.
-5. Per-application leases prevent competing assistant panels in the same Chrome profile from writing concurrently and expire safely after interruption.
-6. Automated tests cover restart recovery, tab closure, stale/expired sources, changed pages, pending handoffs, competing leases, and the durable PII boundary.
+5. Per-application lease acquisition, revision checks, document-bound dispatch, and revocation are serialized by the extension service worker; leases expire after interruption and only their current holder can release them. A two-panel Chrome concurrency validation is still pending.
+6. Deterministic tests cover recovery, exclusive client sessions, compare-and-swap revisions, lease ownership, command/revoke ordering, tab closure, and connector invalidation. Installed-browser interruption and concurrency exercises remain pending.
 
 Because client values intentionally expire at browser-session end, a full browser restart requires source reauthorization/reload before filling can continue. This is a deliberate safety tradeoff, not silent loss: application progress and the exact checkpoint remain visible.
 

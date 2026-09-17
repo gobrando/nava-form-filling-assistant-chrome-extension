@@ -136,3 +136,19 @@ test('formats a labeled US-style document date for a date input', () => {
   assert.equal(analysis.assignments[0].value, '1992-07-08');
   assert.equal(analysis.assignments[0].source, 'changed');
 });
+
+test('maps the caseworker-selected BenefitsCal programs explicitly', () => {
+  const analysis = engine.buildAnalysis([
+    { fieldKey: 'calfresh', groupKey: 'group:checkbox:programs', type: 'checkbox', label: 'CalFresh', optionLabel: 'CalFresh', value: '' },
+    { fieldKey: 'medical', groupKey: 'group:checkbox:programs', type: 'checkbox', label: 'Medi-Cal', optionLabel: 'Medi-Cal', value: '' },
+    { fieldKey: 'calworks', groupKey: 'group:checkbox:programs', type: 'checkbox', label: 'CalWORKs', optionLabel: 'CalWORKs', value: '' },
+  ], {
+    applicationSelection: { calfresh: true, medical: false, calworks: true },
+  });
+  const assignments = Object.fromEntries(analysis.assignments.map((item) => [item.purpose, item.value]));
+  assert.deepEqual(assignments, {
+    applyCalFresh: 'yes',
+    applyMediCal: 'no',
+    applyCalWORKs: 'yes',
+  });
+});

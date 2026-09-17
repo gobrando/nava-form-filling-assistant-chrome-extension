@@ -1,7 +1,7 @@
 (function installWorkQueueEngine(root) {
   'use strict';
 
-  const QUEUE_VERSION = 1;
+  const QUEUE_VERSION = 2;
   const MAX_APPLICATIONS = 50;
   const MAX_AUDIT_EVENTS = 500;
   const DEFAULT_LEASE_MS = 2 * 60 * 1000;
@@ -100,6 +100,41 @@
     return Math.min(maximum, Math.max(0, Math.round(Number(value) || 0)));
   }
 
+  function safeProgramIds(values) {
+    const allowed = new Set(['calfresh', 'medical', 'calworks', 'wic', 'ihss']);
+    return [...new Set((Array.isArray(values) ? values : []).filter((value) => allowed.has(value)))];
+  }
+
+  function hasOwn(input, key) {
+    return Boolean(input && Object.prototype.hasOwnProperty.call(input, key));
+  }
+
+  function isBenefitsCalApplication(saved, session) {
+    if (cleanText(saved?.workflowId || session?.workflowId, 60).toLowerCase() === 'benefitscal') return true;
+    return [
+      saved?.location,
+      saved?.resumePoint?.location,
+      session?.url,
+      session?.page?.url,
+      session?.resumePoint?.location,
+    ].some((value) => {
+      const origin = safeOrigin(value);
+      if (!origin) return false;
+      return new URL(origin).hostname.toLowerCase().replace(/^www\./, '') === 'benefitscal.com';
+    });
+  }
+
+  function safeOrigins(values) {
+    return [...new Set((Array.isArray(values) ? values : []).map(safeOrigin).filter(Boolean))].slice(0, 8);
+  }
+
+  function safePathPrefixes(values) {
+    return [...new Set((Array.isArray(values) ? values : [])
+      .map((value) => cleanText(value, 120))
+      .filter((value) => value.startsWith('/') && !value.includes('?') && !value.includes('#')))]
+      .slice(0, 12);
+  }
+
   function normalizedStatus(value, fallback = 'not_started') {
     return STATUS_VALUES.has(value) ? value : fallback;
   }
@@ -157,9 +192,12 @@
       no_form: 55,
       ready_for_review: 100,
     }[normalizedStatus(application.status)] || 0;
-    return {
+    const durable = {
       id: cleanText(application.id, 100),
       name: cleanText(application.queueLabel || application.name || 'Application', 80),
+      workflowId: cleanText(application.workflowId, 60),
+      allowedOrigins: safeOrigins(application.allowedOrigins),
+      allowedPathPrefixes: safePathPrefixes(application.allowedPathPrefixes),
       location,
       tabId: Number.isInteger(application.tabId) ? application.tabId : null,
       status: normalizedStatus(application.status),
@@ -177,6 +215,9 @@
       } : null,
       updatedAt: safeIso(application.updatedAt),
     };
+    if (hasOwn(application, 'programIds')) durable.programIds = safeProgramIds(application.programIds);
+    if (application.programSelectionRequired === true) durable.programSelectionRequired = true;
+    return durable;
   }
 
   function sanitizeDetails(details) {
@@ -225,18 +266,29 @@
   }
 
   function restoreApplications(queue, sessionApplications = []) {
+    const legacyQueue = !Number.isFinite(Number(queue?.version)) || Number(queue.version) < 2;
     const live = new Map((Array.isArray(sessionApplications) ? sessionApplications : []).map((application) => [application.id, application]));
     return (queue?.applications || []).map((saved) => {
       const session = live.get(saved.id);
+      const savedHasProgramIds = hasOwn(saved, 'programIds');
+      const programSelectionRequired = saved.programSelectionRequired === true
+        || (legacyQueue && !savedHasProgramIds && isBenefitsCalApplication(saved, session));
       if (session) {
         live.delete(saved.id);
-        return {
+        const restored = {
           ...session,
+          workflowId: saved.workflowId || session.workflowId,
+          allowedOrigins: saved.allowedOrigins?.length ? saved.allowedOrigins : session.allowedOrigins,
+          allowedPathPrefixes: saved.allowedPathPrefixes?.length ? saved.allowedPathPrefixes : session.allowedPathPrefixes,
           tabId: saved.tabId,
-          status: saved.status,
+          status: programSelectionRequired ? 'paused' : saved.status,
           owner: saved.owner,
           handoff: saved.handoff,
-          checkpoint: saved.checkpoint || session.checkpoint,
+          checkpoint: programSelectionRequired ? {
+            kind: 'human_input',
+            label: 'Choose BenefitsCal programs',
+            createdAt: new Date().toISOString(),
+          } : saved.checkpoint || session.checkpoint,
           lease: saved.lease,
           resumePoint: session.resumePoint ? {
             ...session.resumePoint,
@@ -245,11 +297,25 @@
           } : saved.resumePoint,
           updatedAt: saved.updatedAt || session.updatedAt,
         };
+        if (savedHasProgramIds) restored.programIds = safeProgramIds(saved.programIds);
+        else if (programSelectionRequired || !hasOwn(session, 'programIds')) delete restored.programIds;
+        else restored.programIds = safeProgramIds(session.programIds);
+        if (programSelectionRequired) {
+          restored.programSelectionRequired = true;
+          restored.autoRun = false;
+          restored.error = 'Choose which BenefitsCal programs this application includes before resuming.';
+        } else {
+          delete restored.programSelectionRequired;
+        }
+        return restored;
       }
-      return {
+      const restored = {
         id: saved.id,
         name: saved.name,
         queueLabel: saved.name,
+        workflowId: saved.workflowId,
+        allowedOrigins: saved.allowedOrigins || [],
+        allowedPathPrefixes: saved.allowedPathPrefixes || [],
         url: saved.location,
         tabId: saved.tabId,
         status: 'source_expired',
@@ -263,6 +329,9 @@
         updatedAt: saved.updatedAt,
         durableOnly: true,
       };
+      if (savedHasProgramIds) restored.programIds = safeProgramIds(saved.programIds);
+      if (programSelectionRequired) restored.programSelectionRequired = true;
+      return restored;
     }).concat([...live.values()]);
   }
 
