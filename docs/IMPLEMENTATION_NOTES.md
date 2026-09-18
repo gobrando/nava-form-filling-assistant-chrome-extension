@@ -25,6 +25,7 @@ sidepanel/
         ├── chrome.storage.local       connector config + sanitized durable queue metadata
         ├── shared/connector-engine.js label-based schema mapping, validation, provenance
         ├── shared/program-catalog.js   current routes, approved origins, BenefitsCal grouping
+        ├── shared/site-adapters.js     exact IHSS/WIC field scopes and semantic choices
         ├── shared/work-queue-engine.js resume fingerprints, leases, handoff, audit sanitization
         ├── background.js              connector adapter, side-panel setup, open grouped tabs
         └── content/form-agent.js     scan → write → readback in the active page
@@ -62,6 +63,8 @@ All executable extension code ships inside the package; there are no remote scri
 6. **Verified resume, not blind replay.** Every resume starts with a read-only scan and rejects missing tabs, stale or expired sources, unaccepted handoffs, changed locations, or changed page signatures before any write.
 7. **Local handoff boundary.** Version 0.6 models assignment, acceptance, named checkpoints, and same-profile write leases. Real multi-caseworker synchronization and identity enforcement belong in an authenticated Nava service.
 8. **Tab-bound multi-application runs.** Known application selections open and start automatically with three workers. BenefitsCal program selections collapse into one workflow; every card action remains bound to its saved tab rather than the currently focused tab. The service worker coordinates client sessions, application revisions, leases, and command dispatch, but the side panel must remain open until a durable service-worker/server job replaces the UI-hosted runner loop.
+9. **Entity-scope abstention.** When a page repeats the same canonical person or income purpose, the engine creates explicit entity-scope gaps instead of copying one applicant's value into every row. Reuse is permitted only for exact adapter-owned scopes or strict scalar confirmation pairs.
+9. **Conditional-page convergence.** After a verified write pass, the runner rescans the same approved document up to three times before advancing. Newly revealed required fields become assignments or explicit gaps; a page that keeps changing stops for review.
 
 ## Recommended production follow-on
 
