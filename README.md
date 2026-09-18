@@ -21,6 +21,8 @@ It is a working local prototype, not a production deployment. It implements flow
 - One writer per tab. Each application is tracked independently.
 - Selecting several known applications opens their tabs and immediately starts up to three independent runs. CalFresh, Medi-Cal, and CalWORKs are grouped into one BenefitsCal workflow because BenefitsCal collects those program selections in a single application.
 - Guided multi-page completion for approved site playbooks. The runner keeps the client record loaded, fills each page, reads every write back, and activates only exact safe continuation labels such as **Begin**, **Next**, or **Save and continue**.
+- Exact live-DOM adapters for Riverside IHSS and Riverside WIC. They distinguish applicant, representative, household, facility, and mailing scopes; preserve semantic Yes/No and sex choices even when the page exposes ambiguous checkbox values; and stop unsupported conditional fields as caseworker questions instead of borrowing applicant data. The fictional IHSS record includes a separately sourced household member, so household rows never inherit the applicant's identity.
+- Bounded same-page rescans after every verified fill pass so conditionally revealed fields are handled before the runner considers a safe continuation control.
 - Cross-page progress history, loop detection, playbook-specific page limits capped at 60, and automatic pauses when a field needs direct help.
 - A durable multi-application work queue with stable workflow IDs, explicit checkpoints, tab-closure recovery, and restart-safe progress metadata.
 - Verified resume: the assistant rescans the live tab and compares its URL and page signature before it permits another write.
@@ -120,7 +122,7 @@ Run `npm run eval:extraction` to reproduce the published [quality report](evalua
 
 ## Resumable work queues and handoff
 
-Version 0.8 retains the privacy boundary between short-lived client values and durable operational state:
+Version 0.9 retains the privacy boundary between short-lived client values and durable operational state:
 
 - Participant values, document proposals, raw page signatures, and full page URLs remain in `chrome.storage.session` and expire with the browser session.
 - `chrome.storage.local` retains only sanitized queue metadata: workflow/program IDs, application label, approved origin and catalog route prefixes, status, progress counts, checkpoint, owner/handoff state, tab ID, timestamps, and opaque checksums of the saved location and page signature.
@@ -132,7 +134,7 @@ The current handoff is a same-Chrome-profile workflow and ownership prototype. I
 
 ## Production integration boundary
 
-Version 0.8 implements the extension half of a provider-neutral managed connector, bounded local OCR, an extraction-quality gate, passive synthetic benefits fixtures, and a resumable metadata-only work queue. It ships a fictional loopback connector service for contract testing, not a production credential broker, organization-authentication service, provider network, or cross-device queue backend.
+Version 0.9 implements the extension half of a provider-neutral managed connector, bounded local OCR, an extraction-quality gate, passive synthetic benefits fixtures, exact adapters for the currently observed Riverside IHSS and WIC DOMs, safer BenefitsCal navigation rules, and a resumable metadata-only work queue. It ships a fictional loopback connector service for contract testing, not a production credential broker, organization-authentication service, provider network, or cross-device queue backend.
 
 - `background.js` uses credentialed, read-only `GET` requests to the configured Nava connector service. It does not call Apricot directly.
 - `shared/connector-engine.js` accepts only labeled schema fields, rejects secret-like configuration, requires HTTPS outside localhost, and will not infer meaning from an opaque source field ID.
@@ -149,7 +151,7 @@ The browser extension also cannot produce genuinely trusted hardware keystrokes.
 - It scans the top document, not cross-origin frames or closed shadow roots.
 - Playbook signals identify known sites and known freshness fields; the live DOM scan remains authoritative for every write.
 - Known applications start automatically after their tabs open, with up to three tab-bound runs in parallel. The side panel must stay open during an active run; moving runner execution into a durable service-worker or authenticated server job is still required for close-the-panel-and-return-later operation.
-- A run proceeds only while required answers are present and an allowlisted continuation control is visible. The runner is designed to pause on WIC and IHSS application-specific questions, CAPTCHA, or affirmation checkpoints that the generic record cannot answer rather than pretending to have reached review; this behavior still needs an installed-extension validation on those live flows.
+- A run fills every known value before pausing for unanswered required fields. Repeated person or income fields fail closed unless an exact adapter proves their entity scope; strict scalar confirmation pairs such as email/confirm-email remain supported. The bundled fictional record now contains explicit synthetic IHSS and WIC decisions for adapter testing; CAPTCHA, unsupported conditional entities, affirmation, certification, and final submission still require a person. Installed-extension validation on those live flows remains required before claiming production compatibility.
 - Live validation in this repository is limited to route and public-page compatibility. There has been no sanctioned, end-to-end production application run and no real applicant data should be entered for testing.
 - Handoff metadata is local to one Chrome profile. It demonstrates the ownership and acceptance flow but is not an authenticated cross-device assignment system.
 - The included connector server is a fictional loopback fixture. A real organization still needs the Nava-controlled service, provider partnership/access, authentication, security review, and data-processing controls.

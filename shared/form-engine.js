@@ -25,6 +25,31 @@
     pregnant: 'Pregnancy', preferredContact: 'Preferred contact method', housingStatus: 'Housing status',
     householdSize: 'Household size', immigrationStatus: 'Immigration status', income: 'Income',
     childcare: 'Childcare', unemployment: 'Unemployment benefits', mailingDifferent: 'Mailing address',
+    mailingSame: 'Mailing address is the same', alternateMailingAddress: 'Alternate mailing address',
+    mailingAddressLine1: 'Mailing street address', mailingAddressLine2: 'Mailing apartment or unit',
+    mailingCity: 'Mailing city', mailingState: 'Mailing state', mailingPostalCode: 'Mailing ZIP code',
+    suffix: 'Name suffix', genderIdentity: 'Gender identity', birthSex: 'Sex listed at birth',
+    sexualOrientation: 'Sexual orientation', veteran: 'Veteran status', receivesSsi: 'SSI/SSP benefits',
+    homeAssistanceAvailable: 'Home assistance availability', livesAlone: 'Lives alone',
+    livingArrangement: 'Living arrangement', blind: 'Blind', visuallyImpaired: 'Visually impaired',
+    ihssApplyingForSelf: 'Applying for IHSS for self', ihssAdoptedMinorChild: 'Minor adopted child',
+    ihssHouseholdReceivesServices: 'Someone in the home receives IHSS services',
+    ihssHouseholdRelationship: 'Household member relationship',
+    ihssHouseholdMemberName: 'Household member name',
+    ihssHouseholdMemberDateOfBirth: 'Household member date of birth',
+    ihssHouseholdMemberSsn: 'Household member Social Security Number',
+    ihssHealthHistory: 'Health history', ihssDailyLivingLimitations: 'Daily-living limitations',
+    ihssHospiceCare: 'Hospice care', ihssTerminalIllness: 'Terminal illness',
+    ihssOrganTransplant: 'Recent or pending organ transplant', ihssSupplementalOxygen: 'Supplemental oxygen',
+    ihssCancerTreatment: 'Cancer treatment', ihssDomesticServices: 'IHSS domestic services',
+    ihssPersonalCare: 'IHSS personal care', ihssTransportation: 'IHSS transportation',
+    ihssParamedicalCare: 'IHSS paramedical care', ihssOtherServices: 'Other IHSS services',
+    pastIhss: 'Past IHSS services', canReceiveTexts: 'Can receive text messages',
+    mediCalCoverage: 'Medi-Cal coverage', mediCalCaseNumber: 'Medi-Cal case number',
+    wicPostpartum: 'Post-partum', wicBreastfeedingInfant: 'Breastfeeding infant',
+    wicFormulaInfant: 'Formula-fed infant', wicChildUnderFive: 'Child under five',
+    wicAppointmentInPerson: 'In-person WIC appointments', wicAppointmentPhone: 'Phone WIC appointments',
+    wicAppointmentVideo: 'Video WIC appointments', wicClinic: 'WIC clinic',
     recordId: 'Record ID', businessName: 'Business legal name', dba: 'Doing business as',
     ein: 'Employer Identification Number', businessType: 'Business type',
     businessAddressLine1: 'Business street address', businessAddressLine2: 'Business suite or unit',
@@ -36,6 +61,7 @@
 
   const DO_NOT_DERIVE = new Set([
     'ssn',
+    'ihssHouseholdMemberSsn',
     'housingStatus',
     'preferredContact',
     'householdSize',
@@ -73,9 +99,18 @@
 
   function sameAddress(first, second) {
     if (!first || !second) return undefined;
-    const keys = ['street', 'unit', 'city', 'state', 'zip'];
-    if (!keys.some((key) => first[key] || second[key])) return undefined;
-    return keys.every((key) => normalize(first[key]) === normalize(second[key]));
+    const parts = [
+      ['street', 'line1', 'addressLine1'],
+      ['unit', 'line2', 'addressLine2'],
+      ['city'],
+      ['state'],
+      ['zip', 'postalCode'],
+    ];
+    const readPart = (address, aliases) => firstValue(address, aliases);
+    const firstHasEvidence = parts.some((aliases) => readPart(first, aliases));
+    const secondHasEvidence = parts.some((aliases) => readPart(second, aliases));
+    if (!firstHasEvidence || !secondHasEvidence) return undefined;
+    return parts.every((aliases) => normalize(readPart(first, aliases)) === normalize(readPart(second, aliases)));
   }
 
   function canonicalizeParticipant(payload) {
@@ -86,7 +121,8 @@
     const firstName = firstValue(record, ['firstName', 'first_name', 'participant.name.first', 'name.first']);
     const middleName = firstValue(record, ['middleName', 'middle_name', 'participant.name.middle', 'name.middle']);
     const lastName = firstValue(record, ['lastName', 'last_name', 'participant.name.last', 'name.last']);
-    const fullName = [firstName, middleName, lastName].filter(Boolean).join(' ');
+    const suffix = firstValue(record, ['suffix', 'nameSuffix', 'participant.name.suffix', 'name.suffix']);
+    const fullName = [firstName, middleName, lastName, suffix].filter(Boolean).join(' ');
     const businessName = firstValue(record, ['businessName', 'business_name', 'business.legalName', 'company.legalName', 'company.name']);
     const businessAddressLine1 = firstValue(record, ['businessAddressLine1', 'business_address_line_1'])
       || firstValue(businessAddress, ['street', 'line1', 'addressLine1']);
@@ -97,11 +133,17 @@
     const businessPostalCode = firstValue(record, ['businessPostalCode', 'business_postal_code', 'businessZip', 'business_zip'])
       || firstValue(businessAddress, ['postalCode', 'zip']);
     const businessOnly = Boolean(businessName && !firstName && !lastName);
+    const addressesMatch = sameAddress(residential, mailing);
+    const alternateMailingAddress = addressesMatch === false
+      ? [mailing.street || mailing.line1, mailing.unit || mailing.line2, mailing.city, mailing.state, mailing.zip || mailing.postalCode]
+        .filter(Boolean).join(', ')
+      : undefined;
     const values = {
       recordId: firstValue(record, ['record_id', 'recordId', 'id']),
       firstName,
       middleName,
       lastName,
+      suffix,
       fullName: fullName || firstValue(record, ['fullName', 'name']),
       dateOfBirth: firstValue(record, ['dateOfBirth', 'date_of_birth', 'participant.date_of_birth', 'dob']),
       ssn: firstValue(record, ['ssn', 'socialSecurityNumber', 'participant.ssn']),
@@ -125,6 +167,9 @@
       country: firstValue(record, ['country', 'address.country', 'address.residential.country', 'residentialAddress.country'])
         || (businessOnly ? businessAddress.country : undefined),
       gender: firstValue(record, ['gender', 'sex', 'participant.gender']),
+      genderIdentity: firstValue(record, ['genderIdentity', 'gender_identity', 'participant.gender_identity', 'programData.ihss.genderIdentity', 'ihss.genderIdentity']),
+      birthSex: firstValue(record, ['birthSex', 'birth_sex', 'sexAtBirth', 'participant.birth_sex', 'programData.ihss.birthSex', 'ihss.birthSex']),
+      sexualOrientation: firstValue(record, ['sexualOrientation', 'sexual_orientation', 'participant.sexual_orientation', 'programData.ihss.sexualOrientation', 'ihss.sexualOrientation']),
       ethnicity: firstValue(record, ['ethnicity', 'participant.ethnicity']),
       primaryLanguage: firstValue(record, ['primaryLanguage', 'primary_language', 'participant.primary_language']),
       maritalStatus: firstValue(record, ['maritalStatus', 'marital_status', 'participant.marital_status']),
@@ -141,9 +186,54 @@
       applyCalFresh: firstValue(record, ['applicationSelection.calfresh']),
       applyMediCal: firstValue(record, ['applicationSelection.medical']),
       applyCalWORKs: firstValue(record, ['applicationSelection.calworks']),
-      mailingDifferent: sameAddress(residential, mailing) === undefined
+      mailingDifferent: addressesMatch === undefined
         ? undefined
-        : !sameAddress(residential, mailing),
+        : !addressesMatch,
+      mailingSame: addressesMatch,
+      alternateMailingAddress,
+      mailingAddressLine1: firstValue(mailing, ['street', 'line1', 'addressLine1']),
+      mailingAddressLine2: firstValue(mailing, ['unit', 'line2', 'addressLine2']),
+      mailingCity: mailing.city,
+      mailingState: mailing.state,
+      mailingPostalCode: mailing.zip || mailing.postalCode,
+      veteran: firstValue(record, ['veteran', 'veteranStatus', 'programData.ihss.veteran', 'ihss.veteran']),
+      receivesSsi: firstValue(record, ['receivesSsi', 'receivesSSI', 'programData.ihss.receivesSsi', 'ihss.receivesSsi']),
+      homeAssistanceAvailable: firstValue(record, ['homeAssistanceAvailable', 'programData.ihss.homeAssistanceAvailable', 'ihss.homeAssistanceAvailable']),
+      livesAlone: firstValue(record, ['livesAlone', 'programData.ihss.livesAlone', 'ihss.livesAlone']),
+      livingArrangement: firstValue(record, ['livingArrangement', 'programData.ihss.livingArrangement', 'ihss.livingArrangement']),
+      blind: firstValue(record, ['blind', 'programData.ihss.blind', 'ihss.blind']),
+      visuallyImpaired: firstValue(record, ['visuallyImpaired', 'programData.ihss.visuallyImpaired', 'ihss.visuallyImpaired']),
+      ihssApplyingForSelf: firstValue(record, ['ihssApplyingForSelf', 'programData.ihss.applyingForSelf', 'ihss.applyingForSelf']),
+      ihssAdoptedMinorChild: firstValue(record, ['ihssAdoptedMinorChild', 'programData.ihss.adoptedMinorChild', 'ihss.adoptedMinorChild']),
+      ihssHouseholdReceivesServices: firstValue(record, ['ihssHouseholdReceivesServices', 'programData.ihss.householdReceivesServices', 'ihss.householdReceivesServices']),
+      ihssHouseholdRelationship: firstValue(record, ['ihssHouseholdRelationship', 'programData.ihss.householdMembers.0.relationship', 'ihss.householdMembers.0.relationship']),
+      ihssHouseholdMemberName: firstValue(record, ['ihssHouseholdMemberName', 'programData.ihss.householdMembers.0.name', 'ihss.householdMembers.0.name']),
+      ihssHouseholdMemberDateOfBirth: firstValue(record, ['ihssHouseholdMemberDateOfBirth', 'programData.ihss.householdMembers.0.dateOfBirth', 'ihss.householdMembers.0.dateOfBirth']),
+      ihssHouseholdMemberSsn: firstValue(record, ['ihssHouseholdMemberSsn', 'programData.ihss.householdMembers.0.ssn', 'ihss.householdMembers.0.ssn']),
+      ihssHealthHistory: firstValue(record, ['ihssHealthHistory', 'programData.ihss.healthHistory', 'ihss.healthHistory']),
+      ihssDailyLivingLimitations: firstValue(record, ['ihssDailyLivingLimitations', 'programData.ihss.dailyLivingLimitations', 'ihss.dailyLivingLimitations']),
+      ihssHospiceCare: firstValue(record, ['ihssHospiceCare', 'programData.ihss.hospiceCare', 'ihss.hospiceCare']),
+      ihssTerminalIllness: firstValue(record, ['ihssTerminalIllness', 'programData.ihss.terminalIllness', 'ihss.terminalIllness']),
+      ihssOrganTransplant: firstValue(record, ['ihssOrganTransplant', 'programData.ihss.organTransplant', 'ihss.organTransplant']),
+      ihssSupplementalOxygen: firstValue(record, ['ihssSupplementalOxygen', 'programData.ihss.supplementalOxygen', 'ihss.supplementalOxygen']),
+      ihssCancerTreatment: firstValue(record, ['ihssCancerTreatment', 'programData.ihss.cancerTreatment', 'ihss.cancerTreatment']),
+      ihssDomesticServices: firstValue(record, ['ihssDomesticServices', 'programData.ihss.domesticServices', 'ihss.domesticServices']),
+      ihssPersonalCare: firstValue(record, ['ihssPersonalCare', 'programData.ihss.personalCare', 'ihss.personalCare']),
+      ihssTransportation: firstValue(record, ['ihssTransportation', 'programData.ihss.transportation', 'ihss.transportation']),
+      ihssParamedicalCare: firstValue(record, ['ihssParamedicalCare', 'programData.ihss.paramedicalCare', 'ihss.paramedicalCare']),
+      ihssOtherServices: firstValue(record, ['ihssOtherServices', 'programData.ihss.otherServices', 'ihss.otherServices']),
+      pastIhss: firstValue(record, ['pastIhss', 'programData.ihss.pastIhss', 'ihss.pastIhss']),
+      canReceiveTexts: firstValue(record, ['canReceiveTexts', 'programData.wic.canReceiveTexts', 'wic.canReceiveTexts']),
+      mediCalCoverage: firstValue(record, ['mediCalCoverage', 'programData.wic.mediCalCoverage', 'wic.mediCalCoverage']),
+      mediCalCaseNumber: firstValue(record, ['mediCalCaseNumber', 'programData.wic.mediCalCaseNumber', 'wic.mediCalCaseNumber']),
+      wicPostpartum: firstValue(record, ['wicPostpartum', 'programData.wic.postpartum', 'wic.postpartum']),
+      wicBreastfeedingInfant: firstValue(record, ['wicBreastfeedingInfant', 'programData.wic.breastfeedingInfant', 'wic.breastfeedingInfant']),
+      wicFormulaInfant: firstValue(record, ['wicFormulaInfant', 'programData.wic.formulaInfant', 'wic.formulaInfant']),
+      wicChildUnderFive: firstValue(record, ['wicChildUnderFive', 'programData.wic.childUnderFive', 'wic.childUnderFive']),
+      wicAppointmentInPerson: firstValue(record, ['wicAppointmentInPerson', 'programData.wic.appointmentInPerson', 'wic.appointmentInPerson']),
+      wicAppointmentPhone: firstValue(record, ['wicAppointmentPhone', 'programData.wic.appointmentPhone', 'wic.appointmentPhone']),
+      wicAppointmentVideo: firstValue(record, ['wicAppointmentVideo', 'programData.wic.appointmentVideo', 'wic.appointmentVideo']),
+      wicClinic: firstValue(record, ['wicClinic', 'programData.wic.clinic', 'wic.clinic']),
       businessName,
       dba: firstValue(record, ['dba', 'doingBusinessAs', 'doing_business_as', 'business.dba', 'company.dba']),
       ein: firstValue(record, ['ein', 'employerIdentificationNumber', 'taxId', 'tax_id', 'business.ein']),
@@ -168,6 +258,8 @@
   }
 
   function classifyField(field) {
+    if (field?.unmapped === true) return null;
+    if (field?.purpose && Object.prototype.hasOwnProperty.call(LABELS, field.purpose)) return field.purpose;
     const signal = normalize([
       field.autocomplete,
       field.question,
@@ -202,9 +294,10 @@
     if (has('first name', 'given name', 'given-name', 'firstname', 'namefirst')) return 'firstName';
     if (has('middle name', 'additional name', 'additional-name', 'middlename', 'namemiddle')) return 'middleName';
     if (has('last name', 'family name', 'family-name', 'surname', 'lastname', 'namelast')) return 'lastName';
+    if (has('name suffix', 'suffix')) return 'suffix';
     if (has('full name', 'your name') && !has('organization')) return 'fullName';
     if (has('email')) return 'email';
-    if (has('phone', 'telephone', 'mobile', 'tel ')) return 'phone';
+    if ((!field.type || ['text', 'tel', 'phone'].includes(field.type)) && has('phone', 'telephone', 'mobile', 'tel ')) return 'phone';
     if (has('experiencing homelessness', 'homeless', 'housing status', 'stable housing')) return 'housingStatus';
     if (has('preferred contact', 'contact preference', 'how should we contact', 'best way to contact')) return 'preferredContact';
     if (has('immigration status', 'citizenship status')) return 'immigrationStatus';
@@ -212,7 +305,18 @@
     if (has('monthly household income', 'monthly income', 'gross income', 'income from a job')) return 'income';
     if (has('paying for childcare', 'child care', 'childcare')) return 'childcare';
     if (has('unemployment benefits', 'unemployment')) return 'unemployment';
-    if (has('mail at a different address', 'mailing address same', 'same as home', 'same as residential')) return 'mailingDifferent';
+    if (has('mailing address if different', 'alternate mailing address')) return 'alternateMailingAddress';
+    if (has(
+      'mailing address is the same',
+      'mailing address the same',
+      'mailing address same',
+      'same as home',
+      'same as your home',
+      'same as residential',
+      'same as your residential',
+      'mailing same',
+    )) return 'mailingSame';
+    if (has('mail at a different address', 'mailing address is different', 'mailing address different', 'different mailing address')) return 'mailingDifferent';
     if (has('apartment', 'apt ', 'unit ', 'suite', 'address line 2', 'address-line2')) return 'addressLine2';
     if (has('street address', 'home address', 'residential address', 'address line 1', 'address-line1', 'street')) return 'addressLine1';
     if (has('postal code', 'zip code', 'zipcode', 'postal-code', ' zip ')) return 'postalCode';
@@ -221,8 +325,11 @@
     if (hasWord('state', 'province') || has('address-level1')) return 'state';
     if (hasWord('country') || has('country-name')) return 'country';
     if (has('primary language', 'preferred language', 'language')) return 'primaryLanguage';
-    if (has('ethnicity', 'hispanic')) return 'ethnicity';
-    if (has('gender', 'sex assigned at birth') || hasWord('sex')) return 'gender';
+    if (has('ethnicity', 'ethnic origin', 'hispanic')) return 'ethnicity';
+    if (has('gender identity')) return 'genderIdentity';
+    if (has('sex assigned at birth', 'sex listed at birth', 'original birth certificate')) return 'birthSex';
+    if (has('sexual orientation')) return 'sexualOrientation';
+    if (has('gender') || hasWord('sex')) return 'gender';
     if (has('marital status', 'married')) return 'maritalStatus';
     if (has('special needs', 'disability', 'disabled')) return 'specialNeeds';
     if (has('farm worker', 'farmworker', 'migrant worker')) return 'farmWorker';
@@ -268,7 +375,7 @@
     let changed = false;
     let detail = 'from the client record';
 
-    if (['state', 'businessState', 'stateOfFormation'].includes(purpose)) {
+    if (['state', 'mailingState', 'businessState', 'stateOfFormation'].includes(purpose)) {
       const stateCode = STATE_CODES[normalize(rawValue)] || String(rawValue).toUpperCase();
       const wantsCode = Number(field.maxLength) === 2 || (field.options || []).some((option) => option.value === stateCode);
       if (wantsCode && stateCode !== rawValue) {
@@ -278,7 +385,7 @@
       }
     }
 
-    if (['dateOfBirth', 'incorporationDate'].includes(purpose)) {
+    if (['dateOfBirth', 'ihssHouseholdMemberDateOfBirth', 'incorporationDate'].includes(purpose)) {
       const parts = toDateParts(rawValue);
       if (parts) {
         if (field.type === 'date') value = `${parts.year}-${parts.month}-${parts.day}`;
@@ -289,24 +396,57 @@
       }
     }
 
-    if (['phone', 'businessPhone'].includes(purpose) && Number(field.maxLength) === 10) {
+    if (['phone', 'businessPhone'].includes(purpose)) {
       const digits = String(rawValue).replace(/\D/g, '');
-      if (digits) {
+      const wantsUsPattern = String(field.pattern || '').includes('\\(')
+        || /^\(#+\)/.test(String(field.placeholder || '').trim());
+      if (digits.length === 10 && wantsUsPattern) {
+        value = `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+        changed = value !== rawValue;
+        if (changed) detail = 'Phone punctuation is changed to match the form’s required format';
+      } else if (digits && Number(field.maxLength) === 10) {
         value = digits;
         changed = value !== rawValue;
         if (changed) detail = 'Phone punctuation is removed so the form can add its own format';
       }
     }
 
-    const companionAddressLine2 = purpose === 'businessAddressLine1' ? context.businessAddressLine2 : context.addressLine2;
-    const hasCompanionField = purpose === 'businessAddressLine1' ? context.hasBusinessAddressLine2 : context.hasAddressLine2;
-    if (['addressLine1', 'businessAddressLine1'].includes(purpose) && !hasCompanionField && companionAddressLine2) {
+    if (['ssn', 'ihssHouseholdMemberSsn'].includes(purpose) && Number(field.maxLength) === 9) {
+      const digits = String(rawValue).replace(/\D/g, '');
+      if (digits) {
+        value = digits;
+        changed = value !== rawValue;
+        if (changed) detail = 'Social Security Number punctuation is removed to match the form’s nine-digit field';
+      }
+    }
+
+    const companionAddressLine2 = purpose === 'businessAddressLine1'
+      ? context.businessAddressLine2
+      : purpose === 'mailingAddressLine1'
+        ? context.mailingAddressLine2
+        : context.addressLine2;
+    const hasCompanionField = purpose === 'businessAddressLine1'
+      ? context.hasBusinessAddressLine2
+      : purpose === 'mailingAddressLine1'
+        ? context.hasMailingAddressLine2
+        : context.hasAddressLine2;
+    if (['addressLine1', 'mailingAddressLine1', 'businessAddressLine1'].includes(purpose) && !hasCompanionField && companionAddressLine2) {
       value = [rawValue, companionAddressLine2].filter(Boolean).join(', ');
       changed = true;
       detail = 'Street and apartment are combined because the form has one address box';
     }
 
-    if (['specialNeeds', 'farmWorker', 'pregnant', 'childcare', 'unemployment', 'mailingDifferent', 'applyCalFresh', 'applyMediCal', 'applyCalWORKs'].includes(purpose)) {
+    if ([
+      'specialNeeds', 'farmWorker', 'pregnant', 'childcare', 'unemployment', 'mailingDifferent', 'mailingSame',
+      'applyCalFresh', 'applyMediCal', 'applyCalWORKs', 'veteran', 'receivesSsi', 'homeAssistanceAvailable',
+      'livesAlone', 'blind', 'visuallyImpaired', 'ihssApplyingForSelf', 'ihssAdoptedMinorChild',
+      'ihssHouseholdReceivesServices',
+      'ihssDailyLivingLimitations', 'ihssHospiceCare', 'ihssTerminalIllness', 'ihssOrganTransplant',
+      'ihssSupplementalOxygen', 'ihssCancerTreatment', 'ihssDomesticServices', 'ihssPersonalCare',
+      'ihssTransportation', 'ihssParamedicalCare', 'ihssOtherServices', 'pastIhss', 'canReceiveTexts',
+      'wicPostpartum', 'wicBreastfeedingInfant', 'wicFormulaInfant', 'wicChildUnderFive',
+      'wicAppointmentInPerson', 'wicAppointmentPhone', 'wicAppointmentVideo',
+    ].includes(purpose)) {
       value = booleanWord(rawValue);
     }
 
@@ -380,7 +520,7 @@
         question: field.question || field.label,
         members: members.map(({ candidate }) => ({
           fieldKey: candidate.fieldKey,
-          value: candidate.value,
+          value: candidate.optionValue ?? candidate.value,
           optionLabel: candidate.optionLabel || candidate.label,
           checked: candidate.checked,
         })),
@@ -400,22 +540,56 @@
     return label.endsWith('?') ? label : `What is the client's ${label.toLowerCase()}?`;
   }
 
+  function confirmationField(field) {
+    const signal = [field.label, field.question, field.name, field.id, field.placeholder]
+      .filter(Boolean)
+      .map((value) => String(value).replace(/([a-z])([A-Z])/g, '$1 $2'))
+      .join(' ');
+    return /\bconfirm(?:ation)?\b|\bre enter\b|\breenter\b|\bretype\b|\benter again\b|\bagain\b/.test(normalize(signal));
+  }
+
+  function scalarConfirmationGroup(fields) {
+    if (fields.length < 2) return false;
+    if (fields.some((field) => field.members?.length || ['radio', 'checkbox', 'select-one'].includes(field.type))) return false;
+    if (fields.filter((field) => !confirmationField(field)).length !== 1) return false;
+    const types = fields.map((field) => String(field.type || 'text').toLowerCase());
+    return types.every((type) => type === types[0]);
+  }
+
   function buildAnalysis(rawFields, payload) {
     const participant = canonicalizeParticipant(payload);
     const fields = combineGroups((rawFields || []).filter((field) => !field.ignored));
+    const purposes = fields.map((field) => classifyField(field));
+    const purposeFields = purposes.reduce((index, purpose, fieldIndex) => {
+      if (!purpose) return index;
+      const matches = index.get(purpose) || [];
+      matches.push(fields[fieldIndex]);
+      index.set(purpose, matches);
+      return index;
+    }, new Map());
+    const unsafeRepeatedPurposes = new Set(
+      [...purposeFields.entries()]
+        .filter(([, matches]) => matches.length > 1
+          && !matches.every((field) => field.allowRepeatedPurpose === true)
+          && !scalarConfirmationGroup(matches))
+        .map(([purpose]) => purpose),
+    );
     const context = {
       hasAddressLine2: fields.some((field) => classifyField(field) === 'addressLine2'),
       addressLine2: participant.values.addressLine2,
       hasBusinessAddressLine2: fields.some((field) => classifyField(field) === 'businessAddressLine2'),
       businessAddressLine2: participant.values.businessAddressLine2,
+      hasMailingAddressLine2: fields.some((field) => classifyField(field) === 'mailingAddressLine2'),
+      mailingAddressLine2: participant.values.mailingAddressLine2,
     };
     const assignments = [];
     const gaps = [];
     const observed = [];
     const usedPurposes = new Set();
 
-    for (const field of fields) {
-      const purpose = classifyField(field);
+    for (let fieldIndex = 0; fieldIndex < fields.length; fieldIndex += 1) {
+      const field = fields[fieldIndex];
+      const purpose = purposes[fieldIndex];
       const current = currentFieldValue(field);
       const required = Boolean(field.required);
 
@@ -446,16 +620,35 @@
 
       usedPurposes.add(purpose);
       const rawValue = participant.values[purpose];
+      if (unsafeRepeatedPurposes.has(purpose) && rawValue !== undefined && rawValue !== null && rawValue !== '') {
+        gaps.push({
+          fieldKey: field.fieldKey,
+          label: displayLabel(field, purpose),
+          purpose,
+          question: `Which person or record does ${displayLabel(field, purpose).toLowerCase()} belong to?`,
+          reason: 'The source value has no verified person or entity scope for this repeated field.',
+          kind: 'entity_scope',
+          required,
+          inputType: field.members?.length || field.type === 'select-one' ? 'choice' : 'text',
+          options: field.members || field.options || [],
+          sensitive: ['ssn', 'ihssHouseholdMemberSsn', 'ein'].includes(purpose) || Boolean(field.sensitive),
+        });
+        continue;
+      }
       if (rawValue !== undefined && rawValue !== null && rawValue !== '') {
         const formatted = formatForField(purpose, rawValue, field, context);
-        if (current && valuesEquivalent(formatted.value, current, field)) {
+        const booleanCheckboxMatch = field.type === 'checkbox'
+          && !field.members?.length
+          && /^(?:yes|no)$/.test(normalize(formatted.value))
+          && Boolean(field.checked) === (normalize(formatted.value) === 'yes');
+        if (booleanCheckboxMatch || (current && valuesEquivalent(formatted.value, current, field))) {
           observed.push({
             fieldKey: field.fieldKey,
             label: displayLabel(field, purpose),
-            value: current,
+            value: booleanCheckboxMatch ? (field.checked ? 'yes' : 'no') : current,
             source: 'page',
             detail: 'Already in the form and matches the client record',
-            sensitive: ['ssn', 'ein'].includes(purpose) || Boolean(field.sensitive),
+            sensitive: ['ssn', 'ihssHouseholdMemberSsn', 'ein'].includes(purpose) || Boolean(field.sensitive),
           });
         } else {
           assignments.push({
@@ -465,7 +658,7 @@
             value: formatted.value,
             source: formatted.changed ? 'changed' : 'record',
             detail: formatted.detail,
-            sensitive: ['ssn', 'ein'].includes(purpose) || Boolean(field.sensitive),
+            sensitive: ['ssn', 'ihssHouseholdMemberSsn', 'ein'].includes(purpose) || Boolean(field.sensitive),
             fieldType: field.type,
           });
         }
@@ -483,7 +676,7 @@
           required,
           inputType: field.members?.length || field.type === 'select-one' ? 'choice' : 'text',
           options: field.members || field.options || [],
-          sensitive: ['ssn', 'ein'].includes(purpose) || Boolean(field.sensitive),
+          sensitive: ['ssn', 'ihssHouseholdMemberSsn', 'ein'].includes(purpose) || Boolean(field.sensitive),
         });
       }
     }

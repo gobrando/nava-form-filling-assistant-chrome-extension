@@ -12,7 +12,7 @@ This is prototype implementation plus unit/static evidence, not a production-acc
 
 | Evidence | Result | What it establishes |
 | --- | --- | --- |
-| Automated suite | 79 tests pass | Mapping, formatting, delayed-validation readback, route gates, coordinator races, sibling-safe partial persistence, bounded fill batches, OCR, connector boundaries, program grouping, resumability, handoff, and durable PII controls behave as specified. |
+| Automated suite | 127 tests pass | Mapping, formatting, delayed-validation readback, exact IHSS/WIC adapters, semantic checkbox values, conditional rescans, BenefitsCal route gates, repeated-entity abstention, coordinator races, sibling-safe partial persistence, bounded fill batches, OCR, connector boundaries, program grouping, resumability, handoff, and durable PII controls behave as specified. |
 | Extensive local benefits fixture | 28 of 28 source-backed fields map in the engine test; the fixture is passive and contains no embedded participant or autofill runner | The synthetic record covers demographic, identity, contact, address, household, citizenship, income, childcare, and unemployment fields without letting the demo bypass the extension. An installed-extension browser rerun is required after each unpacked-extension reload. |
 | Original three-page fixture | Passive fixture retains safe navigation and a final submit guard | It can exercise the installed extension, but opening the fixture URL alone performs no work. |
 | Connector UI preview | 28 labeled source fields mapped; fictional record `339619` reviewed and imported in simulated preview state | The provider-neutral selection, mapping, review, and import UI state machine works with fictional data; preview mode does not contact the loopback adapter. |

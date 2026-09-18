@@ -18,6 +18,8 @@ Version 0.5 adds bundled English OCR for PNG, JPEG, WebP, and image-only PDF pag
 
 The dashboard tracks separate application tabs, retains one session client, shows attention states, and now starts selected known applications immediately with up to three tab-bound workers. BenefitsCal programs are grouped into one workflow, current IHSS/WIC routes and redirects are cataloged, application actions cannot scan an unrelated focused tab, and commands are bound to an approved Chrome document and route. The service worker now serializes client claims, queue revisions, leases, command dispatch, revocation, and connector invalidation; an application-scoped conflict no longer stops healthy sibling workers. The side panel must still stay open to execute the runner, so the next queue step is moving runner lifetime and authenticated recovery into a durable backend.
 
+Version 0.9 adds exact adapters for the currently observed Riverside IHSS and WIC fields, semantic checkbox values, conditionally revealed-field rescans, and stricter BenefitsCal route controls. These are compatibility implementations and deterministic tests, not a claim of sanctioned end-to-end production completion.
+
 ## Completed milestone: OCR and extraction evaluation
 
 Before adding more intake automation, establish a measurable quality bar and preserve the current bias against invented data.

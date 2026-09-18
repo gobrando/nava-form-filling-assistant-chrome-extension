@@ -35,6 +35,7 @@
 
   const MAX_AUTOMATED_PAGES = 60;
   const DEFAULT_AUTOMATED_PAGES = 12;
+  const MAX_SAME_PAGE_FILL_PASSES = 3;
   const MAX_PARALLEL_APPLICATIONS = 3;
   const TAB_READY_TIMEOUT_MS = 60_000;
   const NAVIGATION_TIMEOUT_MS = 60_000;
@@ -60,7 +61,7 @@
     '339619': {
       record_id: '339619',
       participant: {
-        name: { first: 'Celeste', middle: 'NAVA', last: 'Thomas II' },
+        name: { first: 'Celeste', middle: 'NAVA', last: 'Thomas', suffix: 'II' },
         date_of_birth: '2000-01-02',
         ethnicity: 'Hispanic/Latino',
         gender: 'Female',
@@ -86,6 +87,54 @@
       income: '1850',
       childcare: true,
       unemployment: false,
+      programData: {
+        ihss: {
+          applyingForSelf: true,
+          adoptedMinorChild: false,
+          genderIdentity: 'Decline to state',
+          birthSex: 'Female',
+          sexualOrientation: 'Decline to state',
+          veteran: false,
+          receivesSsi: false,
+          homeAssistanceAvailable: false,
+          livesAlone: false,
+          householdReceivesServices: false,
+          householdMembers: [{
+            relationship: 'Child',
+            name: 'Jordan Testchild',
+            dateOfBirth: '2018-06-15',
+            ssn: '987-65-4321',
+          }],
+          livingArrangement: 'Independent Living',
+          blind: false,
+          visuallyImpaired: false,
+          healthHistory: 'Needs help with bathing, dressing, meal preparation, and transportation.',
+          dailyLivingLimitations: true,
+          hospiceCare: false,
+          terminalIllness: false,
+          organTransplant: false,
+          supplementalOxygen: false,
+          cancerTreatment: false,
+          domesticServices: true,
+          personalCare: true,
+          transportation: true,
+          paramedicalCare: false,
+          otherServices: false,
+          pastIhss: false,
+        },
+        wic: {
+          canReceiveTexts: true,
+          mediCalCoverage: 'No',
+          postpartum: false,
+          breastfeedingInfant: false,
+          formulaInfant: false,
+          childUnderFive: true,
+          appointmentInPerson: true,
+          appointmentPhone: false,
+          appointmentVideo: false,
+          clinic: 'Temecula WIC',
+        },
+      },
     },
   };
 
@@ -187,6 +236,28 @@
     return String(value ?? '');
   }
 
+  function mergeVerifiedProvenance(...collections) {
+    const byField = new Map();
+    collections.flat().filter(Boolean).forEach((item) => {
+      if (!item?.fieldKey) return;
+      const normalized = { ...item };
+      if (normalized.sensitive) {
+        const digits = String(normalized.value ?? '').replace(/\D/g, '');
+        normalized.value = digits.length >= 4 ? `••••${digits.slice(-4)}` : '••••';
+      }
+      delete normalized.sensitive;
+      byField.set(normalized.fieldKey, normalized);
+    });
+    return [...byField.values()];
+  }
+
+  function provenanceForScan(previousProvenance, observed, preservePageProgress) {
+    return mergeVerifiedProvenance(
+      preservePageProgress ? (previousProvenance || []) : [],
+      observed || [],
+    );
+  }
+
   function formatTimestamp(value) {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? 'Unavailable' : date.toLocaleString();
@@ -285,7 +356,7 @@
     } catch {
       await chrome.scripting.executeScript({
         target: documentId ? { tabId: tab.id, documentIds: [documentId] } : { tabId: tab.id },
-        files: ['shared/form-engine.js', 'content/form-agent.js'],
+        files: ['shared/form-engine.js', 'shared/site-adapters.js', 'content/form-agent.js'],
       });
     }
   }
@@ -1687,6 +1758,7 @@
 
   function checkpointFromScan(response, fieldsFound) {
     if (response.submitGate?.oneTimeCodePresent && !response.submitGate?.oneTimeCodeComplete) return checkpoint('otp', 'One-time code required');
+    if (response.analysis?.gaps?.length) return checkpoint('human_input', 'Caseworker answers required');
     if (response.submitGate?.botCheckPresent && !response.submitGate?.botCheckComplete) return checkpoint('captcha', 'Human bot check required');
     if (response.navigationGate?.kind === 'final_review') {
       const signal = `${response.navigationGate.text || ''} ${response.navigationGate.reason || ''}`;
@@ -1694,7 +1766,6 @@
       if (/certif|attest|declaration|affirm/i.test(signal)) return checkpoint('certification', 'Certification required');
       return checkpoint('final_review', 'Final review required');
     }
-    if (response.analysis?.gaps?.length) return checkpoint('human_input', 'Caseworker answers required');
     if (fieldsFound === 0 && response.navigationGate?.kind !== 'next') return checkpoint('navigation_unknown', 'No approved continuation found');
     if (response.navigationGate?.kind === 'manual') return checkpoint('navigation_unknown', 'Manual page continuation required');
     return null;
@@ -1887,7 +1958,14 @@
     }
   }
 
-  async function scanTab(tab, { quiet = false, applicationId = null, runToken = null, uiToken = null } = {}) {
+  async function scanTab(tab, {
+    quiet = false,
+    applicationId = null,
+    runToken = null,
+    uiToken = null,
+    expectedCommandLocation = '',
+    preservePageProgress = false,
+  } = {}) {
     if (uiToken !== null) assertUiGeneration(uiToken);
     if (!quiet) setBusy('Checking this form and its required fields…');
     const requestedApplication = applicationId ? state.apps.find((item) => item.id === applicationId) : null;
@@ -1917,13 +1995,20 @@
     if (!response?.ok) throw new Error(response?.error || 'The form could not be read.');
     assertApplicationRun(requestedApplication || previous, runToken);
     const observedUrl = response.page?.url || tab.url;
+    if (expectedCommandLocation && commandLocation(observedUrl) !== expectedCommandLocation) {
+      throw new Error('The application navigated while the assistant was checking for conditional fields. It paused without advancing again.');
+    }
     if (requestedApplication) {
       assertApprovedApplicationLocation(requestedApplication, observedUrl);
     }
     const id = previous.id || newWorkflowId();
-    const fieldsFound = response.analysis?.counts?.fields || 0;
+    const safeAnalysis = {
+      ...response.analysis,
+      observed: mergeVerifiedProvenance(response.analysis?.observed || []),
+    };
+    const fieldsFound = safeAnalysis.counts?.fields || 0;
     const canContinue = response.navigationGate?.kind === 'next';
-    const nextCheckpoint = checkpointFromScan(response, fieldsFound);
+    const nextCheckpoint = checkpointFromScan({ ...response, analysis: safeAnalysis }, fieldsFound);
     const application = {
       ...previous,
       id,
@@ -1934,17 +2019,17 @@
       page: response.page,
       status: fieldsFound === 0 && !canContinue
         ? 'no_form'
-        : response.analysis.gaps.length
+        : safeAnalysis.gaps.length
           ? 'needs_attention'
           : 'ready_to_fill',
-      analysis: response.analysis,
+      analysis: safeAnalysis,
       playbook: response.playbook,
       submitGate: response.submitGate,
       navigationGate: response.navigationGate,
       error: fieldsFound === 0 && !canContinue ? 'No visible application fields or safe continuation controls were found on this page.' : '',
-      provenance: [],
-      blocked: [],
-      empty: [],
+      provenance: provenanceForScan(previous.provenance, safeAnalysis.observed, preservePageProgress),
+      blocked: preservePageProgress ? (previous.blocked || []) : [],
+      empty: preservePageProgress ? (previous.empty || []) : [],
       checkpoint: nextCheckpoint,
       completedPages: previous.completedPages || [],
       autoRun: Boolean(previous.autoRun),
@@ -1964,13 +2049,13 @@
     if (existing >= 0) state.apps.splice(existing, 1, application);
     else state.apps.unshift(application);
     recordAudit('scan_completed', application, {
-      fieldCount: response.analysis?.counts?.fields || 0,
-      gapCount: response.analysis?.gaps?.length || 0,
+      fieldCount: safeAnalysis.counts?.fields || 0,
+      gapCount: safeAnalysis.gaps?.length || 0,
       checkpointKind: nextCheckpoint?.kind,
       toStatus: application.status,
     });
-    if (response.analysis?.gaps?.length) {
-      recordAudit('questions_required', application, { gapCount: response.analysis.gaps.length, checkpointKind: 'human_input' });
+    if (safeAnalysis.gaps?.length) {
+      recordAudit('questions_required', application, { gapCount: safeAnalysis.gaps.length, checkpointKind: 'human_input' });
     }
     state.currentAppId = id;
     if (!quiet) state.view = 'dashboard';
@@ -2058,7 +2143,9 @@
         assertApplicationRun(application, runToken);
         application = await scanTab(tab, { quiet: true, applicationId, runToken });
         renderDashboardIfVisible();
-        if (application.status !== 'ready_to_fill') return;
+        const hasKnownAssignments = Boolean(application.analysis?.assignments?.length);
+        if (application.status !== 'ready_to_fill'
+          && !(application.status === 'needs_attention' && hasKnownAssignments)) return;
         await runThroughApplication(application, [], [], { background: true, runToken });
       });
     } catch (error) {
@@ -2083,9 +2170,11 @@
   }
 
   function eligibleAutomaticApplication(application) {
+    const hasKnownAssignments = Boolean(application?.analysis?.assignments?.length);
+    const fillableAttentionState = application?.status === 'needs_attention' && hasKnownAssignments;
     return Boolean(application?.autoRun
       && application.tabId
-      && ['not_started', 'ready_to_fill'].includes(application.status));
+      && (['not_started', 'ready_to_fill'].includes(application.status) || fillableAttentionState));
   }
 
   function scheduleCoordinatorRetry(applicationId) {
@@ -2177,10 +2266,11 @@
     if (response.cancelled) throw runCancelledError();
     assertApplicationRun(application, runToken);
     if (response.presentationMode) await new Promise((resolve) => setTimeout(resolve, 1200));
-    const provenanceByField = new Map();
-    [...(application.provenance || []), ...(application.analysis?.observed || []), ...(response.provenance || [])]
-      .forEach((item) => provenanceByField.set(item.fieldKey, item));
-    application.provenance = [...provenanceByField.values()];
+    application.provenance = mergeVerifiedProvenance(
+      application.provenance || [],
+      application.analysis?.observed || [],
+      response.provenance || [],
+    );
     application.blocked = (response.results || []).filter((item) => item.status !== 'verified');
     application.empty = [
       ...unresolved.map((gap) => ({ label: gap.label, reason: 'No answer was provided.' })),
@@ -2266,6 +2356,25 @@
     throw new Error('The site did not reach a stable new page within one minute after the approved continuation control was activated. The assistant stopped so the caseworker can inspect the application.');
   }
 
+  async function rescanCurrentPageAfterFill(application, runToken) {
+    if (previewMode) return null;
+    assertApplicationRun(application, runToken);
+    const expectedLocation = commandLocation(application.page?.url || application.url);
+    const tab = await chrome.tabs.get(application.tabId);
+    assertApprovedApplicationLocation(application, tab.url);
+    assertSameDocumentLocation(application.page?.url || application.url, tab.url);
+    const rescanned = await scanTab(tab, {
+      quiet: true,
+      applicationId: application.id,
+      runToken,
+      expectedCommandLocation: expectedLocation,
+      preservePageProgress: true,
+    });
+    assertApplicationRun(rescanned, runToken);
+    rescanned.autoRun = true;
+    return rescanned;
+  }
+
   async function runThroughApplication(application, userAssignments = [], unresolved = [], { background = false, runToken = null } = {}) {
     assertApplicationRun(application, runToken);
     application.autoRun = true;
@@ -2274,11 +2383,17 @@
     let current = application;
     let suppliedAssignments = userAssignments;
     let suppliedUnresolved = unresolved;
+    let samePageFillPasses = 0;
 
     for (;;) {
       assertApplicationRun(current, runToken);
       await renewApplicationLease(current, runToken);
-      if ((current.analysis?.gaps?.length || 0) && !suppliedAssignments.length && !suppliedUnresolved.length) {
+      const scannedGaps = current.analysis?.gaps || [];
+      const hasSuppliedAnswers = suppliedAssignments.length > 0 || suppliedUnresolved.length > 0;
+      const unresolvedForFill = hasSuppliedAnswers ? suppliedUnresolved : scannedGaps;
+      const assignmentCount = (current.analysis?.assignments?.length || 0) + suppliedAssignments.length;
+
+      if (!assignmentCount && unresolvedForFill.length) {
         setCheckpoint(current, 'human_input', 'Caseworker answers required', 'needs_attention');
         state.currentAppId = current.id;
         if (!background) state.view = 'questions';
@@ -2286,15 +2401,41 @@
         return;
       }
 
-      await fillCurrentPage(current, suppliedAssignments, suppliedUnresolved, { background, runToken });
-      suppliedAssignments = [];
-      suppliedUnresolved = [];
+      if (assignmentCount) {
+        await fillCurrentPage(current, suppliedAssignments, unresolvedForFill, { background, runToken });
+        suppliedAssignments = [];
+        suppliedUnresolved = [];
+        samePageFillPasses += 1;
 
-      if (current.empty.length || current.blocked.length) {
-        current.runStopReason = 'The automated run paused because at least one field needs a caseworker answer or direct entry.';
-        if (!background) state.view = 'dashboard';
-        await persist({ applicationIds: [current.id] });
-        return;
+        if (current.empty.length || current.blocked.length) {
+          current.runStopReason = 'The automated run paused after filling the known values because at least one field needs a caseworker answer or direct entry.';
+          if (!background) state.view = 'dashboard';
+          await persist({ applicationIds: [current.id] });
+          return;
+        }
+
+        const rescanned = await rescanCurrentPageAfterFill(current, runToken);
+        if (rescanned) {
+          current = rescanned;
+          const hasConditionalWork = Boolean(
+            current.analysis?.assignments?.length || current.analysis?.gaps?.length,
+          );
+          if (hasConditionalWork) {
+            if (samePageFillPasses >= MAX_SAME_PAGE_FILL_PASSES) {
+              current.runStopReason = `The page revealed more fields after ${MAX_SAME_PAGE_FILL_PASSES} verified fill passes. The assistant stopped before advancing.`;
+              current.error = current.runStopReason;
+              setCheckpoint(current, 'navigation_unknown', 'Conditional fields require review', 'needs_attention');
+              state.currentAppId = current.id;
+              if (!background) state.view = 'dashboard';
+              await persist({ applicationIds: [current.id] });
+              return;
+            }
+            continue;
+          }
+        }
+      } else {
+        suppliedAssignments = [];
+        suppliedUnresolved = [];
       }
 
       const tab = previewMode
@@ -2360,6 +2501,7 @@
       await persist({ applicationIds: [current.id] });
       current = await scanTab(nextTab, { quiet: true, applicationId: current.id, runToken });
       current.autoRun = true;
+      samePageFillPasses = 0;
     }
   }
 

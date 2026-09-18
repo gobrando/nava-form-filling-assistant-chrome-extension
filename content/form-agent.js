@@ -5,6 +5,7 @@
   globalThis.__NAVA_FORM_FILLER_AGENT_V3__ = true;
 
   const engine = globalThis.NavaFormEngine;
+  const siteAdapters = globalThis.NavaSiteAdapters || null;
   const fieldMap = new Map();
   const groupMap = new Map();
   let scanNumber = 0;
@@ -18,7 +19,20 @@
       autoAdvance: true,
       safeAdvanceSelectors: ['button[name="common_continue"]'],
       safeAdvanceRules: [
-        { labels: ['start', 'start your information'], path: '/ApplyForBenefits/ABNAV' },
+        { labels: ['begin'], path: '/ApplyForBenefits/begin/ABOVR' },
+        {
+          labels: [
+            'start your information',
+            'start people',
+            'start household',
+            'start income',
+            'start expenses',
+            'start assets',
+            'start other situations',
+            'start document upload',
+          ],
+          path: '/ApplyForBenefits/ABNAV',
+        },
       ],
     },
     'riversideihss.org': {
@@ -36,13 +50,22 @@
   };
 
   const SAFE_ADVANCE_LABELS = new Set([
-    'begin',
     'next',
     'next step',
     'continue',
     'continue to next step',
     'save and continue',
     'save continue',
+  ]);
+  const BENEFITSCAL_ABNAV_START_HEADINGS = new Set([
+    'your information',
+    'people',
+    'household details',
+    'income',
+    'expenses',
+    'assets',
+    'other situations',
+    'document upload',
   ]);
   const FINAL_ACTION_PATTERN = /\b(submit|finish|complete|certify|attest|sign|send|file|apply)\b/i;
   const FINAL_PAGE_PATTERN = /^(review (?:and|&) submit|review and submit your application|final review|ready to submit|submit your application|certification|attestation|signature|declaration)\b/i;
@@ -215,11 +238,44 @@
     return String(value || '').replace(/\s+/g, ' ').trim();
   }
 
-  function explicitLabel(element) {
+  function select2Container(element) {
+    if (element?.tagName !== 'SELECT') return null;
+    const sibling = element.nextElementSibling;
+    if (sibling?.matches?.('.select2, .select2-container')) return sibling;
+    const parent = element.parentElement;
+    if (!parent?.querySelector) return null;
+    try {
+      return parent.querySelector('.select2-container');
+    } catch {
+      return null;
+    }
+  }
+
+  function fieldVisible(element) {
+    if (visible(element)) return true;
+    const container = select2Container(element);
+    return Boolean(container && visible(container));
+  }
+
+  function select2SelectionMatches(element) {
+    const container = select2Container(element);
+    if (!container) return true;
+    const rendered = cleanText(container.querySelector?.('.select2-selection__rendered')?.textContent);
+    const selected = [...(element.options || [])].find((option) => String(option.value) === String(element.value));
+    return Boolean(rendered && selected && engine.normalize(rendered) === engine.normalize(cleanText(selected.textContent)));
+  }
+
+  function associatedLabel(element) {
     if (element.id) {
       const label = document.querySelector(`label[for="${CSS.escape(element.id)}"]`);
-      if (label) return cleanText(label.textContent);
+      if (label) return label;
     }
+    return null;
+  }
+
+  function explicitLabel(element) {
+    const associated = associatedLabel(element);
+    if (associated) return cleanText(associated.textContent);
     const wrapped = element.closest('label');
     if (wrapped) return cleanText(wrapped.textContent);
     return '';
@@ -265,7 +321,8 @@
     const type = String(element.type || '').toLowerCase();
     const autocomplete = String(element.autocomplete || '').toLowerCase();
     const signal = engine.normalize(`${label} ${element.name || ''} ${element.id || ''} ${autocomplete}`);
-    if (!visible(element)) return true;
+    if (!fieldVisible(element)) return true;
+    if (element.disabled) return true;
     if (['hidden', 'submit', 'button', 'reset', 'image', 'file', 'search'].includes(type)) return true;
     if (/current-password|new-password|one-time-code|cc-number|cc-csc|cc-exp/.test(autocomplete)) return true;
     if (type === 'password' && !/social security|\bssn\b|date of birth|birth date|birthdate/.test(signal)) return true;
@@ -276,21 +333,49 @@
     return false;
   }
 
-  function requiredField(element, label, question) {
-    return element.required
-      || element.getAttribute('aria-required') === 'true'
-      || /(^|\s)required(\s|$)/i.test(`${label} ${question}`)
+  function requiredNodeSignal(node) {
+    if (!node) return false;
+    const className = typeof node.className === 'string' ? node.className : '';
+    const text = cleanText(node.textContent);
+    return node.required === true
+      || node.getAttribute?.('aria-required') === 'true'
+      || /(?:^|\s)(?:required|form-required)(?:\s|$)/i.test(className)
+      || /(?:^|\s)required(?:\s|$)/i.test(text)
+      || /\*$/.test(text);
+  }
+
+  function requiredField(element, label, question, policy = {}) {
+    const group = element.closest?.('fieldset, [role="radiogroup"], [role="group"]');
+    const groupHeading = group?.querySelector?.(':scope > legend, :scope > .question, :scope > .form-label, :scope > label');
+    return policy.required === true
+      || requiredNodeSignal(element)
+      || requiredNodeSignal(associatedLabel(element))
+      || requiredNodeSignal(group)
+      || requiredNodeSignal(groupHeading)
+      || /(?:^|\s)required(?:\s|$)/i.test(`${label} ${question}`)
       || /\*$/.test(label.trim());
+  }
+
+  function placeholderOption(option) {
+    const value = engine.normalize(option?.value);
+    const label = engine.normalize(cleanText(option?.textContent));
+    if (!value || option?.disabled || option?.hidden) return true;
+    if (/^(?:-+\s*)?(?:please\s+)?(?:select|choose)(?:\s+(?:one|an option|a value))?(?:\s*-+)?$/.test(label)) return true;
+    return ['sel', 'select', '-1'].includes(value) && /select|choose/.test(label);
   }
 
   function selectOptions(element) {
     return [...element.options]
-      .filter((option) => option.value !== '' && !option.disabled)
+      .filter((option) => !placeholderOption(option))
       .map((option) => ({ value: option.value, label: cleanText(option.textContent) }));
   }
 
   function rawCurrentValue(element) {
     if (element.type === 'checkbox' || element.type === 'radio') return element.checked ? element.value || 'yes' : '';
+    if (element.tagName === 'SELECT') {
+      const selected = [...(element.options || [])].find((option) => String(option.value) === String(element.value));
+      if (selected && placeholderOption(selected)) return '';
+    }
     return element.value || '';
   }
 
@@ -304,9 +389,20 @@
     elements.forEach((element, index) => {
       const optionLabel = labelFor(element);
       if (shouldIgnore(element, optionLabel)) return;
-      const question = ['radio', 'checkbox'].includes(element.type)
+      const inferredQuestion = ['radio', 'checkbox'].includes(element.type)
         ? questionText(element, optionLabel)
         : '';
+      const policy = siteAdapters?.fieldPolicy?.(location.hostname, location.pathname, {
+        id: element.id || '',
+        name: element.name || '',
+        value: element.value || '',
+        className: typeof element.className === 'string' ? element.className : '',
+        type: String(element.type || '').toLowerCase(),
+        label: optionLabel,
+        question: inferredQuestion,
+      }) || {};
+      if (policy.ignore) return;
+      const question = cleanText(policy.question) || inferredQuestion;
       const fieldKey = `field:${scanNumber}:${index}`;
       const sameTypeCount = elements.filter((candidate) =>
         candidate !== element
@@ -314,14 +410,23 @@
         && ((element.name && candidate.name === element.name)
           || (!element.name && question && questionText(candidate, labelFor(candidate)) === question)),
       ).length;
-      const groupKey = ['radio', 'checkbox'].includes(element.type) && (element.name || sameTypeCount > 0)
+      const inferredGroupKey = ['radio', 'checkbox'].includes(element.type) && (element.name || sameTypeCount > 0)
         ? `group:${element.type}:${element.name || engine.compact(question)}`
         : '';
+      const groupKey = Object.prototype.hasOwnProperty.call(policy, 'groupKey')
+        ? String(policy.groupKey || '')
+        : inferredGroupKey;
+      const describedType = policy.type
+        || (element.tagName === 'SELECT' ? 'select-one' : String(element.type || 'text').toLowerCase());
+      const exclusive = policy.exclusive === true;
+      const optionValue = Object.prototype.hasOwnProperty.call(policy, 'optionValue')
+        ? String(policy.optionValue ?? '')
+        : String(element.value || '');
 
       fieldMap.set(fieldKey, element);
       if (groupKey) {
         const members = groupMap.get(groupKey) || [];
-        members.push({ element, fieldKey, optionLabel });
+        members.push({ element, fieldKey, optionLabel, optionValue, exclusive });
         groupMap.set(groupKey, members);
       }
 
@@ -329,22 +434,28 @@
         fieldKey,
         groupKey,
         tag: element.tagName.toLowerCase(),
-        type: element.tagName === 'SELECT' ? 'select-one' : String(element.type || 'text').toLowerCase(),
+        type: describedType,
         id: element.id || '',
         name: element.name || '',
         label: optionLabel,
         optionLabel,
         question,
+        purpose: policy.purpose || '',
+        unmapped: policy.unmapped === true,
+        allowRepeatedPurpose: policy.allowRepeatedPurpose === true,
+        exclusive,
         placeholder: element.placeholder || '',
         autocomplete: element.autocomplete || '',
+        pattern: element.getAttribute('pattern') || '',
         maxLength: element.maxLength > -1 ? element.maxLength : null,
-        required: requiredField(element, optionLabel, question),
+        required: requiredField(element, optionLabel, question, policy),
         disabled: element.disabled,
         visible: true,
         checked: Boolean(element.checked),
         value: rawCurrentValue(element),
+        optionValue: ['checkbox', 'radio'].includes(element.type) ? optionValue : '',
         options: element.tagName === 'SELECT' ? selectOptions(element) : [],
-        sensitive: looksSensitive(element, `${question} ${optionLabel}`),
+        sensitive: policy.sensitive === true || looksSensitive(element, `${question} ${optionLabel}`),
       });
     });
 
@@ -391,7 +502,7 @@
   }
 
   function submitGateStatus() {
-    const controls = [...document.querySelectorAll('button, input[type="submit"], [role="button"]')]
+    const controls = [...document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]')]
       .filter(visible)
       .map((element) => ({
         text: cleanText(element.textContent || element.value || element.getAttribute('aria-label')),
@@ -422,11 +533,17 @@
       .map((element) => cleanText(element.textContent))
       .find(Boolean) || document.title;
     const fieldSignal = [...document.querySelectorAll('input, select, textarea')]
-      .filter(visible)
+      .filter(fieldVisible)
       .slice(0, 30)
       .map((element) => `${element.tagName}:${element.type || ''}:${element.name || element.id || labelFor(element)}`)
       .join('|');
-    const source = `${location.href}|${heading}|${fieldSignal}`;
+    const interactionRoot = document.querySelector('main, [role="main"]') || document;
+    const controlSignal = [...interactionRoot.querySelectorAll('button, input[type="submit"], input[type="button"], a[href], [role="button"]')]
+      .filter(visible)
+      .slice(0, 30)
+      .map((element) => `${isControlEnabled(element) ? 'enabled' : 'disabled'}:${engine.normalize(navigationControlText(element))}`)
+      .join('|');
+    const source = `${location.href}|${heading}|${fieldSignal}|${controlSignal}`;
     let hash = 2166136261;
     for (let index = 0; index < source.length; index += 1) {
       hash ^= source.charCodeAt(index);
@@ -479,23 +596,58 @@
     return pathMatches && searchMatches && hashMatches && (labelMatches || selectorMatches);
   }
 
+  function nearestApplicationCardHeading(element) {
+    const interactionRoot = document.querySelector('main, [role="main"]');
+    let ancestor = element?.parentElement || null;
+    for (let depth = 0; ancestor && depth < 12; depth += 1, ancestor = ancestor.parentElement) {
+      if (ancestor === interactionRoot || ancestor === document.body || ancestor === document.documentElement) return '';
+      let headings = [];
+      try {
+        headings = [...ancestor.querySelectorAll('h2, [role="heading"][aria-level="2"]')]
+          .filter(visible);
+      } catch {
+        return '';
+      }
+      if (headings.length > 1) return '';
+      if (headings.length === 1) return cleanText(headings[0].textContent);
+    }
+    return '';
+  }
+
+  function isBenefitsCalAbnavContextStart(element, text) {
+    if (location.hostname.toLowerCase() !== 'benefitscal.com') return false;
+    if (location.pathname !== '/ApplyForBenefits/ABNAV') return false;
+    if (engine.normalize(text) !== 'start') return false;
+    const heading = engine.normalize(nearestApplicationCardHeading(element));
+    return BENEFITSCAL_ABNAV_START_HEADINGS.has(heading);
+  }
+
   function isPlaybookAdvanceControl(element, text, playbook) {
     const normalized = engine.normalize(text);
     if (trustedDemoFixture()) return isSafeAdvanceText(text);
-    return Boolean(playbook?.safeAdvanceLabels?.some((label) => engine.normalize(label) === normalized))
-      || matchesSafeSelector(element, playbook?.safeAdvanceSelectors)
+    return isBenefitsCalAbnavContextStart(element, text)
+      || Boolean(playbook?.safeAdvanceLabels?.some((label) => engine.normalize(label) === normalized))
+      || (matchesSafeSelector(element, playbook?.safeAdvanceSelectors) && isSafeAdvanceText(text))
       || Boolean(playbook?.safeAdvanceRules?.some((rule) => safeAdvanceRuleMatches(element, text, rule)));
   }
 
   function hasFinalPageSignal() {
-    const headings = [...document.querySelectorAll('h1, h2, h3, legend, [role="heading"]')]
+    const primaryRoot = document.querySelector('main, [role="main"]') || document;
+    const headings = [...primaryRoot.querySelectorAll('h1')]
       .filter(visible)
       .slice(0, 20)
       .map((element) => cleanText(element.textContent));
     if (headings.some((heading) => FINAL_PAGE_PATTERN.test(heading))) return true;
+    const hostname = location.hostname.toLowerCase();
+    const ihssAffirmation = (hostname === 'riversideihss.org' || hostname.endsWith('.riversideihss.org'))
+      && location.pathname.startsWith('/IntakeApp')
+      && [...primaryRoot.querySelectorAll('h5')]
+        .filter(visible)
+        .some((element) => /^section\s*9\s*[-–—:]\s*affirmation$/i.test(cleanText(element.textContent)));
+    if (ihssAffirmation) return true;
     return [...document.querySelectorAll('input[type="checkbox"], input[type="radio"]')]
       .filter(visible)
-      .some((element) => /certif|attest|under penalty|declare|signature|agree.*truth|information.*correct/i.test(
+      .some((element) => /certif|attest|affirm|under penalty|declare|signature|agree.*truth/i.test(
         `${labelFor(element)} ${questionText(element, labelFor(element))}`,
       ));
   }
@@ -601,7 +753,10 @@
   }
 
   async function incrementalWrite(element, value) {
-    const digitsOnly = /date|tel|phone|ssn|social security/i.test(`${element.type} ${labelFor(element)} ${element.id}`);
+    const pattern = String(element.getAttribute?.('pattern') || '');
+    const patternRequiresFormatting = /\\[()s-]|[() ]|\}\s*-\s*/.test(pattern);
+    const digitsOnly = /date|tel|phone|ssn|social security/i.test(`${element.type} ${labelFor(element)} ${element.id}`)
+      && !patternRequiresFormatting;
     const characters = [...(digitsOnly ? String(value).replace(/\D/g, '') : String(value))];
     element.focus();
     setTextValue(element, '');
@@ -623,13 +778,20 @@
   }
 
   function optionMatch(optionLabel, optionValue, wanted) {
-    const target = engine.normalize(wanted);
+    const normalizedTarget = engine.normalize(wanted);
+    const target = ['false', '0'].includes(normalizedTarget)
+      ? 'no'
+      : ['true', '1'].includes(normalizedTarget)
+        ? 'yes'
+        : normalizedTarget;
     const label = engine.normalize(optionLabel);
     const value = engine.normalize(optionValue);
+    if (!target) return false;
     if (target === label || target === value) return true;
     if (target === 'yes') return /^(yes|y|true|1)$/.test(label) || /^(yes|y|true|1)$/.test(value);
     if (target === 'no') return /^(no|n|false|0)$/.test(label) || /^(no|n|false|0)$/.test(value);
-    return label.includes(target) || target.includes(label);
+    return Boolean(label)
+      && (` ${label} `.includes(` ${target} `) || ` ${target} `.includes(` ${label} `));
   }
 
   function setChecked(element, checked) {
@@ -641,10 +803,10 @@
 
   async function writeAssignment(assignment) {
     const grouped = groupMap.get(assignment.fieldKey);
-    const entry = grouped?.find(({ element, optionLabel }) => optionMatch(optionLabel, element.value, assignment.value));
+    const entry = grouped?.find(({ optionLabel, optionValue }) => optionMatch(optionLabel, optionValue, assignment.value));
     const element = entry?.element || fieldMap.get(assignment.fieldKey);
     if (!element) return { ...assignment, status: 'blocked', reason: 'The field changed after the page scan. Scan the page again.' };
-    if (!visible(element)) return { ...assignment, status: 'blocked', reason: 'The field is hidden by an earlier question.' };
+    if (!fieldVisible(element)) return { ...assignment, status: 'blocked', reason: 'The field is hidden by an earlier question.' };
     if (element.disabled) return { ...assignment, status: 'blocked', reason: 'The field is disabled by an earlier question.' };
     if (Number(element.maxLength) > 0 && String(assignment.value).length > element.maxLength) {
       return { ...assignment, status: 'blocked', reason: `The value is longer than the form allows (${element.maxLength} characters).` };
@@ -667,7 +829,7 @@
         visualElement.style.outlineOffset = previousOutlineOffset;
         return { ...assignment, status: 'blocked', reason: 'The answer does not match one of the choices on the form.' };
       }
-      if (element.type === 'radio') {
+      if (element.type === 'radio' || grouped.some((member) => member.exclusive)) {
         grouped.forEach((member) => setChecked(member.element, member.element === element));
       } else {
         setChecked(element, true);
@@ -689,15 +851,16 @@
     if (typeof element.blur === 'function') element.blur();
 
     const readCurrent = () => grouped
-      ? grouped.find((member) => member.element.checked)?.element.value || ''
+      ? grouped.find((member) => member.element.checked)?.optionValue || ''
       : rawCurrentValue(element);
     let stability = await waitForStableRead(element, readCurrent);
     let actual = stability.value;
     let verified = grouped
-      ? Boolean(grouped.find((member) => member.element.checked && optionMatch(member.optionLabel, member.element.value, assignment.value)))
+      ? Boolean(grouped.find((member) => member.element.checked && optionMatch(member.optionLabel, member.optionValue, assignment.value)))
       : element.type === 'checkbox'
         ? element.checked === /^(yes|true|1|on)$/i.test(String(assignment.value))
         : engine.valuesEquivalent(assignment.value, actual, { type: element.type, label: labelFor(element) });
+    if (!grouped && element.tagName === 'SELECT') verified = verified && select2SelectionMatches(element);
     verified = verified && stability.settled && !stability.problem;
     if (!grouped && element.type === 'checkbox') actual = element.checked ? 'yes' : 'no';
 
@@ -733,23 +896,24 @@
   function revalidateAssignment(result, pageSettled) {
     if (result.status !== 'verified') return result;
     const grouped = groupMap.get(result.fieldKey);
-    const entry = grouped?.find(({ element, optionLabel }) => optionMatch(optionLabel, element.value, result.value));
+    const entry = grouped?.find(({ optionLabel, optionValue }) => optionMatch(optionLabel, optionValue, result.value));
     const element = entry?.element || fieldMap.get(result.fieldKey) || grouped?.[0]?.element;
-    if (!element || !visible(element) || element.disabled) {
+    if (!element || !fieldVisible(element) || element.disabled) {
       return { ...result, status: 'blocked', reason: 'The field changed or became unavailable while the page validated.' };
     }
     const actual = grouped
-      ? grouped.find((member) => member.element.checked)?.element.value || ''
+      ? grouped.find((member) => member.element.checked)?.optionValue || ''
       : element.type === 'checkbox'
         ? element.checked ? 'yes' : 'no'
         : rawCurrentValue(element);
     const matches = grouped
-      ? Boolean(grouped.find((member) => member.element.checked && optionMatch(member.optionLabel, member.element.value, result.value)))
+      ? Boolean(grouped.find((member) => member.element.checked && optionMatch(member.optionLabel, member.optionValue, result.value)))
       : element.type === 'checkbox'
         ? element.checked === /^(yes|true|1|on)$/i.test(String(result.value))
         : engine.valuesEquivalent(result.value, actual, { type: element.type, label: labelFor(element) });
+    const visiblyMatches = element.tagName !== 'SELECT' || select2SelectionMatches(element);
     const problem = validationProblem(element);
-    if (!pageSettled || !matches || problem) {
+    if (!pageSettled || !matches || !visiblyMatches || problem) {
       return {
         ...result,
         status: 'blocked',
