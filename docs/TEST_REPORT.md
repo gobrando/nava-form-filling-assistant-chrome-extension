@@ -1,6 +1,6 @@
 # Test report
 
-Date: 2026-09-17
+Date: 2026-09-18
 
 ## Automated checks
 
@@ -11,7 +11,14 @@ npm run check
 npm test
 ```
 
-The 127-test suite exercises mapping, parsing, connector, queue, recovery, exact IHSS/WIC adapters, and BenefitsCal navigation logic; deterministically tests exclusive client sessions, per-application revisions and leases, sibling-safe partial persistence during an in-flight command, revoke/command ordering, tab closure, and connector invalidation; and checks safety invariants around the no-submit boundary, bounded fill batches, document-bound messaging, allowlisted continuation, conditional rescans, semantic checkbox choices, repeated-entity abstention, OTP/CAPTCHA checkpoints, provider grouping/current routes, and the passive 28-field fixture. A VM harness runs the real content-agent fill path and confirms that benign help text stays valid while a delayed 900 ms value reversion or asynchronous invalid state is blocked. The suite does not run an installed Chrome extension, visual pacing, live-site filling, or real parallel tabs; those require the installed-extension rerun described below.
+The 131-test suite exercises mapping, parsing, connector, queue, recovery, exact IHSS/WIC adapters, and BenefitsCal navigation logic; deterministically tests exclusive client sessions, per-application revisions and leases, sibling-safe partial persistence during an in-flight command, revoke/command ordering, tab closure, and connector invalidation; and checks safety invariants around the no-submit boundary, bounded fill batches, document-bound messaging, allowlisted continuation, conditional rescans, semantic checkbox choices, repeated-entity abstention, OTP/CAPTCHA checkpoints, provider grouping/current routes, and the passive 28-field fixture. It also verifies detection of reCAPTCHA, hCaptcha, and Cloudflare Turnstile without any click, solve, or bypass path, plus the explicit human-complete-and-resume flow. A VM harness runs the real content-agent fill path and confirms that benign help text stays valid while a delayed 900 ms value reversion or asynchronous invalid state is blocked. The suite does not run an installed Chrome extension, visual pacing, live-site filling, or real parallel tabs; those require the installed-extension rerun described below.
+
+### Version 0.9.1 recovery and human-checkpoint regression
+
+- Extension-state restoration retries background startup before showing an error.
+- If an unpacked-extension reload invalidates the session-only client data, the banner tells the caseworker to close/reopen the side panel and reload the authorized source; durable application checkpoints remain intact.
+- CAPTCHA and one-time-code cards offer an explicit resume action only after the caseworker completes the challenge. A fresh scan must show the challenge as complete before the runner continues.
+- Challenge widgets and tokens are never clicked, populated, solved, or sent to a third party.
 
 ## Resumable queue and handoff walkthrough
 

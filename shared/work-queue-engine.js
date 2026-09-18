@@ -39,6 +39,7 @@
     'page_verified',
     'safe_advance',
     'checkpoint_reached',
+    'checkpoint_completed',
     'resume_verified',
     'resume_rejected',
     'handoff_created',

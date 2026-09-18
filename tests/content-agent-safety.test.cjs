@@ -46,7 +46,14 @@ function applicationCard(headingText, parentElement = null) {
   };
 }
 
-function agentHarness(url, { demo = false, controls = [], headings = [], fields = [] } = {}) {
+function agentHarness(url, {
+  demo = false,
+  controls = [],
+  headings = [],
+  fields = [],
+  botToken = null,
+  botWidget = null,
+} = {}) {
   const parsed = new URL(url);
   let listener;
   const controlsSelector = 'button, input[type="submit"], input[type="button"], a[href], [role="button"]';
@@ -62,7 +69,10 @@ function agentHarness(url, { demo = false, controls = [], headings = [], fields 
     title: 'Test application',
     documentElement: { dataset: demo ? { navaDemoFlow: 'true' } : {} },
     querySelector(selector) {
-      return selector === 'main, [role="main"]' ? interactionRoot : null;
+      if (selector === 'main, [role="main"]') return interactionRoot;
+      if (selector.includes('[name="g-recaptcha-response"]')) return botToken;
+      if (selector.includes('iframe[src*="recaptcha"]')) return botWidget;
+      return null;
     },
     querySelectorAll(selector) {
       if (selector === 'h1, h2, [role="heading"]') return headings;
@@ -646,6 +656,27 @@ test('input type button submit controls are included in the submit gate', async 
 
   assert.equal(response.submitGate.found, true);
   assert.equal(response.submitGate.text, 'Submit Application');
+});
+
+test('reCAPTCHA, hCaptcha, and Turnstile checkpoints are detected without solving them', async () => {
+  const url = 'https://benefits.example.gov/application';
+  const pending = agentHarness(url, { botWidget: {} });
+  const pendingResponse = await pending.send({ type: 'NAVA_SCAN', participant: {}, routePolicy: routePolicy(url) });
+  assert.equal(pendingResponse.submitGate.botCheckPresent, true);
+  assert.equal(pendingResponse.submitGate.botCheckComplete, false);
+
+  const completed = agentHarness(url, { botToken: { value: 'verified-human-token-1234567890' } });
+  const completedResponse = await completed.send({ type: 'NAVA_SCAN', participant: {}, routePolicy: routePolicy(url) });
+  assert.equal(completedResponse.submitGate.botCheckPresent, true);
+  assert.equal(completedResponse.submitGate.botCheckComplete, true);
+
+  const implementation = agentSource.slice(
+    agentSource.indexOf('function botCheckStatus'),
+    agentSource.indexOf('function oneTimeCodeStatus'),
+  );
+  assert.match(implementation, /h-captcha-response/);
+  assert.match(implementation, /cf-turnstile-response/);
+  assert.doesNotMatch(implementation, /click\(|solve|bypass/i);
 });
 
 test('generic continuation labels remain authorized only on exact trusted demo fixtures', async () => {

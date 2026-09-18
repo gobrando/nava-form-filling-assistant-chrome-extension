@@ -327,6 +327,28 @@
     return chrome.runtime.sendMessage(message);
   }
 
+  async function requestAssistantState(
+    send = sendRuntime,
+    wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  ) {
+    const delays = [0, 150, 500];
+    let lastError = '';
+    for (const delay of delays) {
+      if (delay) await wait(delay);
+      try {
+        const response = await send({ type: 'GET_ASSISTANT_STATE' });
+        if (response?.ok) return response;
+        lastError = response?.error || '';
+      } catch (error) {
+        lastError = error?.message || String(error || '');
+      }
+    }
+    if (lastError && !/extension context invalidated|receiving end does not exist|message port closed|could not establish connection/i.test(lastError)) {
+      throw new Error(lastError);
+    }
+    throw new Error('The extension was reloaded safely. Close and reopen the side panel to reconnect. Saved application checkpoints remain available, but client data must be reloaded before filling resumes.');
+  }
+
   async function probeTabDocument(tabId) {
     const [probe] = await chrome.scripting.executeScript({
       target: { tabId, frameIds: [0] },
@@ -795,8 +817,7 @@
   async function restore({ preserveView = false } = {}) {
     if (previewMode) return;
     const previousView = state.view;
-    const response = await sendRuntime({ type: 'GET_ASSISTANT_STATE' });
-    if (!response?.ok) throw new Error(response?.error || 'The assistant session could not be restored.');
+    const response = await requestAssistantState();
     const saved = response.session;
     const queue = response.queue;
     state.participant = saved?.participant || null;
@@ -818,8 +839,7 @@
     const previousEpoch = state.sessionEpoch;
     const previousParticipantSessionId = state.participantSessionId;
     const previousView = state.view;
-    const response = await sendRuntime({ type: 'GET_ASSISTANT_STATE' });
-    if (!response?.ok) throw new Error(response?.error || 'The assistant session could not be restored.');
+    const response = await requestAssistantState();
     const authoritativeAudit = Array.isArray(response.queue?.audit) ? response.queue.audit : [];
     const identityChanged = previousEpoch !== Number(response.sessionEpoch)
       || previousParticipantSessionId !== String(response.participantSessionId || '');
@@ -907,8 +927,7 @@
       requestedIds.forEach((id) => pendingApplicationSyncIds.add(id));
       return;
     }
-    const response = await sendRuntime({ type: 'GET_ASSISTANT_STATE' });
-    if (!response?.ok) throw new Error(response?.error || 'The application state could not be refreshed.');
+    const response = await requestAssistantState();
     const delta = coordinatorDelta(response);
     if (delta.full) {
       coordinatorSyncPending = true;
@@ -1486,6 +1505,9 @@
       actions = `<button class="small-button" type="button" data-action="accept-handoff" data-app="${encoded(application.id)}">Accept handoff</button>`;
     } else if (application.programSelectionRequired) {
       actions = '<button class="small-button" type="button" data-action="add-application">Choose programs in a new BenefitsCal application</button>';
+    } else if (['captcha', 'otp'].includes(application.checkpoint?.kind) && application.tabId) {
+      const challenge = application.checkpoint.kind === 'captcha' ? 'CAPTCHA' : 'one-time code';
+      actions = `<button class="small-button" type="button" data-action="resume-human-checkpoint" data-app="${encoded(application.id)}">I completed the ${challenge} — resume</button>`;
     } else if (application.status === 'paused') {
       actions = `<button class="small-button" type="button" data-action="${application.tabId ? 'resume' : 'resume-current'}" data-app="${encoded(application.id)}">${application.tabId ? 'Verify and resume' : 'Reconnect current tab'}</button>`;
     } else if (application.status === 'not_started' && application.autoRun) {
@@ -2619,6 +2641,59 @@
     return resumed;
   }
 
+  async function resumeHumanCheckpoint(application, { runToken = null } = {}) {
+    assertApplicationRun(application, runToken);
+    setBusy('Checking the human verification and resuming the application…');
+    const tab = previewMode
+      ? { id: application.tabId || 7001, url: application.page?.url || application.url }
+      : await chrome.tabs.get(application.tabId);
+    assertApprovedApplicationLocation(application, tab.url);
+    const expectedLocation = commandLocation(application.page?.url || application.url);
+    if (expectedLocation !== commandLocation(tab.url)) {
+      application.error = 'The application moved to a different page while waiting for human verification.';
+      setCheckpoint(application, 'page_changed', 'Application page changed', 'paused');
+      await persist({ applicationIds: [application.id] });
+      state.view = 'dashboard';
+      return application;
+    }
+
+    const rescanned = await scanTab(tab, {
+      quiet: true,
+      applicationId: application.id,
+      runToken,
+      expectedCommandLocation: expectedLocation,
+      preservePageProgress: true,
+    });
+    assertApplicationRun(rescanned, runToken);
+    const pendingKind = rescanned.submitGate?.oneTimeCodePresent && !rescanned.submitGate?.oneTimeCodeComplete
+      ? 'otp'
+      : rescanned.submitGate?.botCheckPresent && !rescanned.submitGate?.botCheckComplete
+        ? 'captcha'
+        : '';
+    if (pendingKind) {
+      const label = pendingKind === 'captcha' ? 'Human CAPTCHA still required' : 'One-time code still required';
+      rescanned.error = pendingKind === 'captcha'
+        ? 'Complete the CAPTCHA in the application tab, then try resuming again.'
+        : 'Enter the one-time code in the application tab, then try resuming again.';
+      rescanned.autoRun = false;
+      setCheckpoint(rescanned, pendingKind, label, 'needs_attention');
+      recordAudit('checkpoint_reached', rescanned, { checkpointKind: pendingKind, toStatus: 'needs_attention' });
+      state.currentAppId = rescanned.id;
+      state.view = 'dashboard';
+      await persist({ applicationIds: [rescanned.id] });
+      return rescanned;
+    }
+
+    rescanned.error = '';
+    rescanned.runStopReason = '';
+    rescanned.checkpoint = null;
+    rescanned.autoRun = true;
+    recordAudit('checkpoint_completed', rescanned, { checkpointKind: application.checkpoint?.kind, toStatus: rescanned.status });
+    await persist({ applicationIds: [rescanned.id] });
+    await runThroughApplication(rescanned, [], [], { runToken });
+    return rescanned;
+  }
+
   async function exportAuditLog(uiToken) {
     recordAudit('audit_exported', null);
     await persist({ applicationIds: [] });
@@ -2761,7 +2836,7 @@
       state.view = 'choice';
       await clearAssistantState();
     }
-    if (['answer', 'answer-run', 'fill', 'run', 'review', 'rescan', 'go-tab', 'scan-application', 'resume', 'resume-current', 'open-handoff', 'pause', 'accept-handoff'].includes(action)) {
+    if (['answer', 'answer-run', 'fill', 'run', 'review', 'rescan', 'go-tab', 'scan-application', 'resume', 'resume-current', 'resume-human-checkpoint', 'open-handoff', 'pause', 'accept-handoff'].includes(action)) {
       const id = decoded(button.dataset.app);
       const application = state.apps.find((item) => item.id === id);
       if (!application) throw new Error('That application is no longer available.');
@@ -2807,6 +2882,16 @@
           (runToken) => withApplicationLease(
             application,
             () => resumeApplication(application, action === 'resume-current', { runToken }),
+          ),
+          { uiBound: true },
+        );
+      }
+      if (action === 'resume-human-checkpoint') {
+        await withNewApplicationRun(
+          application,
+          (runToken) => withApplicationLease(
+            application,
+            () => resumeHumanCheckpoint(application, { runToken }),
           ),
           { uiBound: true },
         );

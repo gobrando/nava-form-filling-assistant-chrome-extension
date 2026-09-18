@@ -144,3 +144,14 @@ test('audit export allowlists event details and contains no participant payload'
   assert.equal(exported.events[0].details.participantValue, undefined);
   assert.doesNotMatch(serialized, /Maria|123-45-6789|secret-field-value|record=/);
 });
+
+test('completed human checkpoints produce a PII-free audit event', () => {
+  const event = queue.auditEvent('checkpoint_completed', sample, {
+    checkpointKind: 'captcha',
+    participantValue: 'secret-field-value',
+  }, { at: '2026-09-15T13:30:00.000Z', id: 'event-captcha-complete' });
+
+  assert.equal(event.type, 'checkpoint_completed');
+  assert.equal(event.details.checkpointKind, 'captcha');
+  assert.equal(event.details.participantValue, undefined);
+});
