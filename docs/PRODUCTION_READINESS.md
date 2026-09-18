@@ -1,6 +1,6 @@
 # Production-readiness evidence
 
-Date: 2026-09-17
+Date: 2026-09-18
 
 ## Executive answer
 
@@ -12,7 +12,7 @@ This is prototype implementation plus unit/static evidence, not a production-acc
 
 | Evidence | Result | What it establishes |
 | --- | --- | --- |
-| Automated suite | 127 tests pass | Mapping, formatting, delayed-validation readback, exact IHSS/WIC adapters, semantic checkbox values, conditional rescans, BenefitsCal route gates, repeated-entity abstention, coordinator races, sibling-safe partial persistence, bounded fill batches, OCR, connector boundaries, program grouping, resumability, handoff, and durable PII controls behave as specified. |
+| Automated suite | 131 tests pass | Mapping, formatting, delayed-validation readback, exact IHSS/WIC adapters, semantic checkbox values, conditional rescans, BenefitsCal route gates, repeated-entity abstention, coordinator races, sibling-safe partial persistence, bounded fill batches, human CAPTCHA/OTP checkpoints, OCR, connector boundaries, program grouping, resumability, handoff, and durable PII controls behave as specified. |
 | Extensive local benefits fixture | 28 of 28 source-backed fields map in the engine test; the fixture is passive and contains no embedded participant or autofill runner | The synthetic record covers demographic, identity, contact, address, household, citizenship, income, childcare, and unemployment fields without letting the demo bypass the extension. An installed-extension browser rerun is required after each unpacked-extension reload. |
 | Original three-page fixture | Passive fixture retains safe navigation and a final submit guard | It can exercise the installed extension, but opening the fixture URL alone performs no work. |
 | Connector UI preview | 28 labeled source fields mapped; fictional record `339619` reviewed and imported in simulated preview state | The provider-neutral selection, mapping, review, and import UI state machine works with fictional data; preview mode does not contact the loopback adapter. |
@@ -38,7 +38,7 @@ A successful installed-extension run would establish **mechanical correctness ag
 The runner pauses instead of guessing when it encounters:
 
 - a missing, ambiguous, conflicting, or stale source value;
-- CAPTCHA, bot challenge, one-time code, login, or another direct-entry checkpoint;
+- CAPTCHA, bot challenge, one-time code, login, or another direct-entry checkpoint; after a caseworker completes a CAPTCHA or code challenge, an explicit resume action rescans the page before automation continues;
 - an unknown host, changed page signature, loop, unexpected navigation, or the playbook-specific page limit capped at 60;
 - a control inside an unsupported cross-origin frame or closed shadow root;
 - a mask or widget that rejects synthetic browser events; or

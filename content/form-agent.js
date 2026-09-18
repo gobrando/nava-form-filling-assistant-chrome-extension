@@ -488,9 +488,14 @@
   }
 
   function botCheckStatus() {
-    const token = document.querySelector('#g-recaptcha-response, [name="cf-turnstile-response"]');
-    if (!token) return { present: false, complete: false };
-    return { present: true, complete: String(token.value || '').length > 100 };
+    const token = document.querySelector(
+      '#g-recaptcha-response, [name="g-recaptcha-response"], [name="h-captcha-response"], [name="cf-turnstile-response"]',
+    );
+    const widget = document.querySelector(
+      '.g-recaptcha, .h-captcha, [data-sitekey], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="challenges.cloudflare.com"]',
+    );
+    const value = String(token?.value || '').trim();
+    return { present: Boolean(token || widget), complete: value.length > 20 };
   }
 
   function oneTimeCodeStatus() {

@@ -26,6 +26,7 @@ It is a working local prototype, not a production deployment. It implements flow
 - Cross-page progress history, loop detection, playbook-specific page limits capped at 60, and automatic pauses when a field needs direct help.
 - A durable multi-application work queue with stable workflow IDs, explicit checkpoints, tab-closure recovery, and restart-safe progress metadata.
 - Verified resume: the assistant rescans the live tab and compares its URL and page signature before it permits another write.
+- Human-checkpoint resume for reCAPTCHA, hCaptcha, Cloudflare Turnstile, and one-time-code screens. The assistant pauses without interacting with the challenge; after the caseworker completes it, **I completed the CAPTCHA — resume** performs a fresh scan and continues the approved run.
 - Caseworker/team ownership, pending and accepted handoffs, and a service-worker-coordinated per-application lease designed to prevent two assistant windows from writing to the same workflow at once. A two-panel Chrome validation is still pending.
 - A value-free activity log for scan, fill, verification, safe navigation, pause, resume, handoff, review, and tab-closure events. Caseworkers can export it as JSON.
 - A hard final-action boundary: certification, attestation, signature, Finish, Complete, Apply, and Submit controls are never activated.
@@ -49,6 +50,8 @@ It is a working local prototype, not a production deployment. It implements flow
 5. Open a web form and click the extension icon. Chrome opens the assistant in the side panel.
 
 Chrome may require an already-open form tab to be refreshed once after the extension is first loaded.
+
+Reloading the unpacked extension intentionally invalidates the in-memory client session. Close and reopen the side panel, then reload the authorized client record; durable application checkpoints remain available. Version 0.9.1 retries background startup before showing this recovery guidance instead of reporting a generic restoration failure.
 
 ## Safe local demo
 
@@ -122,13 +125,13 @@ Run `npm run eval:extraction` to reproduce the published [quality report](evalua
 
 ## Resumable work queues and handoff
 
-Version 0.9 retains the privacy boundary between short-lived client values and durable operational state:
+Version 0.9.1 retains the privacy boundary between short-lived client values and durable operational state:
 
 - Participant values, document proposals, raw page signatures, and full page URLs remain in `chrome.storage.session` and expire with the browser session.
 - `chrome.storage.local` retains only sanitized queue metadata: workflow/program IDs, application label, approved origin and catalog route prefixes, status, progress counts, checkpoint, owner/handoff state, tab ID, timestamps, and opaque checksums of the saved location and page signature.
 - Closing a tab creates a recoverable checkpoint. Restarting Chrome preserves the queue, but the assistant requires the caseworker to reload the authorized source record before resuming because participant values were intentionally not retained.
 - Resume always performs a read-only live scan first. A changed location, changed page signature, stale source, expired source, unaccepted handoff, or missing tab blocks writes.
-- CAPTCHA, one-time codes, direct-entry fields, certification, signature, and final review are named checkpoints rather than background automation steps.
+- CAPTCHA, one-time codes, direct-entry fields, certification, signature, and final review are named checkpoints rather than background automation steps. CAPTCHA and one-time-code checkpoints expose an explicit human-complete-and-resume action; the extension never attempts to solve or bypass the challenge.
 
 The current handoff is a same-Chrome-profile workflow and ownership prototype. It does not transmit client data or synchronize queues between caseworkers. A production cross-device handoff requires an authenticated organization service with authorization, encrypted storage, retention controls, and concurrency enforcement. See [work-queue security and recovery](docs/WORK_QUEUE_SECURITY_AND_RECOVERY.md).
 

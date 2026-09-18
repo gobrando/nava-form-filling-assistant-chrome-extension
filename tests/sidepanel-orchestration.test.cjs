@@ -22,6 +22,13 @@ function provenanceHelpers() {
   return context.result;
 }
 
+function recoveryHelper() {
+  const source = section('async function requestAssistantState', 'async function probeTabDocument');
+  const context = {};
+  vm.runInNewContext(`${source}\nresult = requestAssistantState;`, context);
+  return context.result;
+}
+
 test('dynamic page-agent injection installs site adapters before the content agent', () => {
   const source = section('async function ensurePageAgent', 'async function sendToTab');
   const formEngine = source.indexOf("'shared/form-engine.js'");
@@ -41,6 +48,37 @@ test('unanswered form fields outrank an always-present CAPTCHA checkpoint', () =
   assert.ok(gaps >= 0);
   assert.ok(gaps < captcha);
   assert.match(source, /checkpoint\('human_input', 'Caseworker answers required'\)/);
+});
+
+test('assistant-state recovery retries service-worker startup and gives reload guidance', async () => {
+  const requestAssistantState = recoveryHelper();
+  let attempts = 0;
+  const restored = await requestAssistantState(async () => {
+    attempts += 1;
+    return attempts < 3 ? undefined : { ok: true, session: null, queue: null };
+  }, async () => {});
+  assert.equal(attempts, 3);
+  assert.equal(restored.ok, true);
+
+  await assert.rejects(
+    requestAssistantState(async () => undefined, async () => {}),
+    /Close and reopen the side panel.*checkpoints remain available.*client data must be reloaded/i,
+  );
+});
+
+test('CAPTCHA checkpoints expose a human-complete-and-resume path', () => {
+  const card = section('function applicationCard', 'function renderDashboard');
+  const resume = section('async function resumeHumanCheckpoint', 'async function exportAuditLog');
+  const clickHandler = section('async function onClick', 'async function onSubmit');
+
+  assert.match(card, /resume-human-checkpoint/);
+  assert.match(card, /I completed the \$\{challenge\} — resume/);
+  assert.match(resume, /expectedCommandLocation: expectedLocation/);
+  assert.match(resume, /botCheckPresent && !rescanned\.submitGate\?\.botCheckComplete/);
+  assert.match(resume, /Complete the CAPTCHA in the application tab/);
+  assert.match(resume, /await runThroughApplication\(rescanned/);
+  assert.doesNotMatch(resume, /click\(|solve|bypass/i);
+  assert.match(clickHandler, /action === 'resume-human-checkpoint'/);
 });
 
 test('automatic runs fill known assignments before pausing for unanswered fields', () => {
