@@ -42,7 +42,7 @@ test('dynamic page-agent injection installs site adapters before the content age
 
 test('page-agent readiness is versioned and requires the exact live-site adapters', () => {
   const source = section('async function ensurePageAgent', 'async function sendToTab');
-  assert.match(panel, /const PAGE_AGENT_VERSION = 4/);
+  assert.match(panel, /const PAGE_AGENT_VERSION = 5/);
   assert.match(source, /pong\.agentVersion === PAGE_AGENT_VERSION && pong\.adaptersReady/);
   assert.match(source, /verified\.agentVersion === PAGE_AGENT_VERSION && verified\.adaptersReady/);
   assert.match(source, /older form-filling agent.*Refresh this tab once/i);
@@ -183,4 +183,11 @@ test('zero-write scans retain observed evidence and conditional rescans merge it
   assert.equal(replaced.length, 2);
   assert.equal(replaced[1].value, '••••8765');
   assert.equal(replaced[1].source, 'record');
+});
+
+test('multi-select gap answers fan out to explicit yes and no checkbox writes', () => {
+  assert.match(panel, /gap\.inputType === 'multi_choice'/);
+  assert.match(panel, /data\.getAll\(`answer-\$\{index\}`\)/);
+  assert.match(panel, /selected\.includes\('__none__'\)/);
+  assert.match(panel, /chosen\.has\(member\.fieldKey\) \? 'no' : 'yes'/);
 });

@@ -1,7 +1,7 @@
 (function installPageAgent() {
   'use strict';
 
-  const PAGE_AGENT_VERSION = 4;
+  const PAGE_AGENT_VERSION = 5;
   if (globalThis.__NAVA_FORM_FILLER_AGENT__?.version === PAGE_AGENT_VERSION) return;
   globalThis.__NAVA_FORM_FILLER_AGENT__ = { version: PAGE_AGENT_VERSION };
 
@@ -76,6 +76,51 @@
   const PAGE_VALIDATION_MIN_MS = 1800;
   const PAGE_VALIDATION_MAX_MS = 4000;
   const MAX_FILL_ASSIGNMENTS = 80;
+  const PAGE_TOOL_DEFINITIONS = Object.freeze([
+    {
+      name: 'inspect_application_page',
+      description: 'Read the visible application controls, safe navigation state, and final-action boundary without changing the page.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: true, untrustedContentHint: true, consequentialHint: false },
+      command: 'NAVA_SCAN',
+    },
+    {
+      name: 'fill_reviewed_fields',
+      description: 'Write a locally validated batch of field-key/value assignments and read every field back. This tool cannot submit.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          assignments: {
+            type: 'array',
+            maxItems: MAX_FILL_ASSIGNMENTS,
+            items: {
+              type: 'object',
+              properties: {
+                fieldKey: { type: 'string' },
+                label: { type: 'string' },
+                value: { type: ['string', 'number', 'boolean'] },
+                source: { type: 'string', enum: ['record', 'changed', 'user'] },
+                sensitive: { type: 'boolean' },
+              },
+              required: ['fieldKey', 'value'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['assignments'],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, untrustedContentHint: false, consequentialHint: false },
+      command: 'NAVA_FILL',
+    },
+    {
+      name: 'continue_application_step',
+      description: 'Activate only the exact allowlisted continuation control for the current approved application route. Final actions are excluded.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: false, untrustedContentHint: false, consequentialHint: false },
+      command: 'NAVA_ADVANCE',
+    },
+  ]);
 
   function delay(milliseconds) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -441,6 +486,8 @@
         optionLabel,
         question,
         purpose: policy.purpose || '',
+        decisionGroupKey: String(policy.decisionGroupKey || ''),
+        decisionGroupQuestion: cleanText(policy.decisionGroupQuestion || ''),
         unmapped: policy.unmapped === true,
         allowRepeatedPurpose: policy.allowRepeatedPurpose === true,
         exclusive,
@@ -1001,6 +1048,7 @@
         ok: true,
         agentVersion: PAGE_AGENT_VERSION,
         adaptersReady: typeof globalThis.NavaSiteAdapters?.fieldPolicy === 'function',
+        tools: PAGE_TOOL_DEFINITIONS,
       };
     }
     if (message?.type === 'NAVA_CANCEL') {
@@ -1020,6 +1068,8 @@
           url: location.href,
           domain: location.hostname,
         },
+        fields,
+        tools: PAGE_TOOL_DEFINITIONS,
         playbook: playbookStatus(),
         analysis: engine.buildAnalysis(fields, message.participant || {}),
         submitGate: submitGateStatus(),

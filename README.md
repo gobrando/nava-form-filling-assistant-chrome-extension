@@ -4,17 +4,21 @@ This is a loadable Manifest V3 Chrome extension that adapts Foad's `form-complet
 
 It is a working local prototype, not a production deployment. It implements flows for a read-only organization data service, labeled source mapping, client or business document import, application inspection, missing-answer collection, approved multi-page filling, readback verification, and provenance review. It has no submit command.
 
-> **Evidence boundary:** the field-mapping engine has 28-of-28 synthetic source-field coverage, and the extension code path for the local fixtures uses the real scan/fill/navigation messages. The fixtures contain no client record and no embedded autofill runner. A fresh installed-extension end-to-end run is still required after loading this version. This build has not been connected to a production Apricot tenant or completed a live BenefitsCal, IHSS, or WIC application in a sanctioned test environment. Use only fictional or approved test data. See [production-readiness evidence](docs/PRODUCTION_READINESS.md).
+> **Evidence boundary:** the deterministic executor has 28-of-28 synthetic source-field coverage, and the agentic planner has unit evidence for three role-specific model sessions, value-minimized prompts, reviewer approval, and safe concurrent planning. On 2026-09-23, the installed extension and downloaded on-device model completed all 28 fields across five pages of the passive local fixture and stopped at its Step 6 review page before certification and submission. Parallel installed-tab validation and a sanctioned end-to-end government-site run remain pending. This build has not been connected to a production Apricot tenant or completed a live BenefitsCal, IHSS, or WIC application in a sanctioned test environment. Use only fictional or approved test data. See [production-readiness evidence](docs/PRODUCTION_READINESS.md).
 
-## Architecture disclosure: this build does not use an LLM
+## Architecture disclosure: on-device multi-agent planner
 
-The current form-filling controller is deterministic browser automation, not an LLM-based agent. `shared/form-engine.js` maps known field labels to reviewed source values, `shared/site-adapters.js` supplies exact site rules, and `content/form-agent.js` performs bounded DOM scan/write/readback operations. Tesseract's bundled English model is used only for on-device OCR. No prompt, inference request, hosted language model, or model-selected browser action exists in this version.
+Version 0.9.4 uses [Chrome's built-in Gemini Nano Prompt API](https://developer.chrome.com/docs/ai/prompt-api). Three separate on-device model sessions adapt the roles in Foad's `form-completion` protocol: a field-mapping agent proposes canonical source mappings, a gap-analysis agent identifies unanswered decisions, and an independent review agent approves or rejects every proposal. Reviewer-approved pairs and versioned known-site hints must pass a local allowlist validator before they reach `shared/form-engine.js`; `content/form-agent.js` then performs bounded scan/write/readback operations. There is no silent non-AI fallback for an unknown live form—if built-in AI is unavailable, the run does not start.
 
-This makes the repository a browser execution and safety prototype for the form-completion protocol; it does **not** yet test the LLM planner used by an agentic production form filler. Adding that planner requires an explicit model-service boundary, organization authorization, data-minimization and retention controls, schema-constrained actions, local policy validation, and evaluation against sanctioned non-production benefit flows. The deterministic executor and final-submit boundary should remain enforcement layers beneath any future model.
+The model receives a minimized field inventory and a list of available source-purpose names, not client values. It cannot write the DOM, navigate, solve bot challenges, or submit. The deterministic executor enforces origin/path binding, entity and repeat-field policy, exact safe continuations, readback verification, and the final-submit boundary. This is a real LLM planning vertical slice inspired by Foad's multi-agent skill system; it is not the same deployed production Eve/Vertex service and is not yet evidence of production accuracy on unknown benefits sites.
+
+The page command contract follows [WebMCP's typed-tool pattern](https://developer.chrome.com/docs/ai/webmcp) (`inspect_application_page`, `fill_reviewed_fields`, and `continue_application_step`) with JSON schemas and safety annotations. Native WebMCP remains a progressive-enhancement path because the proposed API currently requires Chrome 149's origin trial or a local flag, and existing government sites may not expose tools.
 
 ## What is implemented
 
 - Jillian's main flow: find client → choose applications → dashboard → answer questions → review.
+- Three role-specific Gemini Nano agents for field mapping, gap analysis, and independent review, with schema-constrained JSON output and a local policy validator.
+- Per-application local-model accounting: prompt count, context-usage units when exposed by Chrome, model time, and model API cost. The on-device path reports `$0.00` API cost.
 - Local document intake for PDF, PNG, JPEG, WebP, DOCX, TXT, CSV, TSV, and JSON files up to 15 MB.
 - Deterministic extraction of clearly labeled demographic, identity, contact, address, and business fields, plus bounded on-device English OCR for images and image-only PDF pages. No model or network call is used.
 - Page, region, OCR-confidence, and rotation provenance for every OCR proposal. OCR values always start unchecked and require explicit review before import.
@@ -54,10 +58,11 @@ This makes the repository a browser execution and safety prototype for the form-
 3. Choose **Load unpacked**.
 4. Select this `nava-form-filling-assistant-chrome-extension` folder.
 5. Open a web form and click the extension icon. Chrome opens the assistant in the side panel.
+6. Choose **Enable agentic AI**. Chrome may download its on-device language model the first time.
 
-Chrome may require an already-open form tab to be refreshed once after the extension is first loaded.
+Chrome 138 or newer on a supported desktop is required for the Prompt API. Chrome may require an already-open form tab to be refreshed once after the extension is first loaded. If the AI card reports unavailable, verify Chrome's built-in AI device requirements before attempting a live run.
 
-Reloading the unpacked extension intentionally invalidates the in-memory client session. Close and reopen the side panel, then reload the authorized client record; durable application checkpoints remain available. Version 0.9.2 retries background startup before showing this recovery guidance instead of reporting a generic restoration failure and rejects stale page-agent code after an extension reload.
+Reloading the unpacked extension intentionally invalidates the in-memory client session and its model sessions. Close and reopen the side panel, enable agentic AI again, then reload the authorized client record; durable application checkpoints remain available. Version 0.9.4 retries background startup before showing recovery guidance and rejects stale page-agent code after an extension reload.
 
 ## Safe local demo
 
@@ -131,7 +136,7 @@ Run `npm run eval:extraction` to reproduce the published [quality report](evalua
 
 ## Resumable work queues and handoff
 
-Version 0.9.2 retains the privacy boundary between short-lived client values and durable operational state:
+Version 0.9.4 retains the privacy boundary between short-lived client values and durable operational state:
 
 - Participant values, document proposals, raw page signatures, and full page URLs remain in `chrome.storage.session` and expire with the browser session.
 - `chrome.storage.local` retains only sanitized queue metadata: workflow/program IDs, application label, approved origin and catalog route prefixes, status, progress counts, checkpoint, owner/handoff state, tab ID, timestamps, and opaque checksums of the saved location and page signature.
@@ -165,13 +170,14 @@ The browser extension also cannot produce genuinely trusted hardware keystrokes.
 - Handoff metadata is local to one Chrome profile. It demonstrates the ownership and acceptance flow but is not an authenticated cross-device assignment system.
 - The included connector server is a fictional loopback fixture. A real organization still needs the Nava-controlled service, provider partnership/access, authentication, security review, and data-processing controls.
 - Provider selection is not the same as a live connection. Only the fictional Apricot-shaped adapter is runnable in this repository; all other listed systems require authorized backend adapters and sandbox validation.
-- There is no model call. Ambiguous, unlabeled, low-confidence, and unsupported OCR content is withheld or remains untouched.
+- Agentic planning currently requires Chrome's on-device Prompt API and a downloaded Gemini Nano model. It is not available on every device. Client values are withheld from prompts; ambiguous mappings and unsupported content remain untouched. A production Claude path is feasible only through an authenticated Nava-managed gateway; no hosted-model adapter or provider key ships in this version.
 
 ## Evidence, costs, and next steps
 
 - [Production-readiness evidence](docs/PRODUCTION_READINESS.md) states exactly what is and is not validated.
 - [Connector coverage](docs/CONNECTOR_COVERAGE.md) covers the current catalog, major human-services systems, and the work needed for a Plaid-like experience.
-- [Application cost model](docs/COST_MODEL.md) separates the prototype's $0 marginal third-party usage cost from a realistic production calculation.
+- [Application cost model](docs/COST_MODEL.md) separates the prototype's `$0.00` on-device model API cost from a realistic production calculation.
+- [Model providers and usage accounting](docs/MODEL_PROVIDERS.md) describes the current local runtime and the required managed Claude gateway.
 
 See [`docs/IMPLEMENTATION_NOTES.md`](docs/IMPLEMENTATION_NOTES.md) for the exact mapping from the six-phase skill to the extension architecture.
 

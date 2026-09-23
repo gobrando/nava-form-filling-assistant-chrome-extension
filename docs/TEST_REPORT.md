@@ -1,6 +1,6 @@
 # Test report
 
-Date: 2026-09-18
+Date: 2026-09-23
 
 ## Automated checks
 
@@ -11,9 +11,14 @@ npm run check
 npm test
 ```
 
-The 135-test suite exercises mapping, parsing, connector, queue, recovery, exact IHSS/WIC adapters, and BenefitsCal navigation logic; deterministically tests exclusive client sessions, per-application revisions and leases, sibling-safe partial persistence during an in-flight command, revoke/command ordering, tab closure, connector invalidation, versioned page-agent readiness, and per-application progress; and checks safety invariants around the no-submit boundary, bounded fill batches, document-bound messaging, allowlisted continuation, conditional rescans, semantic checkbox choices, repeated-entity abstention, OTP/CAPTCHA checkpoints, provider grouping/current routes, and the passive 28-field fixture. It also verifies detection of reCAPTCHA, hCaptcha, and Cloudflare Turnstile without any click, solve, or bypass path, plus the explicit human-complete-and-resume flow. A VM harness runs the real content-agent fill path and confirms that benign help text stays valid while a delayed 900 ms value reversion or asynchronous invalid state is blocked. The suite does not run an installed Chrome extension, visual pacing, live-site filling, real parallel tabs, or an LLM planner; those require separate validation.
+The 147-test suite exercises the three-agent planner, mapping, parsing, connector, queue, recovery, exact IHSS/WIC adapters, and BenefitsCal navigation logic; deterministically tests exclusive client sessions, per-application revisions and leases, sibling-safe partial persistence during an in-flight command, revoke/command ordering, tab closure, connector invalidation, versioned page-agent readiness, and per-application progress; and checks safety invariants around the no-submit boundary, bounded fill batches, document-bound messaging, allowlisted continuation, conditional rescans, semantic checkbox choices, repeated-entity abstention, OTP/CAPTCHA checkpoints, provider grouping/current routes, and the passive 28-field fixture. It also verifies that three role-specific model sessions are created, participant values never enter prompts, untrusted page inventories are size-bounded, stale model gaps cannot survive an approved mapping, singleton checkboxes retain writable IDs, versioned site hints remain authoritative, missing WIC choices group into the site's two select-all-that-apply questions, usage counters remain value-free, reviewer-invented and low-confidence mappings are rejected locally, and simultaneous application plans never overlap calls on the same model session. A VM harness runs the real content-agent fill path and confirms that benign help text stays valid while a delayed 900 ms value reversion or asynchronous invalid state is blocked. The suite does not replace a sanctioned live-site run or real parallel-tab validation.
 
-### Version 0.9.2 recovery, live-adapter, and human-checkpoint regression
+### Version 0.9.4 agentic, WIC-correctness, recovery, and human-checkpoint regression
+
+- Chrome's on-device Gemini Nano Prompt API provides separate field-mapper, gap-analyst, and independent-review sessions.
+- The model receives form metadata and available canonical purpose names, but not names, addresses, identifiers, income, or other participant values.
+- Only mappings proposed by the mapper, approved by the reviewer, backed by an available source purpose, and accepted by the local validator reach the deterministic form engine.
+- Page operations expose a WebMCP-style typed tool contract for inspect, reviewed fill, and safe continuation; no submit tool exists.
 
 - Extension-state restoration retries background startup before showing an error.
 - If an unpacked-extension reload invalidates the session-only client data, the banner tells the caseworker to close/reopen the side panel and reload the authorized source; durable application checkpoints remain intact.
@@ -22,6 +27,10 @@ The 135-test suite exercises mapping, parsing, connector, queue, recovery, exact
 - Independent application cards retain their own run progress while concurrent tab-bound work is active.
 - CAPTCHA and one-time-code cards offer an explicit resume action only after the caseworker completes the challenge. A fresh scan must show the challenge as complete before the runner continues.
 - Challenge widgets and tokens are never clicked, populated, solved, or sent to a third party.
+- A gap proposed from the pre-fill inventory is discarded when the same field has a reviewed source mapping, preventing a verified DOB or address from being asked for again.
+- Single WIC checkboxes keep their real writable field key instead of a synthetic one-member group key; versioned RUHS purpose hints remain authoritative if the local mapper omits them.
+- A source-backed checkbox is filled and verified. If RUHS checkbox answers are absent, related options are grouped into the site's two select-all-that-apply questions with an explicit **None of these** choice; other standalone checkboxes become Yes/No questions.
+- Each plan returns value-free prompt count, context usage when Chrome exposes it, model duration, and `$0.00` on-device API cost; sanitized audit events retain only aggregate counters.
 
 ## Resumable queue and handoff walkthrough
 
@@ -79,7 +88,7 @@ On 2026-09-17, the updated preview also confirmed that all eight provider cards 
 
 The fixture is now deliberately passive at `demo/extensive-application.html?step=1&reset=1`. It contains no participant record, form engine, page agent, or URL-triggered autofill routine. Any automated scan, fill, verification, or advance shown on it must come from the installed extension. Presentation mode scrolls to and highlights each field long enough to make individual writes visible, then waits for page-level validation before continuation. This is demo pacing, not a production-duration estimate.
 
-A Chrome regression check also opened the fixture with the obsolete `autorun=1` query, waited 2.2 seconds, and confirmed that all five page-one controls remained empty. That check demonstrates that the page cannot manufacture the prior instant-completion result; it does not replace the pending installed-extension run.
+A Chrome regression check also opened the fixture with the obsolete `autorun=1` query, waited 2.2 seconds, and confirmed that all five page-one controls remained empty. That check demonstrates that the page cannot manufacture the prior instant-completion result.
 
 | Page | Engine-covered fields | Fixture guard |
 | --- | --- | --- |
@@ -90,7 +99,7 @@ A Chrome regression check also opened the fixture with the obsolete `autorun=1` 
 | Income and expenses | 3 of 3 mappings tested | Exact **Continue** is allowlisted |
 | Review and submit | 28-field summary is rendered from page storage | Certification and submission remain human-only |
 
-The mapping-engine regression test verifies all 28 source-backed values without inventions. The prior `autorun=1` evidence was removed because it exercised a fixture-local runner rather than proving that the installed extension performed the work. A fresh installed-extension browser run is required after reloading the unpacked extension; the certification checkbox and **Submit application** remain outside the extension's command set.
+On 2026-09-23, the installed extension with Chrome's downloaded on-device model advanced the passive fixture from Step 1 through Step 6. The final page reported `28 of 28 fixture fields recorded across 5 of 5 data-entry pages`; its page history reported `5/5`, `9/9`, `7/7`, `4/4`, and `3/3`. The certification checkbox remained unchecked, **Submit application** was not activated, and the page emitted no warnings or errors. This replaces the earlier fixture-local `autorun=1` evidence. Parallel background-tab validation is still pending.
 
 ## Three-page browser fixture
 

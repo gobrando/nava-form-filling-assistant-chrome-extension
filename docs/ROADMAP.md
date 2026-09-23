@@ -1,10 +1,10 @@
 # Product roadmap recommendation
 
-## Highest-priority correction: connect the real agentic planner
+## Agentic planner vertical slice implemented; installed evaluation is next
 
-The current extension does not run or call an LLM. Its controller is a deterministic mapping and navigation state machine with exact site adapters. That work is useful as a constrained browser executor, but by itself it does not evaluate the agentic form-filling product.
+Version 0.9.4 connects a real on-device LLM planner to the constrained executor. Chrome's Gemini Nano Prompt API runs three distinct sessions: field mapper, gap analyst, and independent reviewer. They receive a minimized page inventory and available source-purpose names, never participant values. Reviewer-approved output and versioned known-site hints must pass a local validator before the existing origin, entity, navigation, readback, and no-submit policies permit an action.
 
-The next milestone should integrate the actual Nava/Foad planning service behind a privacy-reviewed API rather than adding an unconstrained model call directly to Chrome. The planner should receive a minimized, structured page inventory and approved source schema; return schema-constrained proposed mappings, questions, and navigation intents; and never write or click directly. The extension must validate every proposal against origin, entity scope, source provenance, protected-inference rules, allowed continuations, readback, and the existing no-submit boundary. The pilot needs consented synthetic data, prompt/model/version audit metadata without participant values, adversarial and schema-drift evaluations, and a sanctioned non-production benefits flow.
+This is an adaptation of Foad's role separation and safety protocol, not the deployed Eve/Vertex service. The downloaded model and extensive installed fixture now pass end to end. The immediate milestone is to re-run WIC after the 0.9.4 gap/checkbox fix, prove two or more unfocused application tabs make independent progress, add adversarial/prompt-injection and schema-drift cases, and then exercise one sanctioned non-production benefits flow. A production decision can compare this private on-device planner with the authorized Nava/Foad or Claude service behind the same schema-constrained boundary.
 
 ## Status of the three candidate areas
 
@@ -20,7 +20,7 @@ This is not yet a Plaid-like provider network. That requires organization authen
 
 Version 0.5 adds bundled English OCR for PNG, JPEG, WebP, and image-only PDF pages; strict page/pixel/attempt/time budgets; rotation recovery; page/region/confidence provenance; default-unchecked OCR proposals; and an executable quality gate. The synthetic corpus currently passes at 100% precision, 91.2% recall, 100% expected-abstention accuracy, zero accepted wrong values, and zero sensitive evidence leaks. The next extraction work is pilot-grade hardening against representative, consented documents rather than broader automatic acceptance.
 
-### Multi-application UI — local coordinator implemented; browser concurrency validation pending
+### Multi-application UI — background-tab coordinator implemented; installed concurrency validation pending
 
 The dashboard tracks separate application tabs, retains one session client, shows attention states, and now starts selected known applications immediately with up to three tab-bound workers. BenefitsCal programs are grouped into one workflow, current IHSS/WIC routes and redirects are cataloged, application actions cannot scan an unrelated focused tab, and commands are bound to an approved Chrome document and route. The service worker now serializes client claims, queue revisions, leases, command dispatch, revocation, and connector invalidation; an application-scoped conflict no longer stops healthy sibling workers. The side panel must still stay open to execute the runner, so the next queue step is moving runner lifetime and authenticated recovery into a durable backend.
 
@@ -68,7 +68,10 @@ The next meaningful step crosses the extension/backend boundary. Build the organ
 - **Completed:** OCR and extraction-quality evaluation baseline.
 - **Completed:** local resumable multi-application queue and same-profile handoff vertical slice.
 - **Completed:** provider-neutral source catalog/contract and 28-field fictional adapter validation.
-- **Next:** connect the real LLM planner to the constrained extension executor and evaluate it on sanctioned synthetic benefit flows.
+- **Completed:** on-device three-agent planning vertical slice with schema-constrained output and local review enforcement.
+- **Completed:** installed Chrome evaluation of the downloaded model and passive six-page extensive fixture (28/28 fields, stopped at review).
+- **Next:** installed WIC retest after the 0.9.4 checkbox/gap fix, two or more simultaneous unfocused application tabs, and one sanctioned synthetic benefits flow.
+- **Then:** add an authenticated, server-side model-provider adapter so an organization can choose the on-device runtime or an approved Claude model without placing provider keys or participant values in Chrome; return token usage and calculated cost to the existing value-free accounting surface.
 - **Then:** productionize the authenticated Nava connector and work-queue service; pilot one Apricot organization in a sandbox.
 - **Later:** add provider adapters in priority order using the published [coverage matrix](CONNECTOR_COVERAGE.md).
 

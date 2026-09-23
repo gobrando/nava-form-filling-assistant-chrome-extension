@@ -329,6 +329,12 @@ test('WIC exclusive groups expose stable semantic option values', () => {
   assert.equal(textNo.optionValue, 'No');
   assert.equal(mediCalPending.optionValue, 'In progress');
   assert.equal(adapters.fieldPolicy(WIC_HOST, WIC_PATH, { id: 'edit-if-yes' }).sensitive, true);
+  const category = adapters.fieldPolicy(WIC_HOST, WIC_PATH, { id: 'edit-please-select-all-that-apply-childrentoddler-0-5' });
+  const appointment = adapters.fieldPolicy(WIC_HOST, WIC_PATH, { id: 'edit-i-authorize-my-wic-appointments-select-all-that-apply-in-person' });
+  assert.equal(category.decisionGroupKey, 'wic:applicant-category');
+  assert.equal(category.decisionGroupQuestion, 'Please select all that apply');
+  assert.equal(appointment.decisionGroupKey, 'wic:appointment-methods');
+  assert.match(appointment.decisionGroupQuestion, /appointment methods/i);
 });
 
 test('the complete observed WIC form maps every fictional source-backed answer with no false gaps', () => {

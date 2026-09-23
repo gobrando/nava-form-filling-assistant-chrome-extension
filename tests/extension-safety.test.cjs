@@ -18,6 +18,13 @@ test('page agent exposes no submit command and never invokes requestSubmit', () 
   assert.doesNotMatch(source, /\.submit\s*\(/);
   assert.doesNotMatch(source, /NAVA_SUBMIT\b/);
   assert.match(source, /submitGateStatus/);
+  assert.match(source, /PAGE_TOOL_DEFINITIONS/);
+  assert.match(source, /name: 'inspect_application_page'/);
+  assert.match(source, /name: 'fill_reviewed_fields'/);
+  assert.match(source, /name: 'continue_application_step'/);
+  assert.match(source, /readOnlyHint: true/);
+  const toolDefinitions = source.slice(source.indexOf('const PAGE_TOOL_DEFINITIONS'), source.indexOf('function delay'));
+  assert.doesNotMatch(toolDefinitions, /submit_application|NAVA_SUBMIT/);
 });
 
 test('cross-page automation only exposes gated advance and stops on final actions', () => {
@@ -99,6 +106,10 @@ test('multi-application runs are tab-bound, automatic, and origin-checked', () =
   assert.match(panel, /application\.lease\?\.holder === state\.workerId/);
   assert.match(panel, /probe\.documentId/);
   assert.match(panel, /documentIds: \[documentId\]/);
+  const backgroundRunSource = panel.slice(panel.indexOf('async function waitForApplicationTab'), panel.indexOf('function scheduleCoordinatorRetry'));
+  assert.match(backgroundRunSource, /chrome\.tabs\.get\(application\.tabId\)/);
+  assert.match(backgroundRunSource, /scanTab\(tab, \{ quiet: true, applicationId, runToken \}\)/);
+  assert.doesNotMatch(backgroundRunSource, /getActiveTab\(\)|chrome\.tabs\.update\([^\n]*active:\s*true/);
   assert.match(panel, /type: 'EXECUTE_APPLICATION_COMMAND'/);
   assert.match(panel, /command,/);
   assert.match(panel, /documentId: probe\.documentId/);

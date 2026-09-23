@@ -67,3 +67,70 @@ test('unchecked exclusive checkbox groups retain their real option values', () =
   assert.equal(analysis.assignments[0].fieldKey, 'wic:receive-texts');
   assert.equal(analysis.assignments[0].value, 'No');
 });
+
+test('an unanswered benefits checkbox becomes an explicit yes/no gap', () => {
+  const analysis = engine.buildAnalysis([{
+    fieldKey: 'appointment-phone',
+    purpose: 'wicAppointmentPhone',
+    type: 'checkbox',
+    label: 'Virtual (phone)',
+    checked: false,
+    value: '',
+  }], {});
+
+  assert.equal(analysis.gaps.length, 1);
+  assert.equal(analysis.gaps[0].fieldKey, 'appointment-phone');
+  assert.equal(analysis.gaps[0].inputType, 'choice');
+  assert.deepEqual(analysis.gaps[0].options, [
+    { value: 'yes', label: 'Yes' },
+    { value: 'no', label: 'No' },
+  ]);
+  assert.match(analysis.gaps[0].question, /select virtual \(phone\)/i);
+});
+
+test('related unanswered WIC checkboxes become one select-all-that-apply question', () => {
+  const analysis = engine.buildAnalysis([
+    {
+      fieldKey: 'appointment-in-person',
+      purpose: 'wicAppointmentInPerson',
+      type: 'checkbox',
+      label: 'In-Person',
+      optionLabel: 'In-Person',
+      decisionGroupKey: 'wic:appointment-methods',
+      decisionGroupQuestion: 'Which WIC appointment methods should be authorized?',
+      checked: false,
+      value: '',
+    },
+    {
+      fieldKey: 'appointment-phone',
+      purpose: 'wicAppointmentPhone',
+      type: 'checkbox',
+      label: 'Virtual (phone)',
+      optionLabel: 'Virtual (phone)',
+      decisionGroupKey: 'wic:appointment-methods',
+      decisionGroupQuestion: 'Which WIC appointment methods should be authorized?',
+      checked: false,
+      value: '',
+    },
+    {
+      fieldKey: 'appointment-video',
+      purpose: 'wicAppointmentVideo',
+      type: 'checkbox',
+      label: 'Telehealth (video)',
+      optionLabel: 'Telehealth (video)',
+      decisionGroupKey: 'wic:appointment-methods',
+      decisionGroupQuestion: 'Which WIC appointment methods should be authorized?',
+      checked: false,
+      value: '',
+    },
+  ], {});
+
+  assert.equal(analysis.gaps.length, 1);
+  assert.equal(analysis.gaps[0].inputType, 'multi_choice');
+  assert.equal(analysis.gaps[0].members.length, 3);
+  assert.deepEqual(analysis.gaps[0].options.map((option) => option.label), [
+    'In-Person',
+    'Virtual (phone)',
+    'Telehealth (video)',
+  ]);
+});

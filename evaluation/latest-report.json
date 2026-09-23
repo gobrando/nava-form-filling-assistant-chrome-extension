@@ -1,6 +1,6 @@
 {
   "corpusVersion": 1,
-  "generatedAt": "2026-09-23T17:18:24.134Z",
+  "generatedAt": "2026-09-23T19:00:25.943Z",
   "passed": true,
   "thresholds": {
     "precision": 0.95,
@@ -22,8 +22,8 @@
     "abstentionAccuracy": 1,
     "wrongValues": 0,
     "sensitiveEvidenceLeaks": 0,
-    "totalDurationMs": 2048,
-    "averageCaseDurationMs": 341
+    "totalDurationMs": 1945,
+    "averageCaseDurationMs": 324
   },
   "cases": [
     {
@@ -41,7 +41,7 @@
       "meanOcrConfidence": 95,
       "selectedRotation": 0,
       "attempts": 1,
-      "durationMs": 410,
+      "durationMs": 384,
       "recognizedText": "FICTIONAL CLIENT INTAKE\n\nFirst Name: Celeste\n\nMiddle Name: NAVA\n\nLast Name: Thomas II\n\nDate of Birth: 01/02/2000\n\nEmail: testhava@email.com\n\nPhone: 777-777-7777\n\nAddress: 5556 Test Boulevard\n\nCity: Wildomar\n\nState: CA\n\nZIP Code: 92595\n",
       "differences": [
         {
@@ -177,7 +177,7 @@
       "meanOcrConfidence": 95,
       "selectedRotation": 0,
       "attempts": 1,
-      "durationMs": 195,
+      "durationMs": 189,
       "recognizedText": "FICTIONAL SCANNED INTAKE\n\nFirst Name: Amelie\n\nLast Name: Thomas |\n\nDate of Birth: 01/01/2000\n\nPhone: 777-777-7777\n\nPrimary Language: English\n",
       "differences": [
         {
@@ -253,7 +253,7 @@
       "meanOcrConfidence": 95,
       "selectedRotation": 270,
       "attempts": 3,
-      "durationMs": 722,
+      "durationMs": 686,
       "recognizedText": "FICTIONAL BUSINESS PROFILE\n\nBusiness Legal Name: Juniper Bicycle Works LLC\n\nDBA: Juniper Bikes\n\nEIN: ••••6789\n\nEntity Type: Limited Liability Company\n\nBusiness City: San Diego\n\nBusiness State: CA\n\nBusiness ZIP Code: 92109\n",
       "differences": [],
       "actual": {
@@ -359,7 +359,7 @@
       "meanOcrConfidence": 95,
       "selectedRotation": 0,
       "attempts": 1,
-      "durationMs": 302,
+      "durationMs": 289,
       "recognizedText": "FICTIONAL BUSINESS RECORD\n\nBusiness Legal Name\n\nHarbor Community Foods LLC\n\nBusiness Type\n\nLLC\n\nBusiness Address\n\n4400 Mission Boulevard\n\nBusiness City\n\nSan Diego\n\nBusiness State\n\nCA\n\nBusiness ZIP Code\n\n92109\n\nBusiness Email\n\nhello@harbor.example\n",
       "differences": [
         {
@@ -459,7 +459,7 @@
       "meanOcrConfidence": 93,
       "selectedRotation": 0,
       "attempts": 1,
-      "durationMs": 266,
+      "durationMs": 258,
       "recognizedText": "FORMULARIO FICTICIO / FICTIONAL FORM\n\nFirst Name / Nombre: Ana\n\nLast Name / Apellido: Morales\n\nDate of Birth / Fecha de nacimiento: 05/12/1991\n\nPhone / Teléfono: 951-555-0184\n\nPreferred Language / Idioma preferido: Spanish\n",
       "differences": [],
       "actual": {
@@ -541,7 +541,7 @@
       "meanOcrConfidence": 95,
       "selectedRotation": 0,
       "attempts": 1,
-      "durationMs": 153,
+      "durationMs": 139,
       "recognizedText": "Maria Santos\n\nborn during the summer of 1988\n\nreference ••••6789\n\nplease call the office next week\n",
       "differences": [],
       "actual": {},

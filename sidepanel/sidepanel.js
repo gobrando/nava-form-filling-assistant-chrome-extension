@@ -3,6 +3,7 @@
 
   const appRoot = document.getElementById('app');
   const engine = globalThis.NavaFormEngine;
+  const agentPlanner = globalThis.NavaAgenticPlanner;
   const connectorEngine = globalThis.NavaConnectorEngine;
   const workQueueEngine = globalThis.NavaWorkQueueEngine;
   const programCatalog = globalThis.NavaProgramCatalog;
@@ -31,13 +32,14 @@
     participantSessionId: '',
     coordinatorRevision: 0,
     workerId: globalThis.crypto?.randomUUID?.() || `panel-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    agentRuntime: { status: previewMode ? 'preview' : 'checking', message: '' },
   };
 
   const MAX_AUTOMATED_PAGES = 60;
   const DEFAULT_AUTOMATED_PAGES = 12;
   const MAX_SAME_PAGE_FILL_PASSES = 3;
   const MAX_PARALLEL_APPLICATIONS = 3;
-  const PAGE_AGENT_VERSION = 4;
+  const PAGE_AGENT_VERSION = 5;
   const TAB_READY_TIMEOUT_MS = 60_000;
   const NAVIGATION_TIMEOUT_MS = 60_000;
   const APPLICATION_LEASE_MS = 2 * 60 * 1000;
@@ -1065,6 +1067,61 @@
     renderDashboardIfVisible();
   }
 
+  function agentProgressMessage(update = {}) {
+    if (update.phase === 'download') {
+      const percent = Number.isFinite(update.progress) && update.progress > 0
+        ? ` ${Math.round(update.progress * 100)}%`
+        : '';
+      return `Downloading Chrome's on-device language model${percent}…`;
+    }
+    if (update.phase === 'starting') return 'Starting three on-device form agents…';
+    if (update.phase === 'planning') return 'Field-mapping and gap-analysis agents are reviewing this page…';
+    if (update.phase === 'reviewing') return 'The independent review agent is checking the proposed plan…';
+    return 'Preparing the on-device form agents…';
+  }
+
+  async function prepareAgentRuntime({ application = null } = {}) {
+    if (previewMode) return { status: 'preview', agents: [] };
+    if (!agentPlanner?.prepare) throw new Error('The agentic planner did not load. Reload the extension and try again.');
+    if (state.agentRuntime.status === 'ready') return { status: 'ready' };
+    state.agentRuntime = { status: 'starting', message: 'Starting three on-device form agents…' };
+    try {
+      const prepared = await agentPlanner.prepare({
+        onProgress(update) {
+          const message = agentProgressMessage(update);
+          state.agentRuntime = { status: update.phase === 'ready' ? 'ready' : update.phase, message };
+          if (application) setApplicationProgress(application, message);
+          else setBusy(message);
+        },
+      });
+      state.agentRuntime = { status: 'ready', message: 'Three on-device agents are ready.' };
+      return prepared;
+    } catch (error) {
+      state.agentRuntime = { status: 'unavailable', message: error.message };
+      throw error;
+    }
+  }
+
+  function renderAgentRuntime() {
+    if (previewMode) {
+      return '<div class="notice"><span aria-hidden="true">AI</span><span><strong>Fixture preview.</strong> Install the extension to run the on-device multi-agent planner.</span></div>';
+    }
+    const ready = state.agentRuntime.status === 'ready';
+    const unavailable = state.agentRuntime.status === 'unavailable';
+    const title = ready ? 'Agentic AI ready' : unavailable ? 'On-device AI unavailable' : 'Agentic AI required';
+    const detail = ready
+      ? 'Three separate Gemini Nano sessions—field mapper, gap analyst, and reviewer—plan every live page locally in Chrome.'
+      : unavailable
+        ? 'This device cannot start Chrome built-in AI. Use Chrome 138 or newer on a supported desktop and enable built-in AI.'
+        : 'Start Chrome’s on-device model before a live form run. Client values are never included in model prompts.';
+    return `
+      <div class="notice ${unavailable ? 'error' : ''}" style="margin-bottom:16px">
+        <span aria-hidden="true">AI</span>
+        <span><strong>${escapeHtml(title)}.</strong> ${escapeHtml(detail)}</span>
+      </div>
+      ${ready ? '' : '<button class="secondary-button" style="margin-bottom:16px" type="button" data-action="enable-agent">Enable agentic AI</button>'}`;
+  }
+
   function renderError() {
     return state.error
       ? `<div class="notice error" role="alert"><span aria-hidden="true">!</span><span>${escapeHtml(state.error)}</span></div>`
@@ -1080,6 +1137,7 @@
           <p class="lede">Choose how you want to bring the client's information into this browser session.</p>
         </div>
         ${renderError()}
+        ${renderAgentRuntime()}
         ${renderConnectorStatus()}
         <div class="stack">
           <button class="choice-button" type="button" data-action="choose-id">
@@ -1449,6 +1507,7 @@
           <p class="lede">Choose this tab or open one of the known application sites. Each application stays in its own tab.</p>
         </div>
         ${renderError()}
+        ${renderAgentRuntime()}
         <div class="client-chip">
           <div><strong>${escapeHtml(client.name)}</strong><span>${client.recordId ? `Record ${escapeHtml(client.recordId)}` : state.participant?._documentSources?.length ? 'Document import' : 'Pasted client record'}${connectorMeta ? ` · ${escapeHtml(connectorMeta.organizationName)}` : ''}</span>${connectorMeta ? `<span class="source-freshness ${connectorMeta.stale ? 'stale' : ''}">${connectorMeta.freshness === 'unknown' ? 'Source freshness unavailable' : connectorMeta.stale ? 'Source record may be stale' : `Retrieved ${escapeHtml(formatTimestamp(connectorMeta.retrievedAt))}`}</span>` : ''}</div>
           <div class="client-actions">
@@ -1499,6 +1558,42 @@
     if (application.status === 'source_expired') return 'Reload source data';
     if (application.status === 'not_started' && application.autoRun) return 'Starting automatically';
     return 'Not started';
+  }
+
+  function mergeAgenticMetadata(previous, current) {
+    if (!previous) return { ...current, planCount: 1 };
+    const before = previous.usage || {};
+    const after = current.usage || {};
+    const contextKnown = before.contextUsageUnits !== null
+      && before.contextUsageUnits !== undefined
+      && after.contextUsageUnits !== null
+      && after.contextUsageUnits !== undefined;
+    return {
+      ...current,
+      planCount: Number(previous.planCount || 1) + 1,
+      usage: {
+        prompts: Number(before.prompts || 0) + Number(after.prompts || 0),
+        inputCharacters: Number(before.inputCharacters || 0) + Number(after.inputCharacters || 0),
+        outputCharacters: Number(before.outputCharacters || 0) + Number(after.outputCharacters || 0),
+        contextUsageUnits: contextKnown
+          ? Number(before.contextUsageUnits || 0) + Number(after.contextUsageUnits || 0)
+          : null,
+        durationMs: Number(before.durationMs || 0) + Number(after.durationMs || 0),
+        apiCostUsd: Number(before.apiCostUsd || 0) + Number(after.apiCostUsd || 0),
+      },
+    };
+  }
+
+  function agentUsageSummary(agentic) {
+    const usage = agentic?.usage;
+    if (!usage) return '';
+    const prompts = Number(usage.prompts || 0);
+    const seconds = Number(usage.durationMs || 0) / 1000;
+    const cost = Number(usage.apiCostUsd || 0);
+    const context = usage.contextUsageUnits === null || usage.contextUsageUnits === undefined
+      ? ''
+      : ` · ${Number(usage.contextUsageUnits).toLocaleString()} context units`;
+    return `${prompts} local model prompt${prompts === 1 ? '' : 's'}${context} · ${seconds.toFixed(1)}s model time · $${cost.toFixed(2)} API cost`;
   }
 
   function applicationCard(application) {
@@ -1562,6 +1657,8 @@
         <p class="card-note"><strong>${escapeHtml(statusLabel(application))}.</strong> ${escapeHtml(note)}</p>
         ${application.owner ? `<p class="ownership-line"><span class="owner-chip ${application.owner.state}">${application.owner.state === 'pending' ? 'Assigned to' : 'Owned by'} ${escapeHtml(application.owner.assignedTo)}</span></p>` : ''}
         ${application.checkpoint ? `<p class="checkpoint-line"><strong>Checkpoint:</strong> ${escapeHtml(application.checkpoint.label)}</p>` : ''}
+        ${application.agentic ? `<p class="automation-badge">AI-reviewed plan · ${Number(application.agentic.approvedMappings || 0)} mapping${Number(application.agentic.approvedMappings || 0) === 1 ? '' : 's'} · mapper + gap analyst + reviewer</p>` : ''}
+        ${application.agentic?.usage ? `<p class="card-note">${escapeHtml(agentUsageSummary(application.agentic))}</p>` : ''}
         ${completedPages ? `<p class="automation-badge">✓ ${completedPages} page${completedPages === 1 ? '' : 's'} completed automatically</p>` : ''}
         <div class="card-actions">${actions}</div>
       </article>`;
@@ -1581,6 +1678,7 @@
           <p class="lede">${state.participant ? 'The assistant can resume verified pages and continue across approved application steps. It always stops before certification, signature, or submission.' : 'Application progress survived, but client values expired with the browser session. Reload the source record before any application can resume.'}</p>
         </div>
         ${renderError()}
+        ${renderAgentRuntime()}
         <div class="queue-summary" aria-label="Work queue summary">
           <span><strong>${state.apps.length}</strong> applications</span>
           <span><strong>${state.apps.filter((item) => ['needs_attention', 'paused', 'handoff_pending', 'source_expired'].includes(item.status)).length}</strong> checkpoints</span>
@@ -1672,7 +1770,18 @@
               return `
                 <div class="question-card">
                   <div><p class="question-title">${escapeHtml(gap.question)}</p>${gap.required ? '<p class="field-hint">The form marks this as required.</p>' : ''}</div>
-                  ${gap.inputType === 'choice' && options.length ? `
+                  ${gap.inputType === 'multi_choice' && options.length ? `
+                    <div class="choice-grid">
+                      ${options.map((option) => `
+                        <label class="choice-pill">
+                          <input type="checkbox" name="${name}" value="${escapeHtml(option.value)}">
+                          <span>${escapeHtml(option.label)}</span>
+                        </label>`).join('')}
+                      <label class="choice-pill">
+                        <input type="checkbox" name="${name}" value="__none__">
+                        <span>None of these</span>
+                      </label>
+                    </div>` : gap.inputType === 'choice' && options.length ? `
                     <div class="choice-grid">
                       ${options.map((option) => `
                         <label class="choice-pill">
@@ -1999,6 +2108,60 @@
     }
   }
 
+  function gapFromAgent(rawFields, gap) {
+    const members = (rawFields || []).filter((field) =>
+      field.fieldKey === gap.fieldKey || field.groupKey === gap.fieldKey);
+    const field = members[0] || {};
+    const groupOptions = members.length > 1
+      ? members.map((member) => ({
+        value: member.optionValue ?? member.value ?? member.optionLabel ?? member.label,
+        label: member.optionLabel ?? member.label ?? member.optionValue ?? member.value,
+      }))
+      : (field.options || []).map((option) => ({
+        value: option.value ?? option.optionValue ?? option.label,
+        label: option.label ?? option.optionLabel ?? option.value,
+      }));
+    const choice = groupOptions.length > 0 || ['radio', 'checkbox', 'select-one'].includes(field.type);
+    const label = field.question || field.label || 'Required form question';
+    return {
+      fieldKey: gap.fieldKey,
+      label,
+      purpose: '',
+      question: gap.question || (String(label).endsWith('?') ? label : `What should I enter for ${String(label).toLowerCase()}?`),
+      kind: choice ? 'decision' : 'required',
+      required: Boolean(field.required),
+      inputType: choice ? 'choice' : 'text',
+      options: groupOptions,
+      sensitive: Boolean(field.sensitive),
+      agentReason: gap.reason || '',
+    };
+  }
+
+  function analysisFromAgentPlan(response, participant, plan) {
+    const analysis = engine.buildAnalysis(response.fields || [], participant, {
+      purposeOverrides: plan.purposeOverrides,
+      requirePurposeOverrides: true,
+    });
+    const suggestedGaps = new Map((plan.gaps || []).map((gap) => [gap.fieldKey, gap]));
+    const gaps = analysis.gaps.map((gap) => {
+      const coveredKeys = [gap.fieldKey, ...(gap.members || []).map((member) => member.fieldKey)];
+      const suggestion = coveredKeys.map((fieldKey) => suggestedGaps.get(fieldKey)).find(Boolean);
+      if (!suggestion) return gap;
+      coveredKeys.forEach((fieldKey) => suggestedGaps.delete(fieldKey));
+      return {
+        ...gap,
+        question: gap.inputType === 'multi_choice' ? gap.question : (suggestion.question || gap.question),
+        agentReason: suggestion.reason || '',
+      };
+    });
+    suggestedGaps.forEach((gap) => gaps.push(gapFromAgent(response.fields || [], gap)));
+    return {
+      ...analysis,
+      gaps,
+      counts: { ...analysis.counts, missing: gaps.length },
+    };
+  }
+
   async function scanTab(tab, {
     quiet = false,
     applicationId = null,
@@ -2027,9 +2190,10 @@
         previous = {};
       }
     }
+    const participant = participantForApplication(previous);
     const response = await sendToTab(
       tab,
-      { type: 'NAVA_SCAN', participant: participantForApplication(previous) },
+      { type: 'NAVA_SCAN', participant },
       { application: requestedApplication || (previous.id ? previous : null), requireLease: Boolean(runToken) },
     );
     if (uiToken !== null) assertUiGeneration(uiToken);
@@ -2043,9 +2207,31 @@
       assertApprovedApplicationLocation(requestedApplication, observedUrl);
     }
     const id = previous.id || newWorkflowId();
+    let plannedAnalysis = response.analysis;
+    let agentic = previous.agentic || null;
+    let latestAgentUsage = null;
+    if (!previewMode) {
+      if (!Array.isArray(response.fields)) throw new Error('The page agent did not provide a safe field inventory for AI planning. Reload the extension before continuing.');
+      const progressApplication = requestedApplication || (previous.id ? previous : null);
+      await prepareAgentRuntime({ application: progressApplication });
+      const plan = await agentPlanner.plan({
+        engine,
+        page: response.page,
+        rawFields: response.fields,
+        participant,
+        onProgress(update) {
+          const message = agentProgressMessage(update);
+          if (progressApplication) setApplicationProgress(progressApplication, message);
+          else setBusy(message);
+        },
+      });
+      plannedAnalysis = analysisFromAgentPlan(response, participant, plan);
+      agentic = mergeAgenticMetadata(previous.agentic, plan.metadata);
+      latestAgentUsage = plan.metadata.usage || null;
+    }
     const safeAnalysis = {
-      ...response.analysis,
-      observed: mergeVerifiedProvenance(response.analysis?.observed || []),
+      ...plannedAnalysis,
+      observed: mergeVerifiedProvenance(plannedAnalysis?.observed || []),
     };
     const fieldsFound = safeAnalysis.counts?.fields || 0;
     const canContinue = response.navigationGate?.kind === 'next';
@@ -2058,12 +2244,14 @@
       queueLabel: previous.requestedName || previous.queueLabel || response.playbook?.name || hostLabel(observedUrl),
       url: observedUrl,
       page: response.page,
+      pageTools: response.tools || previous.pageTools || [],
       status: fieldsFound === 0 && !canContinue
         ? 'no_form'
         : safeAnalysis.gaps.length
           ? 'needs_attention'
           : 'ready_to_fill',
       analysis: safeAnalysis,
+      agentic,
       playbook: response.playbook,
       submitGate: response.submitGate,
       navigationGate: response.navigationGate,
@@ -2092,6 +2280,10 @@
     recordAudit('scan_completed', application, {
       fieldCount: safeAnalysis.counts?.fields || 0,
       gapCount: safeAnalysis.gaps?.length || 0,
+      modelRuntime: agentic?.runtime,
+      modelPromptCount: latestAgentUsage?.prompts || 0,
+      modelDurationMs: latestAgentUsage?.durationMs || 0,
+      modelApiCostMicros: Math.round(Number(latestAgentUsage?.apiCostUsd || 0) * 1_000_000),
       checkpointKind: nextCheckpoint?.kind,
       toStatus: application.status,
     });
@@ -2746,6 +2938,14 @@
     const action = button.dataset.action;
     let uiToken = initialUiGeneration;
     state.error = '';
+    if (action === 'enable-agent') {
+      await prepareAgentRuntime();
+      assertUiGeneration(uiToken);
+      const interruptedRuns = state.apps
+        .filter((application) => application.autoRun && ['not_started', 'ready_to_fill'].includes(application.status) && application.tabId)
+        .map((application) => application.id);
+      if (interruptedRuns.length) void enqueueApplicationBatch(interruptedRuns);
+    }
     if (action === 'home') {
       await cancelUiBoundRuns();
       uiToken = cancelPendingUiWork();
@@ -3111,6 +3311,8 @@
     if (form.id === 'program-form') {
       const values = new FormData(form).getAll('program');
       if (!values.length) throw new Error('Choose at least one application or the current form.');
+      await prepareAgentRuntime();
+      assertUiGeneration(uiToken);
       const applicationsToRun = [];
       if (values.includes('current')) {
         const activeTab = await getActiveTab();
@@ -3139,6 +3341,25 @@
       const userAssignments = [];
       const unresolved = [];
       (application.analysis?.gaps || []).forEach((gap, index) => {
+        if (gap.inputType === 'multi_choice') {
+          const selected = data.getAll(`answer-${index}`).map((value) => String(value));
+          const noneSelected = selected.includes('__none__');
+          const chosen = new Set(selected.filter((value) => value !== '__none__'));
+          if (!selected.length || (noneSelected && chosen.size)) {
+            unresolved.push(gap);
+            return;
+          }
+          (gap.members || []).forEach((member) => userAssignments.push({
+            fieldKey: member.fieldKey,
+            label: member.label,
+            purpose: member.purpose,
+            value: noneSelected || !chosen.has(member.fieldKey) ? 'no' : 'yes',
+            source: 'user',
+            detail: 'Your answer in this browser session',
+            sensitive: Boolean(member.sensitive),
+          }));
+          return;
+        }
         const answer = String(data.get(`answer-${index}`) || '').trim();
         if (!answer) {
           unresolved.push(gap);
@@ -3469,19 +3690,14 @@
       loadPreviewQueueFixture();
       await loadPreviewDocumentFixture(uiToken);
       assertUiGeneration(uiToken);
-      render();
-      if (!previewMode) {
-        const interruptedRuns = state.apps
-          .filter((application) => application.autoRun && ['not_started', 'ready_to_fill'].includes(application.status) && application.tabId)
-          .map((application) => application.id);
-        if (interruptedRuns.length) {
-          void enqueueApplicationBatch(interruptedRuns).catch((error) => {
-            state.error = error.message;
-            state.view = 'dashboard';
-            render();
-          });
-        }
+      if (!previewMode && agentPlanner?.availability) {
+        const availability = await agentPlanner.availability();
+        state.agentRuntime = {
+          status: availability === 'available' ? 'available' : availability,
+          message: availability === 'available' ? 'The on-device model is available.' : '',
+        };
       }
+      render();
     } catch (error) {
       if (error?.name === 'UiCancelledError' || uiToken !== uiGeneration) return;
       state.error = error.message;
