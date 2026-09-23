@@ -8,11 +8,13 @@ The extension implements an autonomous runner intended to complete a sequence of
 
 This is prototype implementation plus unit/static evidence, not a production-accuracy claim. The repository has not been connected to Nava's or a client's production Apricot tenant, has not processed real participant PII, and has not completed a live BenefitsCal application in a sanctioned test environment. Those validations require organization authorization, non-production credentials/data, privacy and security approval, and a test path that cannot create a real benefits case.
 
+The form-filling controller in this version is deterministic and does not call an LLM. It validates the browser execution, safety, provenance, and workflow layers that could sit beneath a future agentic planner; it is not evidence that an LLM can interpret or complete an unknown benefits application.
+
 ## What was tested
 
 | Evidence | Result | What it establishes |
 | --- | --- | --- |
-| Automated suite | 131 tests pass | Mapping, formatting, delayed-validation readback, exact IHSS/WIC adapters, semantic checkbox values, conditional rescans, BenefitsCal route gates, repeated-entity abstention, coordinator races, sibling-safe partial persistence, bounded fill batches, human CAPTCHA/OTP checkpoints, OCR, connector boundaries, program grouping, resumability, handoff, and durable PII controls behave as specified. |
+| Automated suite | 135 tests pass | Mapping, formatting, delayed-validation readback, exact IHSS/WIC adapters, semantic checkbox values, conditional rescans, BenefitsCal route gates, stale-agent rejection, per-application progress, repeated-entity abstention, coordinator races, sibling-safe partial persistence, bounded fill batches, human CAPTCHA/OTP checkpoints, OCR, connector boundaries, program grouping, resumability, handoff, and durable PII controls behave as specified. |
 | Extensive local benefits fixture | 28 of 28 source-backed fields map in the engine test; the fixture is passive and contains no embedded participant or autofill runner | The synthetic record covers demographic, identity, contact, address, household, citizenship, income, childcare, and unemployment fields without letting the demo bypass the extension. An installed-extension browser rerun is required after each unpacked-extension reload. |
 | Original three-page fixture | Passive fixture retains safe navigation and a final submit guard | It can exercise the installed extension, but opening the fixture URL alone performs no work. |
 | Connector UI preview | 28 labeled source fields mapped; fictional record `339619` reviewed and imported in simulated preview state | The provider-neutral selection, mapping, review, and import UI state machine works with fictional data; preview mode does not contact the loopback adapter. |

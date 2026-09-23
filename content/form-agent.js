@@ -1,11 +1,11 @@
 (function installPageAgent() {
   'use strict';
 
-  if (globalThis.__NAVA_FORM_FILLER_AGENT_V3__) return;
-  globalThis.__NAVA_FORM_FILLER_AGENT_V3__ = true;
+  const PAGE_AGENT_VERSION = 4;
+  if (globalThis.__NAVA_FORM_FILLER_AGENT__?.version === PAGE_AGENT_VERSION) return;
+  globalThis.__NAVA_FORM_FILLER_AGENT__ = { version: PAGE_AGENT_VERSION };
 
   const engine = globalThis.NavaFormEngine;
-  const siteAdapters = globalThis.NavaSiteAdapters || null;
   const fieldMap = new Map();
   const groupMap = new Map();
   let scanNumber = 0;
@@ -392,7 +392,7 @@
       const inferredQuestion = ['radio', 'checkbox'].includes(element.type)
         ? questionText(element, optionLabel)
         : '';
-      const policy = siteAdapters?.fieldPolicy?.(location.hostname, location.pathname, {
+      const policy = globalThis.NavaSiteAdapters?.fieldPolicy?.(location.hostname, location.pathname, {
         id: element.id || '',
         name: element.name || '',
         value: element.value || '',
@@ -996,7 +996,13 @@
   }
 
   async function handleMessage(message) {
-    if (message?.type === 'NAVA_PING') return { ok: true };
+    if (message?.type === 'NAVA_PING') {
+      return {
+        ok: true,
+        agentVersion: PAGE_AGENT_VERSION,
+        adaptersReady: typeof globalThis.NavaSiteAdapters?.fieldPolicy === 'function',
+      };
+    }
     if (message?.type === 'NAVA_CANCEL') {
       fillGeneration += 1;
       return { ok: true, cancelled: true };

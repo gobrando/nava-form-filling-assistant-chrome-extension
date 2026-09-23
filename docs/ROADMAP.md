@@ -1,5 +1,11 @@
 # Product roadmap recommendation
 
+## Highest-priority correction: connect the real agentic planner
+
+The current extension does not run or call an LLM. Its controller is a deterministic mapping and navigation state machine with exact site adapters. That work is useful as a constrained browser executor, but by itself it does not evaluate the agentic form-filling product.
+
+The next milestone should integrate the actual Nava/Foad planning service behind a privacy-reviewed API rather than adding an unconstrained model call directly to Chrome. The planner should receive a minimized, structured page inventory and approved source schema; return schema-constrained proposed mappings, questions, and navigation intents; and never write or click directly. The extension must validate every proposal against origin, entity scope, source provenance, protected-inference rules, allowed continuations, readback, and the existing no-submit boundary. The pilot needs consented synthetic data, prompt/model/version audit metadata without participant values, adversarial and schema-drift evaluations, and a sanctioned non-production benefits flow.
+
 ## Status of the three candidate areas
 
 ### Self-service database connector — provider-neutral extension slice complete
@@ -46,7 +52,7 @@ Version 0.6 implements the local state machinery for ordinary caseworker interru
 
 Because client values intentionally expire at browser-session end, a full browser restart requires source reauthorization/reload before filling can continue. This is a deliberate safety tradeoff, not silent loss: application progress and the exact checkpoint remain visible.
 
-## Recommended next milestone: one authenticated connector pilot
+## Recommended following milestone: one authenticated connector pilot
 
 The next meaningful step crosses the extension/backend boundary. Build the organization-authenticated queue and connector service needed for real multi-caseworker operation.
 
@@ -62,7 +68,8 @@ The next meaningful step crosses the extension/backend boundary. Build the organ
 - **Completed:** OCR and extraction-quality evaluation baseline.
 - **Completed:** local resumable multi-application queue and same-profile handoff vertical slice.
 - **Completed:** provider-neutral source catalog/contract and 28-field fictional adapter validation.
-- **Next:** productionize the authenticated Nava connector and work-queue service; pilot one Apricot organization in a sandbox.
+- **Next:** connect the real LLM planner to the constrained extension executor and evaluate it on sanctioned synthetic benefit flows.
+- **Then:** productionize the authenticated Nava connector and work-queue service; pilot one Apricot organization in a sandbox.
 - **Later:** add provider adapters in priority order using the published [coverage matrix](CONNECTOR_COVERAGE.md).
 
 ## Connector follow-through before production

@@ -37,6 +37,7 @@
   const DEFAULT_AUTOMATED_PAGES = 12;
   const MAX_SAME_PAGE_FILL_PASSES = 3;
   const MAX_PARALLEL_APPLICATIONS = 3;
+  const PAGE_AGENT_VERSION = 4;
   const TAB_READY_TIMEOUT_MS = 60_000;
   const NAVIGATION_TIMEOUT_MS = 60_000;
   const APPLICATION_LEASE_MS = 2 * 60 * 1000;
@@ -372,15 +373,24 @@
       throw new Error('Open a regular website with a form, then try again. Chrome system pages cannot be filled.');
     }
     const messageOptions = documentId ? { documentId } : undefined;
+    let pong = null;
     try {
-      const pong = await chrome.tabs.sendMessage(tab.id, { type: 'NAVA_PING' }, messageOptions);
-      if (pong?.ok) return;
+      pong = await chrome.tabs.sendMessage(tab.id, { type: 'NAVA_PING' }, messageOptions);
     } catch {
+      pong = null;
+    }
+    if (pong?.ok && pong.agentVersion === PAGE_AGENT_VERSION && pong.adaptersReady) return;
+    try {
       await chrome.scripting.executeScript({
         target: documentId ? { tabId: tab.id, documentIds: [documentId] } : { tabId: tab.id },
         files: ['shared/form-engine.js', 'shared/site-adapters.js', 'content/form-agent.js'],
       });
+      const verified = await chrome.tabs.sendMessage(tab.id, { type: 'NAVA_PING' }, messageOptions);
+      if (verified?.ok && verified.agentVersion === PAGE_AGENT_VERSION && verified.adaptersReady) return;
+    } catch {
+      // The actionable error below covers stale and missing page agents.
     }
+    throw new Error('This application tab still has an older form-filling agent. Refresh this tab once after reloading the extension, then scan it again. No form values were changed.');
   }
 
   async function sendToTab(tab, message, { application = null, requireLease = false } = {}) {
@@ -507,6 +517,7 @@
 
   function endApplicationRun(application, token) {
     if (activeRunTokens.get(application.id) === token) activeRunTokens.delete(application.id);
+    application.runProgress = '';
     if (!token.settledResolved) {
       token.settledResolved = true;
       token.resolveSettled();
@@ -1048,6 +1059,12 @@
       </div>`;
   }
 
+  function setApplicationProgress(application, message) {
+    application.runProgress = message;
+    application.updatedAt = new Date().toISOString();
+    renderDashboardIfVisible();
+  }
+
   function renderError() {
     return state.error
       ? `<div class="notice error" role="alert"><span aria-hidden="true">!</span><span>${escapeHtml(state.error)}</span></div>`
@@ -1491,7 +1508,8 @@
     const gaps = application.analysis?.gaps?.length || 0;
     const blocked = application.blocked?.length || 0;
     const completedPages = application.completedPages?.length || 0;
-    const note = application.error
+    const note = (running ? application.runProgress : '')
+      || application.error
       || application.runStopReason
       || (blocked ? `${blocked} fields need direct help` : '')
       || (gaps ? `${gaps} answers are needed before this page is complete` : '')
@@ -1774,6 +1792,7 @@
     application.checkpoint = checkpoint(kind, label);
     application.status = status;
     application.autoRun = false;
+    application.runProgress = '';
     application.updatedAt = new Date().toISOString();
     recordAudit('checkpoint_reached', application, { checkpointKind: kind, toStatus: status });
   }
@@ -2155,14 +2174,14 @@
     let runToken = null;
     try {
       runToken = await beginApplicationRun(application);
-      application.runStopReason = 'Opening and checking this application automatically…';
+      application.runStopReason = '';
       application.autoRun = true;
-      application.updatedAt = new Date().toISOString();
-      renderDashboardIfVisible();
+      setApplicationProgress(application, 'Opening and checking this application tab…');
       await withApplicationLease(application, async () => {
         assertApplicationRun(application, runToken);
         const tab = await waitForApplicationTab(application, runToken);
         assertApplicationRun(application, runToken);
+        setApplicationProgress(application, 'Scanning this application and matching client data…');
         application = await scanTab(tab, { quiet: true, applicationId, runToken });
         renderDashboardIfVisible();
         const hasKnownAssignments = Boolean(application.analysis?.assignments?.length);
@@ -2280,7 +2299,11 @@
       ? { id: application.tabId, url: application.url }
       : await chrome.tabs.get(application.tabId);
     assertApprovedApplicationLocation(application, tab.url);
-    if (!background) setBusy('Filling the page and checking every value…');
+    if (background) {
+      setApplicationProgress(application, `Filling and verifying page ${(application.completedPages?.length || 0) + 1}…`);
+    } else {
+      setBusy('Filling the page and checking every value…');
+    }
     const assignments = [...(application.analysis?.assignments || []), ...userAssignments];
     recordAudit('fill_started', application, { fieldCount: assignments.length, fromStatus: application.status });
     const response = await sendToTab(tab, { type: 'NAVA_FILL', assignments }, { application, requireLease: true });
@@ -2349,6 +2372,9 @@
     const tabId = application.tabId;
     if (previewMode) return { id: tabId, url: `https://benefitscal.com/ApplyForBenefits/step-${state.previewPage}` };
     const startedAt = Date.now();
+    const previousLocation = commandLocation(application.page?.url || application.url);
+    const benefitsCalOverview = application.workflowId === 'benefitscal'
+      && urlPath(application.page?.url || application.url).toLowerCase() === '/applyforbenefits/begin/abovr';
     let candidateSignature = '';
     let candidateSince = 0;
     while (Date.now() - startedAt < NAVIGATION_TIMEOUT_MS) {
@@ -2357,6 +2383,12 @@
       try {
         const tab = await chrome.tabs.get(tabId);
         if (tab.status !== 'complete') continue;
+        if (benefitsCalOverview && commandLocation(tab.url) === previousLocation) {
+          if (Date.now() - startedAt >= 8_000) {
+            throw new Error('BenefitsCal returned to the same application overview after BEGIN. The assistant stopped after one attempt instead of reloading it again.');
+          }
+          continue;
+        }
         const gate = await navigationStatusFor(tab, application);
         if (!gate?.pageSignature || gate.pageSignature === previousSignature) {
           candidateSignature = '';
@@ -2507,7 +2539,9 @@
         return;
       }
 
-      if (!background) setBusy(`Page ${(current.completedPages?.length || 0) + 1} verified. Moving to the next page…`);
+      const progressMessage = `Page ${(current.completedPages?.length || 0) + 1} verified. Moving to the next page…`;
+      if (background) setApplicationProgress(current, progressMessage);
+      else setBusy(progressMessage);
       assertApplicationRun(current, runToken);
       const advanced = await sendToTab(tab, { type: 'NAVA_ADVANCE' }, { application: current, requireLease: true });
       assertApplicationRun(current, runToken);
@@ -2856,11 +2890,13 @@
         );
       }
       if (action === 'run') {
+        state.view = 'dashboard';
+        render();
         await withNewApplicationRun(
           application,
           (runToken) => withApplicationLease(
             application,
-            () => runThroughApplication(application, [], [], { runToken }),
+            () => runThroughApplication(application, [], [], { background: true, runToken }),
           ),
           { uiBound: true },
         );
@@ -3119,11 +3155,13 @@
         });
       });
       if (application.autoRun) {
+        state.view = 'dashboard';
+        render();
         await withNewApplicationRun(
           application,
           (runToken) => withApplicationLease(
             application,
-            () => runThroughApplication(application, userAssignments, unresolved, { runToken }),
+            () => runThroughApplication(application, userAssignments, unresolved, { background: true, runToken }),
           ),
           { uiBound: true },
         );

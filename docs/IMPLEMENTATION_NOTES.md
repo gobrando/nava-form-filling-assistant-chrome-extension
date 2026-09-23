@@ -14,6 +14,8 @@
 
 ## Architecture
 
+The runtime below is deterministic. It contains no LLM client, prompt, inference endpoint, or model-selected browser action. It is the execution and enforcement layer that a future agentic planner would have to use through a schema-constrained interface.
+
 ```text
 sidepanel/
   sidepanel.js        workflow, document review, questions, dashboard, provenance review

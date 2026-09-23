@@ -13,6 +13,8 @@ The repository's marginal third-party usage cost is **$0 per application**:
 
 That number excludes caseworker time, engineering, support, security/compliance work, and the user's computer/network. It is not a production quote.
 
+This $0 figure is also evidence that the current controller is not the intended LLM-based agent: no inference is being purchased or executed. A future agentic build must separately measure input/output tokens, retries, model latency, evaluation traffic, and privacy/security infrastructure.
+
 ## Production formula
 
 For an authenticated deployment, calculate:

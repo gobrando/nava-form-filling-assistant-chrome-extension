@@ -6,6 +6,12 @@ It is a working local prototype, not a production deployment. It implements flow
 
 > **Evidence boundary:** the field-mapping engine has 28-of-28 synthetic source-field coverage, and the extension code path for the local fixtures uses the real scan/fill/navigation messages. The fixtures contain no client record and no embedded autofill runner. A fresh installed-extension end-to-end run is still required after loading this version. This build has not been connected to a production Apricot tenant or completed a live BenefitsCal, IHSS, or WIC application in a sanctioned test environment. Use only fictional or approved test data. See [production-readiness evidence](docs/PRODUCTION_READINESS.md).
 
+## Architecture disclosure: this build does not use an LLM
+
+The current form-filling controller is deterministic browser automation, not an LLM-based agent. `shared/form-engine.js` maps known field labels to reviewed source values, `shared/site-adapters.js` supplies exact site rules, and `content/form-agent.js` performs bounded DOM scan/write/readback operations. Tesseract's bundled English model is used only for on-device OCR. No prompt, inference request, hosted language model, or model-selected browser action exists in this version.
+
+This makes the repository a browser execution and safety prototype for the form-completion protocol; it does **not** yet test the LLM planner used by an agentic production form filler. Adding that planner requires an explicit model-service boundary, organization authorization, data-minimization and retention controls, schema-constrained actions, local policy validation, and evaluation against sanctioned non-production benefit flows. The deterministic executor and final-submit boundary should remain enforcement layers beneath any future model.
+
 ## What is implemented
 
 - Jillian's main flow: find client → choose applications → dashboard → answer questions → review.
@@ -51,7 +57,7 @@ It is a working local prototype, not a production deployment. It implements flow
 
 Chrome may require an already-open form tab to be refreshed once after the extension is first loaded.
 
-Reloading the unpacked extension intentionally invalidates the in-memory client session. Close and reopen the side panel, then reload the authorized client record; durable application checkpoints remain available. Version 0.9.1 retries background startup before showing this recovery guidance instead of reporting a generic restoration failure.
+Reloading the unpacked extension intentionally invalidates the in-memory client session. Close and reopen the side panel, then reload the authorized client record; durable application checkpoints remain available. Version 0.9.2 retries background startup before showing this recovery guidance instead of reporting a generic restoration failure and rejects stale page-agent code after an extension reload.
 
 ## Safe local demo
 
@@ -125,7 +131,7 @@ Run `npm run eval:extraction` to reproduce the published [quality report](evalua
 
 ## Resumable work queues and handoff
 
-Version 0.9.1 retains the privacy boundary between short-lived client values and durable operational state:
+Version 0.9.2 retains the privacy boundary between short-lived client values and durable operational state:
 
 - Participant values, document proposals, raw page signatures, and full page URLs remain in `chrome.storage.session` and expire with the browser session.
 - `chrome.storage.local` retains only sanitized queue metadata: workflow/program IDs, application label, approved origin and catalog route prefixes, status, progress counts, checkpoint, owner/handoff state, tab ID, timestamps, and opaque checksums of the saved location and page signature.
