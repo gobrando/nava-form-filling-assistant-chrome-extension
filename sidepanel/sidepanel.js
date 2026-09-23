@@ -1083,7 +1083,18 @@
   async function prepareAgentRuntime({ application = null } = {}) {
     if (previewMode) return { status: 'preview', agents: [] };
     if (!agentPlanner?.prepare) throw new Error('The agentic planner did not load. Reload the extension and try again.');
-    if (state.agentRuntime.status === 'ready') return { status: 'ready' };
+    if (agentPlanner.gatewayConfig) {
+      const gateway = await agentPlanner.gatewayConfig();
+      if (gateway) {
+        state.agentRuntime = {
+          status: 'ready',
+          shared: true,
+          message: 'Planning runs on the shared Nava API. Filling still happens in this tab.',
+        };
+        return { status: 'ready', agents: ['field_mapper', 'gap_analyst', 'form_reviewer'] };
+      }
+    }
+    if (state.agentRuntime.status === 'ready' && !state.agentRuntime.shared) return { status: 'ready' };
     state.agentRuntime = { status: 'starting', message: 'Starting three on-device form agents…' };
     try {
       const prepared = await agentPlanner.prepare({
@@ -1110,7 +1121,9 @@
     const unavailable = state.agentRuntime.status === 'unavailable';
     const title = ready ? 'Agentic AI ready' : unavailable ? 'On-device AI unavailable' : 'Agentic AI required';
     const detail = ready
-      ? 'Three separate Gemini Nano sessions—field mapper, gap analyst, and reviewer—plan every live page locally in Chrome.'
+      ? (state.agentRuntime.shared
+        ? 'Field mapping, gap analysis, and review run on the shared Nava API. Filling still happens in this tab, and client values stay out of the planning prompt.'
+        : 'Three separate Gemini Nano sessions—field mapper, gap analyst, and reviewer—plan every live page locally in Chrome.')
       : unavailable
         ? 'This device cannot start Chrome built-in AI. Use Chrome 138 or newer on a supported desktop and enable built-in AI.'
         : 'Start Chrome’s on-device model before a live form run. Client values are never included in model prompts.';

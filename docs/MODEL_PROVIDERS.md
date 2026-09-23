@@ -22,7 +22,9 @@ For the on-device runtime, model API cost is `$0.00`. That is a billing statemen
 
 ## Cloud Claude support
 
-The same constrained planner can use a Claude model, but the safe production shape is:
+The same constrained planner can use a Claude or GPT model through this API, which is the shared engine. Set `chrome.storage.local` keys `navaApiBase` (the API origin) and `navaApiToken` (a tenant API key). Optional `navaPlanModel` is one of `claude-opus-4-7`, `claude-opus-4-8`, `claude-sonnet-4-6`, `gpt-5.1`, or `gpt-5-mini`. When those keys are set, planning calls `POST /v1/plan` and Chrome's on-device model is not downloaded. Filling still happens in the caseworker's tab. The extension re-checks every returned mapping against the field inventory and the sources on file before a DOM write. Participant values are redacted before the request.
+
+Do not put an Anthropic or OpenAI API key in the extension. The API holds those keys.
 
 ```text
 Chrome extension
@@ -46,6 +48,6 @@ Required controls for a hosted provider adapter:
 7. value-free audit events and per-organization budgets; and
 8. fail-closed behavior when the gateway, model, or reviewer is unavailable.
 
-This cloud-provider adapter is an implementation milestone, not a capability shipped in version 0.9.4.
+The storage-key adapter above is what this branch ships. The production controls in the list — organization-admin enablement, budgets, and deprecation management — are still the bar for turning a cloud model on for a county. Version 0.9.4 on `main` does not include the adapter.
 
 References: [Chrome Prompt API](https://developer.chrome.com/docs/ai/prompt-api), [Chrome extensions and AI](https://developer.chrome.com/docs/extensions/ai), [Anthropic pricing and usage fields](https://docs.anthropic.com/en/docs/about-claude/pricing), and [Anthropic model lifecycle](https://docs.anthropic.com/en/docs/about-claude/model-deprecations).
