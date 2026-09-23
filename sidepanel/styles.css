@@ -313,6 +313,7 @@ p {
 
 input[type="text"],
 input[type="number"],
+input[type="password"],
 textarea,
 select {
   width: 100%;
@@ -321,6 +322,39 @@ select {
   border: 1px solid #bcb6bd;
   border-radius: 7px;
   background: var(--white);
+}
+
+.model-runtime-settings {
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--canvas);
+}
+
+.model-runtime-settings summary {
+  color: var(--plum-dark);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.compact-form {
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.compact-form .form-stack {
+  margin-top: 0;
+}
+
+.compact-form input,
+.compact-form select {
+  min-height: 40px;
+  font-size: 12px;
+}
+
+.compact-form code {
+  font-size: 11px;
 }
 
 .upload-zone {

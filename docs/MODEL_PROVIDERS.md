@@ -2,50 +2,36 @@
 
 Date: 2026-09-23
 
-## What runs today
+## Shipped development runtimes
 
-Version 0.9.4 uses Chrome's built-in Gemini Nano Prompt API for all three planning roles: field mapper, gap analyst, and independent reviewer. Inference occurs on the caseworker's device. Participant values are withheld from model prompts; the model receives a bounded form-field inventory and the names of source purposes that are available.
+Version 0.10.0 runs the same schema-constrained field-mapper, gap-analyst, and independent-review roles through one of three selectable runtimes:
 
-The installed extension does **not** currently call Anthropic, Google Cloud, Vertex AI, or another hosted model service. It does not contain or accept a model-provider API key.
+1. **Chrome on-device Gemini Nano.** Inference occurs in Chrome through the Prompt API.
+2. **Codex subscription companion.** A loopback-only Node companion invokes `codex exec` using a Codex CLI session whose login status reports **ChatGPT**.
+3. **Claude subscription companion.** The companion invokes Claude Code print mode using an eligible Claude subscription login. The current default is the `sonnet` alias.
 
-Each application card now records and displays aggregate, value-free usage for the current browser session:
+A ChatGPT or Claude subscription is not an API key and does not expose a browser-callable subscription API. The companion is a local adapter around the providers' supported CLIs. It binds only to `127.0.0.1`, requires a random pairing token, rejects non-extension web origins, accepts only the three planner roles, caps body/output sizes and concurrency, and does not log prompt bodies. The token is stored only in `chrome.storage.session`.
+
+The extension removes participant values before any model call. All runtimes receive only a bounded form inventory, option labels, the page domain, and names of available canonical source purposes. Returned mappings still pass the same local proposal/reviewer/schema/allowlist validation before a DOM write.
+
+For the subscription paths, the companion also removes provider API-key variables from the child environment. Claude runs in safe mode with tools disabled and no session persistence. Codex runs ephemerally in an empty temporary directory with a read-only sandbox, ignored project rules, and a required output schema. Provider account credentials remain in the CLI's own credential store and never enter Chrome.
+
+## Usage and cost display
+
+Each application card records and displays aggregate, value-free usage for the current browser session:
 
 - planning prompt count;
-- bounded input/output character counts in session state;
-- Chrome context-usage units when the runtime exposes them;
+- Chrome context-usage units when exposed by the on-device runtime;
+- input/output tokens when returned by the CLI;
 - model execution time; and
-- model API cost in US dollars.
+- direct API-key cost in US dollars.
 
-The activity log records prompt count, model duration, runtime name, and API cost in integer microdollars. It never records prompts, answers, participant values, URLs with query strings, or model output.
+The on-device and subscription-companion paths report `$0.00 direct API-key cost`. That is not a claim that usage is free. The Chrome path consumes local bandwidth, storage, CPU/GPU, memory, battery, and electricity. Codex and Claude calls consume the signed-in plan's allowance and remain subject to its rate limits, credits, terms, and any subscription price. A provider-reported cost estimate is captured when available but is not treated as an invoice.
 
-For the on-device runtime, model API cost is `$0.00`. That is a billing statement, not a claim that the run consumes no resources: the device still incurs model-download bandwidth, storage, CPU/GPU time, memory, battery, and electricity.
+The sanitized activity log retains runtime, prompt count, token counts when known, duration, and direct API-key cost in integer microdollars. It never stores pairing tokens, prompts, model output, answers, participant values, or URLs with query strings.
 
-## Cloud Claude support
+## Production boundary
 
-The same constrained planner can use a Claude model, but the safe production shape is:
+The localhost companion is intended for internal development and evaluation. A production hosted-model path should be an authenticated, tenant-bound Nava gateway with organization policy, secret custody, model allowlists, rate limits, cost calculation, audit identifiers, retries, and budgets. It must keep the same value-minimized prompt and local validation boundary; no provider secret belongs in a public Chrome package.
 
-```text
-Chrome extension
-  -> authenticated Nava model gateway
-      -> organization-approved Claude model
-          -> schema-constrained mapper/gap/reviewer results
-      <- provider usage counters and calculated cost
-  <- reviewed plan with no participant values
-```
-
-Do not put an Anthropic API key in the extension or call the provider directly from a public browser package. A Nava-managed gateway should own credentials, organization policy, model selection, rate limits, audit identifiers, retries, and cost calculation. The extension should send the same value-minimized field inventory used by the local planner, require the same JSON schemas, and run every returned mapping through the existing local validator before a DOM write.
-
-Required controls for a hosted provider adapter:
-
-1. explicit organization-admin enablement and a visible local/cloud runtime indicator;
-2. authenticated, tenant-bound requests with no provider secret in Chrome;
-3. no raw participant values, documents, form answers, or sensitive evidence in planning prompts;
-4. strict request/response size limits, timeouts, retry limits, and schema validation;
-5. server-side model allowlisting and deprecation management;
-6. provider usage returned as input, cache, and output token counts plus calculated microdollar cost;
-7. value-free audit events and per-organization budgets; and
-8. fail-closed behavior when the gateway, model, or reviewer is unavailable.
-
-This cloud-provider adapter is an implementation milestone, not a capability shipped in version 0.9.4.
-
-References: [Chrome Prompt API](https://developer.chrome.com/docs/ai/prompt-api), [Chrome extensions and AI](https://developer.chrome.com/docs/extensions/ai), [Anthropic pricing and usage fields](https://docs.anthropic.com/en/docs/about-claude/pricing), and [Anthropic model lifecycle](https://docs.anthropic.com/en/docs/about-claude/model-deprecations).
+References: [Using Codex with a ChatGPT plan](https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan), [Claude Code setup and authentication](https://code.claude.com/docs/en/getting-started), [Claude Code CLI structured output](https://code.claude.com/docs/en/cli-usage), and [Chrome Prompt API](https://developer.chrome.com/docs/ai/prompt-api).

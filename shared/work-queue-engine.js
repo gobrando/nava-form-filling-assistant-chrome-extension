@@ -55,7 +55,7 @@
     resumeOutcome: new Set(['verified', 'source_expired', 'source_stale', 'tab_closed', 'location_changed', 'page_changed', 'handoff_pending']),
     fromStatus: STATUS_VALUES,
     toStatus: STATUS_VALUES,
-    modelRuntime: new Set(['chrome-gemini-nano', 'managed-cloud']),
+    modelRuntime: new Set(['chrome-gemini-nano', 'codex-cli-subscription', 'claude-cli-subscription', 'managed-cloud']),
   };
   const COUNT_KEYS = new Set([
     'fieldCount',
@@ -65,11 +65,15 @@
     'pageCount',
     'modelPromptCount',
     'modelDurationMs',
+    'modelInputTokens',
+    'modelOutputTokens',
     'modelApiCostMicros',
   ]);
   const COUNT_MAXIMUMS = {
     modelPromptCount: 1_000,
     modelDurationMs: 600_000,
+    modelInputTokens: 5_000_000,
+    modelOutputTokens: 5_000_000,
     modelApiCostMicros: 100_000_000,
   };
 

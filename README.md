@@ -6,9 +6,9 @@ It is a working local prototype, not a production deployment. It implements flow
 
 > **Evidence boundary:** the deterministic executor has 28-of-28 synthetic source-field coverage, and the agentic planner has unit evidence for three role-specific model sessions, value-minimized prompts, reviewer approval, and safe concurrent planning. On 2026-09-23, the installed extension and downloaded on-device model completed all 28 fields across five pages of the passive local fixture and stopped at its Step 6 review page before certification and submission. Parallel installed-tab validation and a sanctioned end-to-end government-site run remain pending. This build has not been connected to a production Apricot tenant or completed a live BenefitsCal, IHSS, or WIC application in a sanctioned test environment. Use only fictional or approved test data. See [production-readiness evidence](docs/PRODUCTION_READINESS.md).
 
-## Architecture disclosure: on-device multi-agent planner
+## Architecture disclosure: multi-agent planner with three runtime options
 
-Version 0.9.4 uses [Chrome's built-in Gemini Nano Prompt API](https://developer.chrome.com/docs/ai/prompt-api). Three separate on-device model sessions adapt the roles in Foad's `form-completion` protocol: a field-mapping agent proposes canonical source mappings, a gap-analysis agent identifies unanswered decisions, and an independent review agent approves or rejects every proposal. Reviewer-approved pairs and versioned known-site hints must pass a local allowlist validator before they reach `shared/form-engine.js`; `content/form-agent.js` then performs bounded scan/write/readback operations. There is no silent non-AI fallback for an unknown live form—if built-in AI is unavailable, the run does not start.
+Version 0.10.0 can run the same three roles through Chrome's built-in Gemini Nano Prompt API, a ChatGPT-plan-authenticated Codex CLI, or a Claude-plan-authenticated Claude Code CLI. The Codex and Claude options use a token-paired localhost companion; provider credentials never enter the extension and API-key environment variables are stripped from child processes. A field-mapping agent proposes canonical source mappings, a gap-analysis agent identifies unanswered decisions, and an independent review agent approves or rejects every proposal. Reviewer-approved pairs and versioned known-site hints must pass a local allowlist validator before they reach `shared/form-engine.js`; `content/form-agent.js` then performs bounded scan/write/readback operations. There is no silent non-AI fallback for an unknown live form—if the selected model runtime is unavailable, the run does not start.
 
 The model receives a minimized field inventory and a list of available source-purpose names, not client values. It cannot write the DOM, navigate, solve bot challenges, or submit. The deterministic executor enforces origin/path binding, entity and repeat-field policy, exact safe continuations, readback verification, and the final-submit boundary. This is a real LLM planning vertical slice inspired by Foad's multi-agent skill system; it is not the same deployed production Eve/Vertex service and is not yet evidence of production accuracy on unknown benefits sites.
 
@@ -17,8 +17,8 @@ The page command contract follows [WebMCP's typed-tool pattern](https://develope
 ## What is implemented
 
 - Jillian's main flow: find client → choose applications → dashboard → answer questions → review.
-- Three role-specific Gemini Nano agents for field mapping, gap analysis, and independent review, with schema-constrained JSON output and a local policy validator.
-- Per-application local-model accounting: prompt count, context-usage units when exposed by Chrome, model time, and model API cost. The on-device path reports `$0.00` API cost.
+- Three role-specific model calls for field mapping, gap analysis, and independent review, with schema-constrained JSON output and a local policy validator. The runtime can be Gemini Nano, Codex CLI with a ChatGPT plan, or Claude Code with a Claude plan.
+- Per-application model accounting: prompt count, context units or token counts when exposed, model time, and direct API-key cost. The on-device and subscription-companion paths report `$0.00` direct API-key cost; subscription calls still consume plan allowance.
 - Local document intake for PDF, PNG, JPEG, WebP, DOCX, TXT, CSV, TSV, and JSON files up to 15 MB.
 - Deterministic extraction of clearly labeled demographic, identity, contact, address, and business fields, plus bounded on-device English OCR for images and image-only PDF pages. No model or network call is used.
 - Page, region, OCR-confidence, and rotation provenance for every OCR proposal. OCR values always start unchecked and require explicit review before import.
@@ -58,11 +58,23 @@ The page command contract follows [WebMCP's typed-tool pattern](https://develope
 3. Choose **Load unpacked**.
 4. Select this `nava-form-filling-assistant-chrome-extension` folder.
 5. Open a web form and click the extension icon. Chrome opens the assistant in the side panel.
-6. Choose **Enable agentic AI**. Chrome may download its on-device language model the first time.
+6. Keep **Chrome on-device Gemini Nano** and choose **Enable agentic AI**, or configure a subscription companion as described below. Chrome may download its on-device language model the first time.
 
 Chrome 138 or newer on a supported desktop is required for the Prompt API. Chrome may require an already-open form tab to be refreshed once after the extension is first loaded. If the AI card reports unavailable, verify Chrome's built-in AI device requirements before attempting a live run.
 
-Reloading the unpacked extension intentionally invalidates the in-memory client session and its model sessions. Close and reopen the side panel, enable agentic AI again, then reload the authorized client record; durable application checkpoints remain available. Version 0.9.4 retries background startup before showing recovery guidance and rejects stale page-agent code after an extension reload.
+Reloading the unpacked extension intentionally invalidates the in-memory client session and its model sessions. Close and reopen the side panel, enable agentic AI again, then reload the authorized client record; durable application checkpoints remain available. Version 0.10.0 retries background startup before showing recovery guidance and rejects stale page-agent code after an extension reload.
+
+## Use a Codex or Claude subscription for local testing
+
+This is a local development option, not a provider API embedded in the extension. Calls consume the signed-in plan allowance and are subject to provider limits.
+
+1. Sign the desired CLI in with its subscription account: `codex login` for ChatGPT/Codex, or `claude auth login` for Claude Pro, Max, Team, or Enterprise. Do not configure an API key for this path.
+2. Run `npm run model:bridge` from this repository.
+3. Copy the printed pairing token.
+4. In the extension, expand **Model runtime**, choose **Codex subscription via local CLI** or **Claude subscription via local CLI**, keep `http://127.0.0.1:4174`, paste the token, and choose **Use this model runtime**.
+5. Keep the companion terminal running during the application run.
+
+The companion binds only to loopback, requires the random token, accepts only the three planner roles, limits request sizes/concurrency, and does not log prompts. Claude runs with tools disabled; Codex runs ephemerally in an empty temporary directory with a read-only sandbox. See [the companion guide](model-bridge/README.md) and [model-provider boundaries](docs/MODEL_PROVIDERS.md).
 
 ## Safe local demo
 
@@ -136,7 +148,7 @@ Run `npm run eval:extraction` to reproduce the published [quality report](evalua
 
 ## Resumable work queues and handoff
 
-Version 0.9.4 retains the privacy boundary between short-lived client values and durable operational state:
+Version 0.10.0 retains the privacy boundary between short-lived client values and durable operational state:
 
 - Participant values, document proposals, raw page signatures, and full page URLs remain in `chrome.storage.session` and expire with the browser session.
 - `chrome.storage.local` retains only sanitized queue metadata: workflow/program IDs, application label, approved origin and catalog route prefixes, status, progress counts, checkpoint, owner/handoff state, tab ID, timestamps, and opaque checksums of the saved location and page signature.
@@ -170,7 +182,7 @@ The browser extension also cannot produce genuinely trusted hardware keystrokes.
 - Handoff metadata is local to one Chrome profile. It demonstrates the ownership and acceptance flow but is not an authenticated cross-device assignment system.
 - The included connector server is a fictional loopback fixture. A real organization still needs the Nava-controlled service, provider partnership/access, authentication, security review, and data-processing controls.
 - Provider selection is not the same as a live connection. Only the fictional Apricot-shaped adapter is runnable in this repository; all other listed systems require authorized backend adapters and sandbox validation.
-- Agentic planning currently requires Chrome's on-device Prompt API and a downloaded Gemini Nano model. It is not available on every device. Client values are withheld from prompts; ambiguous mappings and unsupported content remain untouched. A production Claude path is feasible only through an authenticated Nava-managed gateway; no hosted-model adapter or provider key ships in this version.
+- Agentic planning requires one selected runtime: Chrome's on-device Prompt API, a locally paired Codex CLI signed in with ChatGPT, or a locally paired Claude Code CLI signed in with an eligible Claude plan. Client values are withheld from all three planning paths; ambiguous mappings and unsupported content remain untouched. The localhost companion is for development evaluation, not a production model gateway.
 
 ## Evidence, costs, and next steps
 
