@@ -132,6 +132,10 @@ test('tab closure creates a durable checkpoint and value-free audit event', () =
 test('audit export allowlists event details and contains no participant payload', () => {
   const event = queue.auditEvent('page_verified', sample, {
     verifiedCount: 4,
+    modelRuntime: 'chrome-gemini-nano',
+    modelPromptCount: 3,
+    modelDurationMs: 1250,
+    modelApiCostMicros: 0,
     participantValue: 'Maria',
     rawUrl: sample.url,
     checkpointKind: 'human_input',
@@ -141,6 +145,10 @@ test('audit export allowlists event details and contains no participant payload'
   const serialized = JSON.stringify(exported);
   assert.equal(exported.schema, 'nava.form-filling.audit.v1');
   assert.equal(exported.events[0].details.verifiedCount, 4);
+  assert.equal(exported.events[0].details.modelRuntime, 'chrome-gemini-nano');
+  assert.equal(exported.events[0].details.modelPromptCount, 3);
+  assert.equal(exported.events[0].details.modelDurationMs, 1250);
+  assert.equal(exported.events[0].details.modelApiCostMicros, 0);
   assert.equal(exported.events[0].details.participantValue, undefined);
   assert.doesNotMatch(serialized, /Maria|123-45-6789|secret-field-value|record=/);
 });

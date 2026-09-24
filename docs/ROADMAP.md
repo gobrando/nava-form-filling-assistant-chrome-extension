@@ -1,5 +1,11 @@
 # Product roadmap recommendation
 
+## Agentic planner vertical slice implemented; installed evaluation is next
+
+Version 0.10.0 connects a runtime-neutral LLM planner to the constrained executor. Chrome's Gemini Nano Prompt API, a ChatGPT-plan-authenticated Codex CLI, or an eligible-plan Claude Code CLI can run the three distinct roles: field mapper, gap analyst, and independent reviewer. They receive a minimized page inventory and available source-purpose names, never participant values. Reviewer-approved output and versioned known-site hints must pass a local validator before the existing origin, entity, navigation, readback, and no-submit policies permit an action.
+
+This is an adaptation of Foad's role separation and safety protocol, not the deployed Eve/Vertex service. The downloaded model and extensive installed fixture now pass end to end. The subscription companion is a development bridge, not a production gateway. The immediate milestone is to re-run WIC after the gap/checkbox fix, prove two or more unfocused application tabs make independent progress, add adversarial/prompt-injection and schema-drift cases, and then exercise one sanctioned non-production benefits flow.
+
 ## Status of the three candidate areas
 
 ### Self-service database connector — provider-neutral extension slice complete
@@ -14,7 +20,7 @@ This is not yet a Plaid-like provider network. That requires organization authen
 
 Version 0.5 adds bundled English OCR for PNG, JPEG, WebP, and image-only PDF pages; strict page/pixel/attempt/time budgets; rotation recovery; page/region/confidence provenance; default-unchecked OCR proposals; and an executable quality gate. The synthetic corpus currently passes at 100% precision, 91.2% recall, 100% expected-abstention accuracy, zero accepted wrong values, and zero sensitive evidence leaks. The next extraction work is pilot-grade hardening against representative, consented documents rather than broader automatic acceptance.
 
-### Multi-application UI — local coordinator implemented; browser concurrency validation pending
+### Multi-application UI — background-tab coordinator implemented; installed concurrency validation pending
 
 The dashboard tracks separate application tabs, retains one session client, shows attention states, and now starts selected known applications immediately with up to three tab-bound workers. BenefitsCal programs are grouped into one workflow, current IHSS/WIC routes and redirects are cataloged, application actions cannot scan an unrelated focused tab, and commands are bound to an approved Chrome document and route. The service worker now serializes client claims, queue revisions, leases, command dispatch, revocation, and connector invalidation; an application-scoped conflict no longer stops healthy sibling workers. The side panel must still stay open to execute the runner, so the next queue step is moving runner lifetime and authenticated recovery into a durable backend.
 
@@ -46,7 +52,7 @@ Version 0.6 implements the local state machinery for ordinary caseworker interru
 
 Because client values intentionally expire at browser-session end, a full browser restart requires source reauthorization/reload before filling can continue. This is a deliberate safety tradeoff, not silent loss: application progress and the exact checkpoint remain visible.
 
-## Recommended next milestone: one authenticated connector pilot
+## Recommended following milestone: one authenticated connector pilot
 
 The next meaningful step crosses the extension/backend boundary. Build the organization-authenticated queue and connector service needed for real multi-caseworker operation.
 
@@ -62,7 +68,12 @@ The next meaningful step crosses the extension/backend boundary. Build the organ
 - **Completed:** OCR and extraction-quality evaluation baseline.
 - **Completed:** local resumable multi-application queue and same-profile handoff vertical slice.
 - **Completed:** provider-neutral source catalog/contract and 28-field fictional adapter validation.
-- **Next:** productionize the authenticated Nava connector and work-queue service; pilot one Apricot organization in a sandbox.
+- **Completed:** on-device three-agent planning vertical slice with schema-constrained output and local review enforcement.
+- **Completed:** loopback Codex and Claude subscription-CLI provider options with token pairing, CLI auth-mode checks, tool/sandbox restrictions, and value-free usage accounting.
+- **Completed:** installed Chrome evaluation of the downloaded model and passive six-page extensive fixture (28/28 fields, stopped at review).
+- **Next:** installed WIC retest with the 0.10.0 package, two or more simultaneous unfocused application tabs, and one sanctioned synthetic benefits flow.
+- **Then:** replace the development-only localhost subscription companion with an authenticated, tenant-bound model gateway for managed production use; keep provider keys and participant values out of Chrome and return calculated organization cost to the existing value-free accounting surface.
+- **Then:** productionize the authenticated Nava connector and work-queue service; pilot one Apricot organization in a sandbox.
 - **Later:** add provider adapters in priority order using the published [coverage matrix](CONNECTOR_COVERAGE.md).
 
 ## Connector follow-through before production

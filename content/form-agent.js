@@ -1,11 +1,11 @@
 (function installPageAgent() {
   'use strict';
 
-  if (globalThis.__NAVA_FORM_FILLER_AGENT_V3__) return;
-  globalThis.__NAVA_FORM_FILLER_AGENT_V3__ = true;
+  const PAGE_AGENT_VERSION = 5;
+  if (globalThis.__NAVA_FORM_FILLER_AGENT__?.version === PAGE_AGENT_VERSION) return;
+  globalThis.__NAVA_FORM_FILLER_AGENT__ = { version: PAGE_AGENT_VERSION };
 
   const engine = globalThis.NavaFormEngine;
-  const siteAdapters = globalThis.NavaSiteAdapters || null;
   const fieldMap = new Map();
   const groupMap = new Map();
   let scanNumber = 0;
@@ -76,6 +76,51 @@
   const PAGE_VALIDATION_MIN_MS = 1800;
   const PAGE_VALIDATION_MAX_MS = 4000;
   const MAX_FILL_ASSIGNMENTS = 80;
+  const PAGE_TOOL_DEFINITIONS = Object.freeze([
+    {
+      name: 'inspect_application_page',
+      description: 'Read the visible application controls, safe navigation state, and final-action boundary without changing the page.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: true, untrustedContentHint: true, consequentialHint: false },
+      command: 'NAVA_SCAN',
+    },
+    {
+      name: 'fill_reviewed_fields',
+      description: 'Write a locally validated batch of field-key/value assignments and read every field back. This tool cannot submit.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          assignments: {
+            type: 'array',
+            maxItems: MAX_FILL_ASSIGNMENTS,
+            items: {
+              type: 'object',
+              properties: {
+                fieldKey: { type: 'string' },
+                label: { type: 'string' },
+                value: { type: ['string', 'number', 'boolean'] },
+                source: { type: 'string', enum: ['record', 'changed', 'user'] },
+                sensitive: { type: 'boolean' },
+              },
+              required: ['fieldKey', 'value'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['assignments'],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, untrustedContentHint: false, consequentialHint: false },
+      command: 'NAVA_FILL',
+    },
+    {
+      name: 'continue_application_step',
+      description: 'Activate only the exact allowlisted continuation control for the current approved application route. Final actions are excluded.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: false, untrustedContentHint: false, consequentialHint: false },
+      command: 'NAVA_ADVANCE',
+    },
+  ]);
 
   function delay(milliseconds) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -392,7 +437,7 @@
       const inferredQuestion = ['radio', 'checkbox'].includes(element.type)
         ? questionText(element, optionLabel)
         : '';
-      const policy = siteAdapters?.fieldPolicy?.(location.hostname, location.pathname, {
+      const policy = globalThis.NavaSiteAdapters?.fieldPolicy?.(location.hostname, location.pathname, {
         id: element.id || '',
         name: element.name || '',
         value: element.value || '',
@@ -441,6 +486,8 @@
         optionLabel,
         question,
         purpose: policy.purpose || '',
+        decisionGroupKey: String(policy.decisionGroupKey || ''),
+        decisionGroupQuestion: cleanText(policy.decisionGroupQuestion || ''),
         unmapped: policy.unmapped === true,
         allowRepeatedPurpose: policy.allowRepeatedPurpose === true,
         exclusive,
@@ -996,7 +1043,14 @@
   }
 
   async function handleMessage(message) {
-    if (message?.type === 'NAVA_PING') return { ok: true };
+    if (message?.type === 'NAVA_PING') {
+      return {
+        ok: true,
+        agentVersion: PAGE_AGENT_VERSION,
+        adaptersReady: typeof globalThis.NavaSiteAdapters?.fieldPolicy === 'function',
+        tools: PAGE_TOOL_DEFINITIONS,
+      };
+    }
     if (message?.type === 'NAVA_CANCEL') {
       fillGeneration += 1;
       return { ok: true, cancelled: true };
@@ -1014,6 +1068,8 @@
           url: location.href,
           domain: location.hostname,
         },
+        fields,
+        tools: PAGE_TOOL_DEFINITIONS,
         playbook: playbookStatus(),
         analysis: engine.buildAnalysis(fields, message.participant || {}),
         submitGate: submitGateStatus(),

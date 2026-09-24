@@ -1,23 +1,25 @@
 # Production-readiness evidence
 
-Date: 2026-09-18
+Date: 2026-09-23
 
 ## Executive answer
 
-The extension implements an autonomous runner intended to complete a sequence of pages **up to the final review/submit page** when the site has an approved playbook, every required value is available and explicitly mapped, the page exposes a safe continuation control, and no human checkpoint intervenes. It keeps the imported client record in the browser session, reads every write back, and carries progress across pages. It never certifies, signs, attests, or submits. This revised build still requires a fresh installed-extension end-to-end run before that behavior is treated as validated evidence.
+The extension implements an autonomous runner intended to complete a sequence of pages **up to the final review/submit page** when the site has an approved playbook, every required value is available and explicitly mapped, the page exposes a safe continuation control, and no human checkpoint intervenes. It keeps the imported client record in the browser session, reads every write back, and carries progress across pages. It never certifies, signs, attests, or submits. On 2026-09-23, an installed Chrome run with the downloaded on-device model reached the passive extensive fixture's Step 6 review page after recording all 28 fields across five data-entry pages. The certification checkbox remained unchecked and Submit was not activated.
 
 This is prototype implementation plus unit/static evidence, not a production-accuracy claim. The repository has not been connected to Nava's or a client's production Apricot tenant, has not processed real participant PII, and has not completed a live BenefitsCal application in a sanctioned test environment. Those validations require organization authorization, non-production credentials/data, privacy and security approval, and a test path that cannot create a real benefits case.
+
+The controller now includes a runtime-neutral LLM planning layer: separate Gemini Nano sessions or paired Codex/Claude subscription CLI calls propose mappings, identify gaps, and independently review the proposal before a deterministic local validator permits any value to reach the page executor. Unit evidence establishes role separation, schema-constrained output handling, omission of participant values from prompts, rejection of reviewer-invented mappings, subscription-bridge restrictions, and safe per-role queuing across parallel application plans. The companion paths still need installed-extension end-to-end validation and are not evidence that any model can correctly complete an unknown benefits application.
 
 ## What was tested
 
 | Evidence | Result | What it establishes |
 | --- | --- | --- |
-| Automated suite | 131 tests pass | Mapping, formatting, delayed-validation readback, exact IHSS/WIC adapters, semantic checkbox values, conditional rescans, BenefitsCal route gates, repeated-entity abstention, coordinator races, sibling-safe partial persistence, bounded fill batches, human CAPTCHA/OTP checkpoints, OCR, connector boundaries, program grouping, resumability, handoff, and durable PII controls behave as specified. |
-| Extensive local benefits fixture | 28 of 28 source-backed fields map in the engine test; the fixture is passive and contains no embedded participant or autofill runner | The synthetic record covers demographic, identity, contact, address, household, citizenship, income, childcare, and unemployment fields without letting the demo bypass the extension. An installed-extension browser rerun is required after each unpacked-extension reload. |
+| Automated suite | 151 tests pass | Three-agent planning across on-device and subscription-companion runtimes, value-minimized and size-bounded prompts, reviewer/local-policy enforcement, bridge role/auth/environment/sandbox restrictions, stale-gap suppression, singleton checkbox identity, known-site hint enforcement, missing-checkbox and grouped multi-select questions, value-free usage accounting, concurrent plan serialization, mapping, formatting, delayed-validation readback, exact IHSS/WIC adapters, conditional rescans, BenefitsCal route gates, stale-agent rejection, background-tab binding, per-application progress, repeated-entity abstention, coordinator races, bounded fill batches, human CAPTCHA/OTP checkpoints, OCR, connector boundaries, program grouping, resumability, handoff, and durable PII controls behave as specified. |
+| Installed extensive local benefits fixture | Chrome reached Step 6; 28 of 28 fields recorded across five of five data-entry pages; certification remained unchecked; no browser warnings or errors | The installed extension—not fixture-local code—performed the scan/plan/fill/advance loop and stopped at review. This is local synthetic evidence, not live-site production evidence. |
 | Original three-page fixture | Passive fixture retains safe navigation and a final submit guard | It can exercise the installed extension, but opening the fixture URL alone performs no work. |
 | Connector UI preview | 28 labeled source fields mapped; fictional record `339619` reviewed and imported in simulated preview state | The provider-neutral selection, mapping, review, and import UI state machine works with fictional data; preview mode does not contact the loopback adapter. |
 | Mock connector probes | 28 schema fields, 28 record fields, non-GET rejected with HTTP 405 | The included adapter is read-only and returns the expected extensive fictional record. |
-| Live application read-only checks | BenefitsCal public preamble reached language preferences; current IHSS intake and WIC routes loaded | Current routes and public navigation were inspected without entering applicant answers. This does not establish live form-fill correctness. |
+| Live application diagnostics | BenefitsCal public preamble reached language preferences; current IHSS intake and WIC routes loaded; a user-initiated fictional WIC run exposed a stale-gap and singleton-checkbox defect | Version 0.10.0 includes the 0.9.4 fix that removes model gaps for already mapped values, preserves writable checkbox IDs, trusts versioned site hints, and groups missing RUHS checkbox decisions into the two select-all-that-apply questions shown by the site. The live WIC flow must be re-run after reloading 0.10.0; this does not establish end-to-end live correctness. |
 
 The extensive fixture uses the fictional Celeste test record and deliberately exercises more than basic identity: SSN, date of birth, language, gender, ethnicity, marital status, disability/special-needs indicator, farm-worker indicator, pregnancy, preferred contact method, housing status, household size, citizenship status, monthly income, childcare, and unemployment benefits.
 
@@ -25,13 +27,14 @@ The extensive fixture uses the fictional Celeste test record and deliberately ex
 
 For each page, the assistant:
 
-1. classifies visible controls from their labels, ARIA text, autocomplete metadata, type, options, and constraints;
-2. proposes only values that exist in the reviewed source record;
-3. writes in document order and dispatches native input/change events;
-4. reads the rendered control value back and compares it with the expected normalized value; and
-5. advances only when every proposed write verifies and the next action matches the safe allowlist.
+1. inventories visible controls from their labels, ARIA text, autocomplete metadata, type, options, and constraints;
+2. asks the field-mapping and gap-analysis agents for schema-constrained proposals and requires an independent review agent plus a local allowlist check;
+3. resolves only approved purposes to values that actually exist in the reviewed source record—the model never sees those values;
+4. writes in document order and dispatches native input/change events;
+5. reads the rendered control value back and compares it with the expected normalized value; and
+6. advances only when every proposed write verifies and the next action matches the safe allowlist.
 
-A successful installed-extension run would establish **mechanical correctness against that inspected page and source record**. The current read-back implementation is a safety mechanism, not yet browser-run evidence. It does not establish legal or program eligibility, that the source system is current, that a caseworker selected the right person, or that every production site's business rules were interpreted correctly. Those remain human and pilot-validation responsibilities.
+The installed fixture run establishes **mechanical correctness against that synthetic inspected flow and source record**. The read-back implementation does not establish legal or program eligibility, that the source system is current, that a caseworker selected the right person, or that production-site business rules were interpreted correctly. Those remain human and pilot-validation responsibilities.
 
 ## Autonomous-run boundaries
 

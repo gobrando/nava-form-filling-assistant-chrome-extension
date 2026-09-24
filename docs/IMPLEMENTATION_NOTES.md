@@ -6,13 +6,15 @@
 |---|---|
 | Phase 0 — find and freshness-check a site playbook | The content agent recognizes the three bundled domains and probes known selectors on the live page. A missing probe downgrades the playbook to partial; the live scan and readback still govern every write. |
 | Phase 1 — find the form | The page agent inventories visible `input`, `select`, and `textarea` elements. It removes search controls, hidden controls, honeypots, uploads, passwords/OTP/payment fields, bot-check fields, and legal attestation controls. An approved informational page with no fields can still advance through its exact allowlisted continuation. |
-| Phase 2 — gap analysis and one question batch | `shared/form-engine.js` canonicalizes the participant payload, classifies visible fields, groups Yes/No controls, refuses protected inferences, and returns ready/changed/missing/decision/no-place collections. The side panel renders all missing questions in one view. |
+| Phase 2 — gap analysis and one question batch | Separate Gemini Nano field-mapping and gap-analysis sessions receive a minimized page/source-purpose inventory. A third model session independently reviews every proposed pair. The local form engine accepts reviewed allowlisted mappings plus exact versioned site-adapter hints, removes stale gaps for already mapped fields, preserves writable singleton-checkbox IDs, groups Yes/No controls, refuses protected inferences, and returns ready/changed/missing/decision/no-place collections. The side panel renders all missing questions in one view. |
 | Phase 3 — gate-ordered fill | Assignments stay in DOM order. Radio and checkbox writes are idempotent. Select values are matched to the page's exact options. Each tab has its own application state. |
 | Phase 4 — verify every write | The content agent immediately reads each field after writing. It compares digits for masks, retries text controls with an incremental event sequence, and returns a plain-language blocked reason for hidden, disabled, maxlength, stale, or rejected fields. |
 | Phase 5 — exceptions | A failed field is left in `blocked` state and shown to the caseworker. The prototype does not persist newly learned site facts because it has no authenticated backend knowledge store. |
 | Phase 6 — human submit gate | A bounded runner fills, verifies, and advances across approved pages. It stops on unanswered/blocked fields, bot checks, unknown controls, repeated pages, certification/signature language, or final actions. A caseworker can explicitly mark a CAPTCHA or one-time-code challenge complete; the runner rescans before resuming and never solves the challenge. There is no message or code path that clicks submit. |
 
 ## Architecture
+
+The runtime combines a selectable LLM planner with a deterministic execution and enforcement layer. The planner can use Chrome's on-device model or a paired localhost Codex/Claude subscription CLI. The model never receives client values and cannot call DOM APIs directly. Three role-specific calls return schema-constrained mappings and gaps; a local validator and the deterministic executor remain authoritative.
 
 ```text
 sidepanel/
@@ -24,14 +26,16 @@ sidepanel/
         ├── chrome.storage.session     participant values + live application details
         ├── chrome.storage.local       connector config + sanitized durable queue metadata
         ├── shared/connector-engine.js label-based schema mapping, validation, provenance
+        ├── shared/agentic-planner.js   runtime-neutral mapper + gap analyst + independent reviewer
+        ├── model-bridge/               loopback Codex/Claude subscription CLI companion
         ├── shared/program-catalog.js   current routes, approved origins, BenefitsCal grouping
         ├── shared/site-adapters.js     exact IHSS/WIC field scopes and semantic choices
         ├── shared/work-queue-engine.js resume fingerprints, leases, handoff, audit sanitization
         ├── background.js              connector adapter, side-panel setup, open grouped tabs
-        └── content/form-agent.js     scan → write → readback in the active page
+        └── content/form-agent.js     typed page tools → scan → write → readback by bound tab ID
                     │
                     └── shared/form-engine.js
-                        deterministic mapping, gap analysis, transformations
+                        local mapping validation, gap construction, transformations
 
 Nava connector service
   authenticated read-only GET endpoints → health, labeled schema, raw record
@@ -39,6 +43,10 @@ Nava connector service
 ```
 
 All executable extension code ships inside the package; there are no remote scripts or analytics calls. Document parsing remains on-device. A configured managed lookup sends the opaque connection/form/record identifiers to the organization's Nava connector service and receives the requested record through the signed-in browser session.
+
+Chrome's built-in Gemini Nano runtime executes on-device. The optional development companion invokes an already authenticated Codex CLI or Claude Code session on loopback without copying provider credentials into Chrome. All three paths receive field keys, labels, questions, option labels, types, requiredness, the page domain, and names of available source purposes. They exclude the page URL/title and the participant's actual names, addresses, dates, identifiers, income, and answers. The page command descriptors follow WebMCP's schema-and-annotation pattern, but native WebMCP is only a progressive enhancement while the proposed API remains in origin trial/flagged development and target sites do not expose compatible tools.
+
+Each model plan returns value-free prompt, context/token, duration, and direct API-cost counters. The local and subscription-companion runtimes report no direct API-key charge; subscription runs still consume plan allowance. A future production cloud provider must sit behind an authenticated Nava gateway; model-provider secrets never belong in the extension. See [model providers and usage accounting](MODEL_PROVIDERS.md).
 
 ## Document intake safety model
 
@@ -62,10 +70,10 @@ All executable extension code ships inside the package; there are no remote scri
 5. **No durable participant storage.** Client data uses `chrome.storage.session`, which is cleared when the browser session ends. The durable queue stores only workflow metadata, application origins, and opaque URL/page checksums. A restart therefore requires reloading the authorized source before resume.
 6. **Verified resume, not blind replay.** Every resume starts with a read-only scan and rejects missing tabs, stale or expired sources, unaccepted handoffs, changed locations, or changed page signatures before any write.
 7. **Local handoff boundary.** Version 0.6 models assignment, acceptance, named checkpoints, and same-profile write leases. Real multi-caseworker synchronization and identity enforcement belong in an authenticated Nava service.
-8. **Tab-bound multi-application runs.** Known application selections open and start automatically with three workers. BenefitsCal program selections collapse into one workflow; every card action remains bound to its saved tab rather than the currently focused tab. The service worker coordinates client sessions, application revisions, leases, and command dispatch, but the side panel must remain open until a durable service-worker/server job replaces the UI-hosted runner loop.
+8. **Tab-bound multi-application runs.** Known application selections open and start automatically with three workers, including background tabs that have never been focused. BenefitsCal program selections collapse into one workflow; every scan, model plan, fill, and continuation remains bound to the saved tab ID rather than the currently focused tab. Model calls are queued per role so one role session/process is never prompted concurrently, while separate application workers continue page execution independently. The service worker coordinates client sessions, application revisions, leases, and command dispatch, but the side panel must remain open until a durable service-worker/server job replaces the UI-hosted runner loop.
 9. **Entity-scope abstention.** When a page repeats the same canonical person or income purpose, the engine creates explicit entity-scope gaps instead of copying one applicant's value into every row. Reuse is permitted only for exact adapter-owned scopes or strict scalar confirmation pairs.
-9. **Conditional-page convergence.** After a verified write pass, the runner rescans the same approved document up to three times before advancing. Newly revealed required fields become assignments or explicit gaps; a page that keeps changing stops for review.
-10. **Human checkpoint, verified resume.** reCAPTCHA, hCaptcha, Turnstile, and one-time-code signals stop the run. The caseworker completes the challenge on the site and explicitly resumes; the extension verifies that the challenge no longer appears before continuing. No challenge-solving or bypass service is called.
+10. **Conditional-page convergence.** After a verified write pass, the runner rescans the same approved document up to three times before advancing. Newly revealed required fields become assignments or explicit gaps; a page that keeps changing stops for review.
+11. **Human checkpoint, verified resume.** reCAPTCHA, hCaptcha, Turnstile, and one-time-code signals stop the run. The caseworker completes the challenge on the site and explicitly resumes; the extension verifies that the challenge no longer appears before continuing. No challenge-solving or bypass service is called.
 
 ## Recommended production follow-on
 

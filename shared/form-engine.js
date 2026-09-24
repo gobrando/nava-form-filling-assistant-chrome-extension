@@ -62,6 +62,9 @@
   const DO_NOT_DERIVE = new Set([
     'ssn',
     'ihssHouseholdMemberSsn',
+    'specialNeeds',
+    'farmWorker',
+    'pregnant',
     'housingStatus',
     'preferredContact',
     'householdSize',
@@ -70,6 +73,13 @@
     'childcare',
     'unemployment',
     'ein',
+    'wicPostpartum',
+    'wicBreastfeedingInfant',
+    'wicFormulaInfant',
+    'wicChildUnderFive',
+    'wicAppointmentInPerson',
+    'wicAppointmentPhone',
+    'wicAppointmentVideo',
   ]);
 
   function normalize(value) {
@@ -536,8 +546,60 @@
   function questionFor(field, purpose) {
     if (field.question) return field.question.replace(/\s*\u2014\s*(yes|no)$/i, '');
     const label = displayLabel(field, purpose).replace(/\s*\(required\)\s*/i, '').trim();
+    if (field.type === 'checkbox' && !field.members?.length) return label.endsWith('?') ? label : `Should I select ${label.toLowerCase()}?`;
     if (field.type === 'select-one' || field.members?.length) return label.endsWith('?') ? label : `What should I select for ${label.toLowerCase()}?`;
     return label.endsWith('?') ? label : `What is the client's ${label.toLowerCase()}?`;
+  }
+
+  function gapInput(field) {
+    if (field.type === 'checkbox' && !field.members?.length) {
+      return {
+        inputType: 'choice',
+        options: [
+          { value: 'yes', label: 'Yes' },
+          { value: 'no', label: 'No' },
+        ],
+      };
+    }
+    return {
+      inputType: field.members?.length || field.type === 'select-one' ? 'choice' : 'text',
+      options: field.members || field.options || [],
+    };
+  }
+
+  function combineDecisionGroupGaps(gaps, fields) {
+    const byFieldKey = new Map(fields.map((field) => [field.fieldKey, field]));
+    const groups = new Map();
+    const passthrough = [];
+    gaps.forEach((gap) => {
+      const field = byFieldKey.get(gap.fieldKey);
+      if (!field?.decisionGroupKey || field.type !== 'checkbox') {
+        passthrough.push(gap);
+        return;
+      }
+      const group = groups.get(field.decisionGroupKey) || {
+        fieldKey: `decision:${field.decisionGroupKey}`,
+        label: field.decisionGroupQuestion || field.question || field.label,
+        question: field.decisionGroupQuestion || field.question || field.label,
+        kind: 'multi_decision',
+        required: false,
+        inputType: 'multi_choice',
+        options: [],
+        members: [],
+        sensitive: false,
+      };
+      group.required = group.required || Boolean(gap.required);
+      group.sensitive = group.sensitive || Boolean(gap.sensitive);
+      group.options.push({ value: gap.fieldKey, label: field.optionLabel || field.label });
+      group.members.push({
+        fieldKey: gap.fieldKey,
+        purpose: gap.purpose || '',
+        label: field.optionLabel || field.label,
+        sensitive: Boolean(gap.sensitive),
+      });
+      groups.set(field.decisionGroupKey, group);
+    });
+    return [...passthrough, ...groups.values()];
   }
 
   function confirmationField(field) {
@@ -556,10 +618,18 @@
     return types.every((type) => type === types[0]);
   }
 
-  function buildAnalysis(rawFields, payload) {
+  function buildAnalysis(rawFields, payload, options = {}) {
     const participant = canonicalizeParticipant(payload);
     const fields = combineGroups((rawFields || []).filter((field) => !field.ignored));
-    const purposes = fields.map((field) => classifyField(field));
+    const purposeOverrides = options?.purposeOverrides || {};
+    const requirePurposeOverrides = options?.requirePurposeOverrides === true;
+    const purposes = fields.map((field) => {
+      if (Object.prototype.hasOwnProperty.call(purposeOverrides, field.fieldKey)) {
+        const purpose = String(purposeOverrides[field.fieldKey] || '');
+        return Object.prototype.hasOwnProperty.call(LABELS, purpose) ? purpose : '';
+      }
+      return requirePurposeOverrides ? '' : classifyField(field);
+    });
     const purposeFields = purposes.reduce((index, purpose, fieldIndex) => {
       if (!purpose) return index;
       const matches = index.get(purpose) || [];
@@ -604,14 +674,15 @@
             sensitive: Boolean(field.sensitive),
           });
         } else if (required) {
+          const input = gapInput(field);
           gaps.push({
             fieldKey: field.fieldKey,
             label: displayLabel(field),
             question: questionFor(field),
             kind: field.members?.length ? 'decision' : 'required',
             required: true,
-            inputType: field.members?.length ? 'choice' : field.type === 'select-one' ? 'choice' : 'text',
-            options: field.members || field.options || [],
+            inputType: input.inputType,
+            options: input.options,
             sensitive: Boolean(field.sensitive),
           });
         }
@@ -621,6 +692,7 @@
       usedPurposes.add(purpose);
       const rawValue = participant.values[purpose];
       if (unsafeRepeatedPurposes.has(purpose) && rawValue !== undefined && rawValue !== null && rawValue !== '') {
+        const input = gapInput(field);
         gaps.push({
           fieldKey: field.fieldKey,
           label: displayLabel(field, purpose),
@@ -629,8 +701,8 @@
           reason: 'The source value has no verified person or entity scope for this repeated field.',
           kind: 'entity_scope',
           required,
-          inputType: field.members?.length || field.type === 'select-one' ? 'choice' : 'text',
-          options: field.members || field.options || [],
+          inputType: input.inputType,
+          options: input.options,
           sensitive: ['ssn', 'ihssHouseholdMemberSsn', 'ein'].includes(purpose) || Boolean(field.sensitive),
         });
         continue;
@@ -667,6 +739,7 @@
 
       const decision = Boolean(field.members?.length || field.type === 'select-one' || DO_NOT_DERIVE.has(purpose));
       if (required || decision) {
+        const input = gapInput(field);
         gaps.push({
           fieldKey: field.fieldKey,
           label: displayLabel(field, purpose),
@@ -674,13 +747,14 @@
           question: questionFor(field, purpose),
           kind: decision ? 'decision' : 'required',
           required,
-          inputType: field.members?.length || field.type === 'select-one' ? 'choice' : 'text',
-          options: field.members || field.options || [],
+          inputType: input.inputType,
+          options: input.options,
           sensitive: ['ssn', 'ihssHouseholdMemberSsn', 'ein'].includes(purpose) || Boolean(field.sensitive),
         });
       }
     }
 
+    const finalGaps = combineDecisionGroupGaps(gaps, fields);
     const noFields = Object.entries(participant.values)
       .filter(([purpose, value]) => value !== undefined && value !== null && value !== '' && !usedPurposes.has(purpose))
       .map(([purpose, value]) => ({ purpose, label: LABELS[purpose] || purpose, value }));
@@ -688,13 +762,13 @@
     return {
       participant: { name: participant.name, recordId: participant.recordId },
       assignments,
-      gaps,
+      gaps: finalGaps,
       observed,
       noFields,
       counts: {
         fields: fields.length,
         ready: assignments.length + observed.length,
-        missing: gaps.length,
+        missing: finalGaps.length,
         unused: noFields.length,
       },
     };

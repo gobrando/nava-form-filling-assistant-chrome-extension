@@ -329,6 +329,65 @@ test('WIC exclusive groups expose stable semantic option values', () => {
   assert.equal(textNo.optionValue, 'No');
   assert.equal(mediCalPending.optionValue, 'In progress');
   assert.equal(adapters.fieldPolicy(WIC_HOST, WIC_PATH, { id: 'edit-if-yes' }).sensitive, true);
+  const category = adapters.fieldPolicy(WIC_HOST, WIC_PATH, { id: 'edit-please-select-all-that-apply-childrentoddler-0-5' });
+  const appointment = adapters.fieldPolicy(WIC_HOST, WIC_PATH, { id: 'edit-i-authorize-my-wic-appointments-select-all-that-apply-in-person' });
+  assert.equal(category.decisionGroupKey, 'wic:applicant-category');
+  assert.equal(category.decisionGroupQuestion, 'Please select all that apply');
+  assert.equal(appointment.decisionGroupKey, 'wic:appointment-methods');
+  assert.match(appointment.decisionGroupQuestion, /appointment methods/i);
+});
+
+test('the complete observed WIC form maps every fictional source-backed answer with no false gaps', () => {
+  const field = (id, type, label, extra = {}) => withPolicy(WIC_HOST, WIC_PATH, {
+    fieldKey: id,
+    id,
+    name: id,
+    type,
+    label,
+    optionLabel: label,
+    value: '',
+    checked: false,
+    ...extra,
+  });
+  const fields = [
+    field('edit-name', 'text', 'Name'),
+    field('edit-date-of-birth', 'text', 'Date of Birth', { required: true, pattern: '\\d{1,2}/\\d{1,2}/\\d{4}' }),
+    field('edit-home-address', 'text', 'Home Address', { required: true }),
+    field('edit-mailing-address-if-different-from-home-address-', 'text', 'Mailing address (if different from home address)'),
+    field('edit-mobile', 'tel', 'Mobile Number', { required: true, pattern: '^\\(\\d{3}\\)\\s\\d{3}-\\d{4}' }),
+    field('edit-can-you-receive-text-messages-yes', 'radio', 'Yes', { question: 'Can you receive text messages', optionValue: 'Yes', required: true }),
+    field('edit-can-you-receive-text-messages-no', 'radio', 'No', { question: 'Can you receive text messages', optionValue: 'No', required: true }),
+    field('edit-email', 'email', 'Email'),
+    field('edit-what-is-your-preferred-language', 'select-one', 'What is your preferred language', {
+      options: [{ value: 'English ', label: 'English' }, { value: 'Spanish ', label: 'Spanish' }, { value: 'Other', label: 'Other' }],
+    }),
+    field('edit-do-you-have-medical-yes', 'radio', 'Yes', { question: 'Do you have MediCal', optionValue: 'Yes', required: true }),
+    field('edit-do-you-have-medical-no', 'radio', 'No', { question: 'Do you have MediCal', optionValue: 'No', required: true }),
+    field('edit-do-you-have-medical-in-progress', 'radio', 'In Progress', { question: 'Do you have MediCal', optionValue: 'In Progress', required: true }),
+    field('edit-if-yes', 'text', 'If yes - MediCal Case #'),
+    field('edit-please-select-all-that-apply-pregnant', 'checkbox', 'Pregnant'),
+    field('edit-please-select-all-that-apply-post-partum', 'checkbox', 'Post-partum'),
+    field('edit-please-select-all-that-apply-infant-breastfeeding', 'checkbox', 'Infant-breastfeeding'),
+    field('edit-please-select-all-that-apply-infant-formula', 'checkbox', 'Infant-formula'),
+    field('edit-please-select-all-that-apply-childrentoddler-0-5', 'checkbox', 'Children/Toddler 0-5'),
+    field('edit-i-authorize-my-wic-appointments-select-all-that-apply-in-person', 'checkbox', 'In-Person'),
+    field('edit-i-authorize-my-wic-appointments-select-all-that-apply-virtual-phone', 'checkbox', 'Virtual (phone)'),
+    field('edit-i-authorize-my-wic-appointments-select-all-that-apply-telehealth-video', 'checkbox', 'Telehealth (video)'),
+    field('edit-please-choose-the-wic-clinic-closest-to-you', 'select-one', 'Please choose the WIC Clinic Closest to you', {
+      options: [{ value: 'Arlanza Riverside WIC', label: 'Arlanza Riverside WIC' }, { value: 'Temecula WIC', label: 'Temecula WIC' }],
+    }),
+  ];
+  const analysis = engine.buildAnalysis(fields, demoRecord());
+  const assignments = Object.fromEntries(analysis.assignments.map((item) => [item.purpose, item.value]));
+
+  assert.equal(analysis.gaps.length, 0);
+  assert.equal(assignments.fullName, 'Celeste NAVA Thomas II');
+  assert.equal(assignments.phone, '(777) 777-7777');
+  assert.equal(assignments.canReceiveTexts, 'Yes');
+  assert.equal(assignments.mediCalCoverage, 'No');
+  assert.equal(assignments.wicChildUnderFive, 'yes');
+  assert.equal(assignments.wicAppointmentInPerson, 'yes');
+  assert.equal(assignments.wicClinic, 'Temecula WIC');
 });
 
 test('WIC live phone pattern is formatted and a same mailing address stays blank', () => {

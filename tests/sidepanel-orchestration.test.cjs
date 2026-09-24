@@ -40,6 +40,14 @@ test('dynamic page-agent injection installs site adapters before the content age
   assert.ok(siteAdapters < contentAgent);
 });
 
+test('page-agent readiness is versioned and requires the exact live-site adapters', () => {
+  const source = section('async function ensurePageAgent', 'async function sendToTab');
+  assert.match(panel, /const PAGE_AGENT_VERSION = 5/);
+  assert.match(source, /pong\.agentVersion === PAGE_AGENT_VERSION && pong\.adaptersReady/);
+  assert.match(source, /verified\.agentVersion === PAGE_AGENT_VERSION && verified\.adaptersReady/);
+  assert.match(source, /older form-filling agent.*Refresh this tab once/i);
+});
+
 test('unanswered form fields outrank an always-present CAPTCHA checkpoint', () => {
   const source = section('function checkpointFromScan', 'function automatedPageLimit');
   const gaps = source.indexOf('response.analysis?.gaps?.length');
@@ -119,6 +127,24 @@ test('conditional same-page work is rescanned with a hard pass limit before adva
   assert.ok(rescanIndex < advanceIndex);
 });
 
+test('BenefitsCal overview must reach a different route and cannot loop on reload', () => {
+  const wait = section('async function waitForNextPage', 'async function rescanCurrentPageAfterFill');
+  assert.match(wait, /benefitsCalOverview/);
+  assert.match(wait, /commandLocation\(tab\.url\) === previousLocation/);
+  assert.match(wait, /stopped after one attempt instead of reloading it again/);
+});
+
+test('manual autonomous runs keep the application dashboard and per-card progress visible', () => {
+  const progress = section('function setApplicationProgress', 'function renderError');
+  const card = section('function applicationCard', 'function renderDashboard');
+  const click = section('async function onClick', 'async function onSubmit');
+  const submit = section('async function onSubmit', 'function previewRuntime');
+  assert.match(progress, /application\.runProgress = message/);
+  assert.match(card, /running \? application\.runProgress/);
+  assert.match(click, /action === 'run'[\s\S]*state\.view = 'dashboard'[\s\S]*background: true/);
+  assert.match(submit, /if \(application\.autoRun\)[\s\S]*state\.view = 'dashboard'[\s\S]*background: true/);
+});
+
 test('zero-write scans retain observed evidence and conditional rescans merge it safely', () => {
   const { mergeVerifiedProvenance, provenanceForScan } = provenanceHelpers();
   const firstScan = provenanceForScan([], [{
@@ -157,4 +183,11 @@ test('zero-write scans retain observed evidence and conditional rescans merge it
   assert.equal(replaced.length, 2);
   assert.equal(replaced[1].value, '••••8765');
   assert.equal(replaced[1].source, 'record');
+});
+
+test('multi-select gap answers fan out to explicit yes and no checkbox writes', () => {
+  assert.match(panel, /gap\.inputType === 'multi_choice'/);
+  assert.match(panel, /data\.getAll\(`answer-\$\{index\}`\)/);
+  assert.match(panel, /selected\.includes\('__none__'\)/);
+  assert.match(panel, /chosen\.has\(member\.fieldKey\) \? 'no' : 'yes'/);
 });

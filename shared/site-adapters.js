@@ -169,6 +169,14 @@
 
   function wicPolicy(field) {
     const id = String(field.id || '');
+    const applicantCategory = {
+      decisionGroupKey: 'wic:applicant-category',
+      decisionGroupQuestion: 'Please select all that apply',
+    };
+    const appointmentMethods = {
+      decisionGroupKey: 'wic:appointment-methods',
+      decisionGroupQuestion: 'Which WIC appointment methods should be authorized?',
+    };
     const policies = {
       'edit-name': { purpose: 'fullName' },
       'edit-date-of-birth': { purpose: 'dateOfBirth', required: true },
@@ -178,14 +186,14 @@
       'edit-email': { purpose: 'email' },
       'edit-what-is-your-preferred-language': { purpose: 'primaryLanguage' },
       'edit-if-yes': { purpose: 'mediCalCaseNumber', sensitive: true },
-      'edit-please-select-all-that-apply-pregnant': { purpose: 'pregnant' },
-      'edit-please-select-all-that-apply-post-partum': { purpose: 'wicPostpartum' },
-      'edit-please-select-all-that-apply-infant-breastfeeding': { purpose: 'wicBreastfeedingInfant' },
-      'edit-please-select-all-that-apply-infant-formula': { purpose: 'wicFormulaInfant' },
-      'edit-please-select-all-that-apply-childrentoddler-0-5': { purpose: 'wicChildUnderFive' },
-      'edit-i-authorize-my-wic-appointments-select-all-that-apply-in-person': { purpose: 'wicAppointmentInPerson' },
-      'edit-i-authorize-my-wic-appointments-select-all-that-apply-virtual-phone': { purpose: 'wicAppointmentPhone' },
-      'edit-i-authorize-my-wic-appointments-select-all-that-apply-telehealth-video': { purpose: 'wicAppointmentVideo' },
+      'edit-please-select-all-that-apply-pregnant': { purpose: 'pregnant', ...applicantCategory },
+      'edit-please-select-all-that-apply-post-partum': { purpose: 'wicPostpartum', ...applicantCategory },
+      'edit-please-select-all-that-apply-infant-breastfeeding': { purpose: 'wicBreastfeedingInfant', ...applicantCategory },
+      'edit-please-select-all-that-apply-infant-formula': { purpose: 'wicFormulaInfant', ...applicantCategory },
+      'edit-please-select-all-that-apply-childrentoddler-0-5': { purpose: 'wicChildUnderFive', ...applicantCategory },
+      'edit-i-authorize-my-wic-appointments-select-all-that-apply-in-person': { purpose: 'wicAppointmentInPerson', ...appointmentMethods },
+      'edit-i-authorize-my-wic-appointments-select-all-that-apply-virtual-phone': { purpose: 'wicAppointmentPhone', ...appointmentMethods },
+      'edit-i-authorize-my-wic-appointments-select-all-that-apply-telehealth-video': { purpose: 'wicAppointmentVideo', ...appointmentMethods },
       'edit-please-choose-the-wic-clinic-closest-to-you': { purpose: 'wicClinic' },
     };
     if (policies[id]) return policies[id];

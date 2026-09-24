@@ -3,6 +3,7 @@
 
   const appRoot = document.getElementById('app');
   const engine = globalThis.NavaFormEngine;
+  const agentPlanner = globalThis.NavaAgenticPlanner;
   const connectorEngine = globalThis.NavaConnectorEngine;
   const workQueueEngine = globalThis.NavaWorkQueueEngine;
   const programCatalog = globalThis.NavaProgramCatalog;
@@ -31,17 +32,22 @@
     participantSessionId: '',
     coordinatorRevision: 0,
     workerId: globalThis.crypto?.randomUUID?.() || `panel-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    agentRuntime: { status: previewMode ? 'preview' : 'checking', message: '' },
+    plannerBase: '',
+    agentProvider: { kind: 'chrome-local' },
   };
 
   const MAX_AUTOMATED_PAGES = 60;
   const DEFAULT_AUTOMATED_PAGES = 12;
   const MAX_SAME_PAGE_FILL_PASSES = 3;
   const MAX_PARALLEL_APPLICATIONS = 3;
+  const PAGE_AGENT_VERSION = 5;
   const TAB_READY_TIMEOUT_MS = 60_000;
   const NAVIGATION_TIMEOUT_MS = 60_000;
   const APPLICATION_LEASE_MS = 2 * 60 * 1000;
   const QUEUE_STORAGE_KEY = 'nava:work-queue';
   const COORDINATOR_STORAGE_KEY = 'nava:assistant-coordinator';
+  const AGENT_PROVIDER_STORAGE_KEY = 'nava:agent-provider';
   const activeRunTokens = new Map();
   let sessionGeneration = 0;
   let uiGeneration = 0;
@@ -372,15 +378,24 @@
       throw new Error('Open a regular website with a form, then try again. Chrome system pages cannot be filled.');
     }
     const messageOptions = documentId ? { documentId } : undefined;
+    let pong = null;
     try {
-      const pong = await chrome.tabs.sendMessage(tab.id, { type: 'NAVA_PING' }, messageOptions);
-      if (pong?.ok) return;
+      pong = await chrome.tabs.sendMessage(tab.id, { type: 'NAVA_PING' }, messageOptions);
     } catch {
+      pong = null;
+    }
+    if (pong?.ok && pong.agentVersion === PAGE_AGENT_VERSION && pong.adaptersReady) return;
+    try {
       await chrome.scripting.executeScript({
         target: documentId ? { tabId: tab.id, documentIds: [documentId] } : { tabId: tab.id },
         files: ['shared/form-engine.js', 'shared/site-adapters.js', 'content/form-agent.js'],
       });
+      const verified = await chrome.tabs.sendMessage(tab.id, { type: 'NAVA_PING' }, messageOptions);
+      if (verified?.ok && verified.agentVersion === PAGE_AGENT_VERSION && verified.adaptersReady) return;
+    } catch {
+      // The actionable error below covers stale and missing page agents.
     }
+    throw new Error('This application tab still has an older form-filling agent. Refresh this tab once after reloading the extension, then scan it again. No form values were changed.');
   }
 
   async function sendToTab(tab, message, { application = null, requireLease = false } = {}) {
@@ -507,6 +522,7 @@
 
   function endApplicationRun(application, token) {
     if (activeRunTokens.get(application.id) === token) activeRunTokens.delete(application.id);
+    application.runProgress = '';
     if (!token.settledResolved) {
       token.settledResolved = true;
       token.resolveSettled();
@@ -1048,6 +1064,149 @@
       </div>`;
   }
 
+  function setApplicationProgress(application, message) {
+    application.runProgress = message;
+    application.updatedAt = new Date().toISOString();
+    renderDashboardIfVisible();
+  }
+
+  function agentProgressMessage(update = {}) {
+    if (update.phase === 'download') {
+      const percent = Number.isFinite(update.progress) && update.progress > 0
+        ? ` ${Math.round(update.progress * 100)}%`
+        : '';
+      return `Downloading Chrome's on-device language model${percent}…`;
+    }
+    if (update.phase === 'starting') {
+      if (state.agentProvider.kind === 'local-cli') {
+        return `Connecting three planner roles to ${state.agentProvider.provider === 'codex' ? 'Codex CLI' : 'Claude Code'}…`;
+      }
+      return 'Starting three on-device form agents…';
+    }
+    if (update.phase === 'planning') return 'Field-mapping and gap-analysis agents are reviewing this page…';
+    if (update.phase === 'reviewing') return 'The independent review agent is checking the proposed plan…';
+    return 'Preparing the on-device form agents…';
+  }
+
+  async function prepareAgentRuntime({ application = null } = {}) {
+    if (previewMode) return { status: 'preview', agents: [] };
+    if (!agentPlanner?.prepare) throw new Error('The agentic planner did not load. Reload the extension and try again.');
+    if (agentPlanner.gatewayConfig) {
+      const gateway = await agentPlanner.gatewayConfig();
+      if (gateway) {
+        state.agentRuntime = {
+          status: 'ready',
+          shared: true,
+          message: 'Planning runs on the shared Nava API. Jev decides the confident missing fields. Filling still happens in this tab.',
+        };
+        return { status: 'ready', agents: ['field_mapper', 'gap_analyst', 'form_reviewer'] };
+      }
+    }
+    if (state.agentRuntime.status === 'ready') return { status: 'ready' };
+    const providerTitle = agentPlanner.runtimeInfo?.().title || 'Agentic AI';
+    state.agentRuntime = { status: 'starting', message: `Starting ${providerTitle}…` };
+    try {
+      const prepared = await agentPlanner.prepare({
+        onProgress(update) {
+          const message = agentProgressMessage(update);
+          state.agentRuntime = { status: update.phase === 'ready' ? 'ready' : update.phase, message };
+          if (application) setApplicationProgress(application, message);
+          else setBusy(message);
+        },
+      });
+      state.agentRuntime = { status: 'ready', message: `${providerTitle} is ready for three planner roles.` };
+      return prepared;
+    } catch (error) {
+      state.agentRuntime = { status: 'unavailable', message: error.message };
+      throw error;
+    }
+  }
+
+  async function restoreAgentProvider() {
+    if (previewMode || !agentPlanner?.configure) return;
+    let stored = null;
+    try {
+      stored = (await chrome.storage.session.get(AGENT_PROVIDER_STORAGE_KEY))[AGENT_PROVIDER_STORAGE_KEY] || null;
+      state.agentProvider = stored || { kind: 'chrome-local' };
+      agentPlanner.configure(state.agentProvider);
+    } catch {
+      state.agentProvider = { kind: 'chrome-local' };
+      agentPlanner.configure(state.agentProvider);
+      if (stored) await chrome.storage.session.remove(AGENT_PROVIDER_STORAGE_KEY);
+    }
+  }
+
+  async function saveAgentProvider(form, uiToken) {
+    if (activeRunTokens.size) throw new Error('Wait for the active application runs to pause before changing the model runtime.');
+    const data = new FormData(form);
+    const selected = String(data.get('modelProvider') || 'chrome-local');
+    const config = selected === 'chrome-local'
+      ? { kind: 'chrome-local' }
+      : {
+        kind: 'local-cli',
+        provider: selected,
+        endpoint: String(data.get('modelEndpoint') || '').trim(),
+        token: String(data.get('modelToken') || '').trim(),
+        model: selected === 'claude' ? 'sonnet' : '',
+      };
+    agentPlanner.configure(config);
+    state.agentProvider = config;
+    state.agentRuntime = { status: 'checking', message: '' };
+    await chrome.storage.session.set({ [AGENT_PROVIDER_STORAGE_KEY]: config });
+    setBusy(`Connecting ${selected === 'chrome-local' ? 'Chrome on-device AI' : `${selected === 'codex' ? 'Codex CLI' : 'Claude Code'} subscription`}…`);
+    await prepareAgentRuntime();
+    assertUiGeneration(uiToken);
+  }
+
+  function renderAgentRuntime() {
+    if (previewMode) {
+      return '<div class="notice"><span aria-hidden="true">AI</span><span><strong>Fixture preview.</strong> Install the extension to run the on-device multi-agent planner.</span></div>';
+    }
+    const ready = state.agentRuntime.status === 'ready';
+    const unavailable = state.agentRuntime.status === 'unavailable';
+    const info = agentPlanner?.runtimeInfo?.() || { kind: 'chrome-local', title: 'Chrome on-device AI', detail: '' };
+    const selectedProvider = state.agentProvider.kind === 'local-cli' ? state.agentProvider.provider : 'chrome-local';
+    const companion = state.agentProvider.kind === 'local-cli';
+    const title = ready ? `${info.title} ready` : unavailable ? `${info.title} unavailable` : 'Agentic AI required';
+    const detail = ready
+      ? (state.agentRuntime.shared
+        ? 'Field mapping and missing-field decisions run on the shared Nava API. Jev handles the confident ones when the API has a TypeSafe key. Filling still happens in this tab, and client values stay out of the planning prompt.'
+        : `${info.detail} The field mapper, gap analyst, and independent reviewer remain separate model calls.`)
+      : unavailable
+        ? (state.agentRuntime.message || (companion
+          ? 'Start the localhost companion and sign the selected CLI in with its subscription account.'
+          : 'This device cannot start Chrome built-in AI. Use Chrome 138 or newer on a supported desktop and enable built-in AI.'))
+        : `${companion ? 'Connect the paired localhost companion' : 'Start Chrome’s on-device model'} before a live form run. Client values are never included in model prompts.`;
+    return `
+      <div class="notice ${unavailable ? 'error' : ''}" style="margin-bottom:16px">
+        <span aria-hidden="true">AI</span>
+        <span><strong>${escapeHtml(title)}.</strong> ${escapeHtml(detail)}</span>
+      </div>
+      ${ready ? '' : '<button class="secondary-button" style="margin-bottom:12px" type="button" data-action="enable-agent">Enable agentic AI</button>'}
+      <details class="model-runtime-settings" style="margin-bottom:16px">
+        <summary>Model runtime</summary>
+        <form id="model-provider-form" class="form-stack compact-form">
+          <label for="model-provider">Brain
+            <select id="model-provider" name="modelProvider">
+              <option value="chrome-local" ${selectedProvider === 'chrome-local' ? 'selected' : ''}>Chrome on-device Gemini Nano</option>
+              <option value="codex" ${selectedProvider === 'codex' ? 'selected' : ''}>Codex subscription via local CLI</option>
+              <option value="claude" ${selectedProvider === 'claude' ? 'selected' : ''}>Claude subscription via local CLI</option>
+            </select>
+          </label>
+          <div id="model-companion-fields" class="form-stack compact-form" ${companion ? '' : 'hidden'}>
+            <label for="model-endpoint">Local companion
+              <input id="model-endpoint" name="modelEndpoint" type="text" value="${escapeHtml(state.agentProvider.endpoint || 'http://127.0.0.1:4174')}" autocomplete="off" spellcheck="false">
+            </label>
+            <label for="model-token">Pairing token
+              <input id="model-token" name="modelToken" type="password" value="${escapeHtml(state.agentProvider.token || '')}" autocomplete="off">
+            </label>
+            <p class="field-hint">Run <code>npm run model:bridge</code> in this repository, then paste its token. Provider credentials never enter Chrome.</p>
+          </div>
+          <button class="small-button secondary" type="submit">Use this model runtime</button>
+        </form>
+      </details>`;
+  }
+
   function renderError() {
     return state.error
       ? `<div class="notice error" role="alert"><span aria-hidden="true">!</span><span>${escapeHtml(state.error)}</span></div>`
@@ -1063,6 +1222,7 @@
           <p class="lede">Choose how you want to bring the client's information into this browser session.</p>
         </div>
         ${renderError()}
+        ${renderAgentRuntime()}
         ${renderConnectorStatus()}
         <div class="stack">
           <button class="choice-button" type="button" data-action="choose-id">
@@ -1082,7 +1242,26 @@
           </button>
         </div>
         <div class="notice" style="margin-top:16px"><span aria-hidden="true">i</span><span>${managedConnector() ? 'Record lookup uses the organization’s read-only connector. Credentials remain in the Nava connector service, never in Chrome.' : 'No production database is connected. All bundled records are fictional.'}</span></div>
+        ${renderPlannerSettings()}
       </section>`;
+  }
+
+  function renderPlannerSettings() {
+    if (previewMode) return '';
+    const configured = Boolean(state.plannerBase);
+    return `
+      <form id="planner-form" class="stack" style="margin-top:16px">
+        <div class="field">
+          <label for="nava-api-base">Shared planner API</label>
+          <input id="nava-api-base" name="navaApiBase" type="url" inputmode="url" autocomplete="off" placeholder="https://api.example.com" value="${escapeHtml(state.plannerBase || '')}">
+          <p class="field-hint">${configured ? 'A tenant key is already saved on this device. Paste a new one only to replace it.' : 'Paste the API address and a tenant key so planning uses the same engine as the Nava API. The key stays in this browser.'}</p>
+        </div>
+        <div class="field">
+          <label for="nava-api-token">Tenant API key</label>
+          <input id="nava-api-token" name="navaApiToken" type="password" autocomplete="off" placeholder="${configured ? 'Saved' : 'nava_…'}">
+        </div>
+        <button class="secondary-button" type="button" data-action="save-planner">Use the shared planner</button>
+      </form>`;
   }
 
   function renderProviderCatalog() {
@@ -1432,6 +1611,7 @@
           <p class="lede">Choose this tab or open one of the known application sites. Each application stays in its own tab.</p>
         </div>
         ${renderError()}
+        ${renderAgentRuntime()}
         <div class="client-chip">
           <div><strong>${escapeHtml(client.name)}</strong><span>${client.recordId ? `Record ${escapeHtml(client.recordId)}` : state.participant?._documentSources?.length ? 'Document import' : 'Pasted client record'}${connectorMeta ? ` · ${escapeHtml(connectorMeta.organizationName)}` : ''}</span>${connectorMeta ? `<span class="source-freshness ${connectorMeta.stale ? 'stale' : ''}">${connectorMeta.freshness === 'unknown' ? 'Source freshness unavailable' : connectorMeta.stale ? 'Source record may be stale' : `Retrieved ${escapeHtml(formatTimestamp(connectorMeta.retrievedAt))}`}</span>` : ''}</div>
           <div class="client-actions">
@@ -1484,6 +1664,55 @@
     return 'Not started';
   }
 
+  function mergeAgenticMetadata(previous, current) {
+    if (!previous) return { ...current, planCount: 1 };
+    const before = previous.usage || {};
+    const after = current.usage || {};
+    const contextKnown = before.contextUsageUnits !== null
+      && before.contextUsageUnits !== undefined
+      && after.contextUsageUnits !== null
+      && after.contextUsageUnits !== undefined;
+    return {
+      ...current,
+      planCount: Number(previous.planCount || 1) + 1,
+      usage: {
+        prompts: Number(before.prompts || 0) + Number(after.prompts || 0),
+        inputCharacters: Number(before.inputCharacters || 0) + Number(after.inputCharacters || 0),
+        outputCharacters: Number(before.outputCharacters || 0) + Number(after.outputCharacters || 0),
+        contextUsageUnits: contextKnown
+          ? Number(before.contextUsageUnits || 0) + Number(after.contextUsageUnits || 0)
+          : null,
+        durationMs: Number(before.durationMs || 0) + Number(after.durationMs || 0),
+        inputTokens: before.inputTokens === null || before.inputTokens === undefined || after.inputTokens === null || after.inputTokens === undefined
+          ? null
+          : Number(before.inputTokens || 0) + Number(after.inputTokens || 0),
+        outputTokens: before.outputTokens === null || before.outputTokens === undefined || after.outputTokens === null || after.outputTokens === undefined
+          ? null
+          : Number(before.outputTokens || 0) + Number(after.outputTokens || 0),
+        apiCostUsd: Number(before.apiCostUsd || 0) + Number(after.apiCostUsd || 0),
+        providerReportedCostUsd: before.providerReportedCostUsd === null || before.providerReportedCostUsd === undefined || after.providerReportedCostUsd === null || after.providerReportedCostUsd === undefined
+          ? null
+          : Number(before.providerReportedCostUsd || 0) + Number(after.providerReportedCostUsd || 0),
+      },
+    };
+  }
+
+  function agentUsageSummary(agentic) {
+    const usage = agentic?.usage;
+    if (!usage) return '';
+    const prompts = Number(usage.prompts || 0);
+    const seconds = Number(usage.durationMs || 0) / 1000;
+    const cost = Number(usage.apiCostUsd || 0);
+    const context = usage.contextUsageUnits === null || usage.contextUsageUnits === undefined
+      ? ''
+      : ` · ${Number(usage.contextUsageUnits).toLocaleString()} context units`;
+    const tokens = usage.inputTokens === null || usage.inputTokens === undefined
+      ? ''
+      : ` · ${Number(usage.inputTokens).toLocaleString()} in / ${Number(usage.outputTokens || 0).toLocaleString()} out tokens`;
+    const subscription = agentic?.billing === 'subscription-allowance-no-direct-api-key';
+    return `${prompts} model prompt${prompts === 1 ? '' : 's'}${context}${tokens} · ${seconds.toFixed(1)}s model time · $${cost.toFixed(2)} direct API-key cost${subscription ? ' · subscription allowance used' : ''}`;
+  }
+
   function applicationCard(application) {
     const running = activeRunTokens.has(application.id);
     const review = application.status === 'ready_for_review';
@@ -1491,7 +1720,8 @@
     const gaps = application.analysis?.gaps?.length || 0;
     const blocked = application.blocked?.length || 0;
     const completedPages = application.completedPages?.length || 0;
-    const note = application.error
+    const note = (running ? application.runProgress : '')
+      || application.error
       || application.runStopReason
       || (blocked ? `${blocked} fields need direct help` : '')
       || (gaps ? `${gaps} answers are needed before this page is complete` : '')
@@ -1544,6 +1774,8 @@
         <p class="card-note"><strong>${escapeHtml(statusLabel(application))}.</strong> ${escapeHtml(note)}</p>
         ${application.owner ? `<p class="ownership-line"><span class="owner-chip ${application.owner.state}">${application.owner.state === 'pending' ? 'Assigned to' : 'Owned by'} ${escapeHtml(application.owner.assignedTo)}</span></p>` : ''}
         ${application.checkpoint ? `<p class="checkpoint-line"><strong>Checkpoint:</strong> ${escapeHtml(application.checkpoint.label)}</p>` : ''}
+        ${application.agentic ? `<p class="automation-badge">AI-reviewed plan · ${Number(application.agentic.approvedMappings || 0)} mapping${Number(application.agentic.approvedMappings || 0) === 1 ? '' : 's'} · ${application.agentic.provider === 'codex' ? 'Codex' : application.agentic.provider === 'claude' ? 'Claude' : 'Gemini Nano'} mapper + gap analyst + reviewer</p>` : ''}
+        ${application.agentic?.usage ? `<p class="card-note">${escapeHtml(agentUsageSummary(application.agentic))}</p>` : ''}
         ${completedPages ? `<p class="automation-badge">✓ ${completedPages} page${completedPages === 1 ? '' : 's'} completed automatically</p>` : ''}
         <div class="card-actions">${actions}</div>
       </article>`;
@@ -1563,6 +1795,7 @@
           <p class="lede">${state.participant ? 'The assistant can resume verified pages and continue across approved application steps. It always stops before certification, signature, or submission.' : 'Application progress survived, but client values expired with the browser session. Reload the source record before any application can resume.'}</p>
         </div>
         ${renderError()}
+        ${renderAgentRuntime()}
         <div class="queue-summary" aria-label="Work queue summary">
           <span><strong>${state.apps.length}</strong> applications</span>
           <span><strong>${state.apps.filter((item) => ['needs_attention', 'paused', 'handoff_pending', 'source_expired'].includes(item.status)).length}</strong> checkpoints</span>
@@ -1654,7 +1887,18 @@
               return `
                 <div class="question-card">
                   <div><p class="question-title">${escapeHtml(gap.question)}</p>${gap.required ? '<p class="field-hint">The form marks this as required.</p>' : ''}</div>
-                  ${gap.inputType === 'choice' && options.length ? `
+                  ${gap.inputType === 'multi_choice' && options.length ? `
+                    <div class="choice-grid">
+                      ${options.map((option) => `
+                        <label class="choice-pill">
+                          <input type="checkbox" name="${name}" value="${escapeHtml(option.value)}">
+                          <span>${escapeHtml(option.label)}</span>
+                        </label>`).join('')}
+                      <label class="choice-pill">
+                        <input type="checkbox" name="${name}" value="__none__">
+                        <span>None of these</span>
+                      </label>
+                    </div>` : gap.inputType === 'choice' && options.length ? `
                     <div class="choice-grid">
                       ${options.map((option) => `
                         <label class="choice-pill">
@@ -1774,6 +2018,7 @@
     application.checkpoint = checkpoint(kind, label);
     application.status = status;
     application.autoRun = false;
+    application.runProgress = '';
     application.updatedAt = new Date().toISOString();
     recordAudit('checkpoint_reached', application, { checkpointKind: kind, toStatus: status });
   }
@@ -1980,6 +2225,60 @@
     }
   }
 
+  function gapFromAgent(rawFields, gap) {
+    const members = (rawFields || []).filter((field) =>
+      field.fieldKey === gap.fieldKey || field.groupKey === gap.fieldKey);
+    const field = members[0] || {};
+    const groupOptions = members.length > 1
+      ? members.map((member) => ({
+        value: member.optionValue ?? member.value ?? member.optionLabel ?? member.label,
+        label: member.optionLabel ?? member.label ?? member.optionValue ?? member.value,
+      }))
+      : (field.options || []).map((option) => ({
+        value: option.value ?? option.optionValue ?? option.label,
+        label: option.label ?? option.optionLabel ?? option.value,
+      }));
+    const choice = groupOptions.length > 0 || ['radio', 'checkbox', 'select-one'].includes(field.type);
+    const label = field.question || field.label || 'Required form question';
+    return {
+      fieldKey: gap.fieldKey,
+      label,
+      purpose: '',
+      question: gap.question || (String(label).endsWith('?') ? label : `What should I enter for ${String(label).toLowerCase()}?`),
+      kind: choice ? 'decision' : 'required',
+      required: Boolean(field.required),
+      inputType: choice ? 'choice' : 'text',
+      options: groupOptions,
+      sensitive: Boolean(field.sensitive),
+      agentReason: gap.reason || '',
+    };
+  }
+
+  function analysisFromAgentPlan(response, participant, plan) {
+    const analysis = engine.buildAnalysis(response.fields || [], participant, {
+      purposeOverrides: plan.purposeOverrides,
+      requirePurposeOverrides: true,
+    });
+    const suggestedGaps = new Map((plan.gaps || []).map((gap) => [gap.fieldKey, gap]));
+    const gaps = analysis.gaps.map((gap) => {
+      const coveredKeys = [gap.fieldKey, ...(gap.members || []).map((member) => member.fieldKey)];
+      const suggestion = coveredKeys.map((fieldKey) => suggestedGaps.get(fieldKey)).find(Boolean);
+      if (!suggestion) return gap;
+      coveredKeys.forEach((fieldKey) => suggestedGaps.delete(fieldKey));
+      return {
+        ...gap,
+        question: gap.inputType === 'multi_choice' ? gap.question : (suggestion.question || gap.question),
+        agentReason: suggestion.reason || '',
+      };
+    });
+    suggestedGaps.forEach((gap) => gaps.push(gapFromAgent(response.fields || [], gap)));
+    return {
+      ...analysis,
+      gaps,
+      counts: { ...analysis.counts, missing: gaps.length },
+    };
+  }
+
   async function scanTab(tab, {
     quiet = false,
     applicationId = null,
@@ -2008,9 +2307,10 @@
         previous = {};
       }
     }
+    const participant = participantForApplication(previous);
     const response = await sendToTab(
       tab,
-      { type: 'NAVA_SCAN', participant: participantForApplication(previous) },
+      { type: 'NAVA_SCAN', participant },
       { application: requestedApplication || (previous.id ? previous : null), requireLease: Boolean(runToken) },
     );
     if (uiToken !== null) assertUiGeneration(uiToken);
@@ -2024,9 +2324,31 @@
       assertApprovedApplicationLocation(requestedApplication, observedUrl);
     }
     const id = previous.id || newWorkflowId();
+    let plannedAnalysis = response.analysis;
+    let agentic = previous.agentic || null;
+    let latestAgentUsage = null;
+    if (!previewMode) {
+      if (!Array.isArray(response.fields)) throw new Error('The page agent did not provide a safe field inventory for AI planning. Reload the extension before continuing.');
+      const progressApplication = requestedApplication || (previous.id ? previous : null);
+      await prepareAgentRuntime({ application: progressApplication });
+      const plan = await agentPlanner.plan({
+        engine,
+        page: response.page,
+        rawFields: response.fields,
+        participant,
+        onProgress(update) {
+          const message = agentProgressMessage(update);
+          if (progressApplication) setApplicationProgress(progressApplication, message);
+          else setBusy(message);
+        },
+      });
+      plannedAnalysis = analysisFromAgentPlan(response, participant, plan);
+      agentic = mergeAgenticMetadata(previous.agentic, plan.metadata);
+      latestAgentUsage = plan.metadata.usage || null;
+    }
     const safeAnalysis = {
-      ...response.analysis,
-      observed: mergeVerifiedProvenance(response.analysis?.observed || []),
+      ...plannedAnalysis,
+      observed: mergeVerifiedProvenance(plannedAnalysis?.observed || []),
     };
     const fieldsFound = safeAnalysis.counts?.fields || 0;
     const canContinue = response.navigationGate?.kind === 'next';
@@ -2039,12 +2361,14 @@
       queueLabel: previous.requestedName || previous.queueLabel || response.playbook?.name || hostLabel(observedUrl),
       url: observedUrl,
       page: response.page,
+      pageTools: response.tools || previous.pageTools || [],
       status: fieldsFound === 0 && !canContinue
         ? 'no_form'
         : safeAnalysis.gaps.length
           ? 'needs_attention'
           : 'ready_to_fill',
       analysis: safeAnalysis,
+      agentic,
       playbook: response.playbook,
       submitGate: response.submitGate,
       navigationGate: response.navigationGate,
@@ -2073,6 +2397,12 @@
     recordAudit('scan_completed', application, {
       fieldCount: safeAnalysis.counts?.fields || 0,
       gapCount: safeAnalysis.gaps?.length || 0,
+      modelRuntime: agentic?.runtime,
+      modelPromptCount: latestAgentUsage?.prompts || 0,
+      modelDurationMs: latestAgentUsage?.durationMs || 0,
+      ...(Number.isFinite(latestAgentUsage?.inputTokens) ? { modelInputTokens: latestAgentUsage.inputTokens } : {}),
+      ...(Number.isFinite(latestAgentUsage?.outputTokens) ? { modelOutputTokens: latestAgentUsage.outputTokens } : {}),
+      modelApiCostMicros: Math.round(Number(latestAgentUsage?.apiCostUsd || 0) * 1_000_000),
       checkpointKind: nextCheckpoint?.kind,
       toStatus: application.status,
     });
@@ -2155,14 +2485,14 @@
     let runToken = null;
     try {
       runToken = await beginApplicationRun(application);
-      application.runStopReason = 'Opening and checking this application automatically…';
+      application.runStopReason = '';
       application.autoRun = true;
-      application.updatedAt = new Date().toISOString();
-      renderDashboardIfVisible();
+      setApplicationProgress(application, 'Opening and checking this application tab…');
       await withApplicationLease(application, async () => {
         assertApplicationRun(application, runToken);
         const tab = await waitForApplicationTab(application, runToken);
         assertApplicationRun(application, runToken);
+        setApplicationProgress(application, 'Scanning this application and matching client data…');
         application = await scanTab(tab, { quiet: true, applicationId, runToken });
         renderDashboardIfVisible();
         const hasKnownAssignments = Boolean(application.analysis?.assignments?.length);
@@ -2280,7 +2610,11 @@
       ? { id: application.tabId, url: application.url }
       : await chrome.tabs.get(application.tabId);
     assertApprovedApplicationLocation(application, tab.url);
-    if (!background) setBusy('Filling the page and checking every value…');
+    if (background) {
+      setApplicationProgress(application, `Filling and verifying page ${(application.completedPages?.length || 0) + 1}…`);
+    } else {
+      setBusy('Filling the page and checking every value…');
+    }
     const assignments = [...(application.analysis?.assignments || []), ...userAssignments];
     recordAudit('fill_started', application, { fieldCount: assignments.length, fromStatus: application.status });
     const response = await sendToTab(tab, { type: 'NAVA_FILL', assignments }, { application, requireLease: true });
@@ -2349,6 +2683,9 @@
     const tabId = application.tabId;
     if (previewMode) return { id: tabId, url: `https://benefitscal.com/ApplyForBenefits/step-${state.previewPage}` };
     const startedAt = Date.now();
+    const previousLocation = commandLocation(application.page?.url || application.url);
+    const benefitsCalOverview = application.workflowId === 'benefitscal'
+      && urlPath(application.page?.url || application.url).toLowerCase() === '/applyforbenefits/begin/abovr';
     let candidateSignature = '';
     let candidateSince = 0;
     while (Date.now() - startedAt < NAVIGATION_TIMEOUT_MS) {
@@ -2357,6 +2694,12 @@
       try {
         const tab = await chrome.tabs.get(tabId);
         if (tab.status !== 'complete') continue;
+        if (benefitsCalOverview && commandLocation(tab.url) === previousLocation) {
+          if (Date.now() - startedAt >= 8_000) {
+            throw new Error('BenefitsCal returned to the same application overview after BEGIN. The assistant stopped after one attempt instead of reloading it again.');
+          }
+          continue;
+        }
         const gate = await navigationStatusFor(tab, application);
         if (!gate?.pageSignature || gate.pageSignature === previousSignature) {
           candidateSignature = '';
@@ -2507,7 +2850,9 @@
         return;
       }
 
-      if (!background) setBusy(`Page ${(current.completedPages?.length || 0) + 1} verified. Moving to the next page…`);
+      const progressMessage = `Page ${(current.completedPages?.length || 0) + 1} verified. Moving to the next page…`;
+      if (background) setApplicationProgress(current, progressMessage);
+      else setBusy(progressMessage);
       assertApplicationRun(current, runToken);
       const advanced = await sendToTab(tab, { type: 'NAVA_ADVANCE' }, { application: current, requireLease: true });
       assertApplicationRun(current, runToken);
@@ -2712,6 +3057,33 @@
     const action = button.dataset.action;
     let uiToken = initialUiGeneration;
     state.error = '';
+    if (action === 'save-planner') {
+      const baseInput = document.getElementById('nava-api-base');
+      const tokenInput = document.getElementById('nava-api-token');
+      const base = String(baseInput?.value || '').trim();
+      const token = String(tokenInput?.value || '').trim();
+      let origin = '';
+      try {
+        origin = new URL(base).origin;
+      } catch {
+        throw new Error('Enter the full API address, including https.');
+      }
+      if (!token && !state.plannerBase) throw new Error('Paste a tenant API key.');
+      const stored = { navaApiBase: origin };
+      if (token) stored.navaApiToken = token;
+      await chrome.storage.local.set(stored);
+      state.plannerBase = origin;
+      await prepareAgentRuntime();
+      assertUiGeneration(uiToken);
+    }
+    if (action === 'enable-agent') {
+      await prepareAgentRuntime();
+      assertUiGeneration(uiToken);
+      const interruptedRuns = state.apps
+        .filter((application) => application.autoRun && ['not_started', 'ready_to_fill'].includes(application.status) && application.tabId)
+        .map((application) => application.id);
+      if (interruptedRuns.length) void enqueueApplicationBatch(interruptedRuns);
+    }
     if (action === 'home') {
       await cancelUiBoundRuns();
       uiToken = cancelPendingUiWork();
@@ -2856,11 +3228,13 @@
         );
       }
       if (action === 'run') {
+        state.view = 'dashboard';
+        render();
         await withNewApplicationRun(
           application,
           (runToken) => withApplicationLease(
             application,
-            () => runThroughApplication(application, [], [], { runToken }),
+            () => runThroughApplication(application, [], [], { background: true, runToken }),
           ),
           { uiBound: true },
         );
@@ -2935,6 +3309,11 @@
   async function onSubmit(form, uiToken = uiGeneration) {
     assertUiGeneration(uiToken);
     state.error = '';
+    if (form.id === 'model-provider-form') {
+      await saveAgentProvider(form, uiToken);
+      render();
+      return;
+    }
     if (form.id === 'handoff-form') {
       const application = state.apps.find((item) => item.id === state.handoffApplicationId);
       if (!application) throw new Error('That application is no longer available.');
@@ -3075,6 +3454,8 @@
     if (form.id === 'program-form') {
       const values = new FormData(form).getAll('program');
       if (!values.length) throw new Error('Choose at least one application or the current form.');
+      await prepareAgentRuntime();
+      assertUiGeneration(uiToken);
       const applicationsToRun = [];
       if (values.includes('current')) {
         const activeTab = await getActiveTab();
@@ -3103,6 +3484,25 @@
       const userAssignments = [];
       const unresolved = [];
       (application.analysis?.gaps || []).forEach((gap, index) => {
+        if (gap.inputType === 'multi_choice') {
+          const selected = data.getAll(`answer-${index}`).map((value) => String(value));
+          const noneSelected = selected.includes('__none__');
+          const chosen = new Set(selected.filter((value) => value !== '__none__'));
+          if (!selected.length || (noneSelected && chosen.size)) {
+            unresolved.push(gap);
+            return;
+          }
+          (gap.members || []).forEach((member) => userAssignments.push({
+            fieldKey: member.fieldKey,
+            label: member.label,
+            purpose: member.purpose,
+            value: noneSelected || !chosen.has(member.fieldKey) ? 'no' : 'yes',
+            source: 'user',
+            detail: 'Your answer in this browser session',
+            sensitive: Boolean(member.sensitive),
+          }));
+          return;
+        }
         const answer = String(data.get(`answer-${index}`) || '').trim();
         if (!answer) {
           unresolved.push(gap);
@@ -3119,11 +3519,13 @@
         });
       });
       if (application.autoRun) {
+        state.view = 'dashboard';
+        render();
         await withNewApplicationRun(
           application,
           (runToken) => withApplicationLease(
             application,
-            () => runThroughApplication(application, userAssignments, unresolved, { runToken }),
+            () => runThroughApplication(application, userAssignments, unresolved, { background: true, runToken }),
           ),
           { uiBound: true },
         );
@@ -3387,13 +3789,19 @@
   });
 
   appRoot.addEventListener('change', (event) => {
-    if (event.target.id !== 'connector-provider') return;
-    const provider = connectorEngine.providerDefinition(event.target.value);
-    if (!provider) return;
-    const sourceLabel = document.querySelector('label[for="connector-source-id"]');
-    const sourceInput = document.getElementById('connector-source-id');
-    if (sourceLabel) sourceLabel.textContent = provider.sourceLabel;
-    if (sourceInput) sourceInput.placeholder = provider.sourceLabel;
+    if (event.target.id === 'model-provider') {
+      const fields = document.getElementById('model-companion-fields');
+      if (fields) fields.hidden = event.target.value === 'chrome-local';
+      return;
+    }
+    if (event.target.id === 'connector-provider') {
+      const provider = connectorEngine.providerDefinition(event.target.value);
+      if (!provider) return;
+      const sourceLabel = document.querySelector('label[for="connector-source-id"]');
+      const sourceInput = document.getElementById('connector-source-id');
+      if (sourceLabel) sourceLabel.textContent = provider.sourceLabel;
+      if (sourceInput) sourceInput.placeholder = provider.sourceLabel;
+    }
   });
 
   async function refreshActiveTab() {
@@ -3426,24 +3834,24 @@
     try {
       await restoreConnector();
       await restore();
+      if (!previewMode && chrome.storage?.local?.get) {
+        const stored = await chrome.storage.local.get(['navaApiBase']);
+        state.plannerBase = String(stored?.navaApiBase || '');
+      }
+      await restoreAgentProvider();
       state.activeTab = await getActiveTab();
       assertUiGeneration(uiToken);
       loadPreviewQueueFixture();
       await loadPreviewDocumentFixture(uiToken);
       assertUiGeneration(uiToken);
-      render();
-      if (!previewMode) {
-        const interruptedRuns = state.apps
-          .filter((application) => application.autoRun && ['not_started', 'ready_to_fill'].includes(application.status) && application.tabId)
-          .map((application) => application.id);
-        if (interruptedRuns.length) {
-          void enqueueApplicationBatch(interruptedRuns).catch((error) => {
-            state.error = error.message;
-            state.view = 'dashboard';
-            render();
-          });
-        }
+      if (!previewMode && agentPlanner?.availability) {
+        const availability = await agentPlanner.availability();
+        state.agentRuntime = {
+          status: availability === 'available' ? 'available' : availability,
+          message: availability === 'available' ? 'The on-device model is available.' : '',
+        };
       }
+      render();
     } catch (error) {
       if (error?.name === 'UiCancelledError' || uiToken !== uiGeneration) return;
       state.error = error.message;
