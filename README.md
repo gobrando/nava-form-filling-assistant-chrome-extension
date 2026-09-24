@@ -8,7 +8,7 @@ It is a working local prototype, not a production deployment. It implements flow
 
 ## Architecture disclosure: multi-agent planner with three runtime options
 
-Version 0.10.0 can run the same three roles through Chrome's built-in Gemini Nano Prompt API, a ChatGPT-plan-authenticated Codex CLI, or a Claude-plan-authenticated Claude Code CLI. The Codex and Claude options use a token-paired localhost companion; provider credentials never enter the extension and API-key environment variables are stripped from child processes. A field-mapping agent proposes canonical source mappings, a gap-analysis agent identifies unanswered decisions, and an independent review agent approves or rejects every proposal. Reviewer-approved pairs and versioned known-site hints must pass a local allowlist validator before they reach `shared/form-engine.js`; `content/form-agent.js` then performs bounded scan/write/readback operations. There is no silent non-AI fallback for an unknown live form—if the selected model runtime is unavailable, the run does not start.
+Version 0.11.0 can run the same three roles through Chrome's built-in Gemini Nano Prompt API, a ChatGPT-plan-authenticated Codex CLI, or a Claude-plan-authenticated Claude Code CLI. The Codex and Claude options use a token-paired localhost companion; provider credentials never enter the extension and API-key environment variables are stripped from child processes. A field-mapping agent proposes canonical source mappings, a gap-analysis agent identifies unanswered decisions, and an independent review agent approves or rejects every proposal. Reviewer-approved pairs and versioned known-site hints must pass a local allowlist validator before they reach `shared/form-engine.js`; `content/form-agent.js` then performs bounded scan/write/readback operations. There is no silent non-AI fallback for an unknown live form—if the selected model runtime is unavailable, the run does not start.
 
 The model receives a minimized field inventory and a list of available source-purpose names, not client values. It cannot write the DOM, navigate, solve bot challenges, or submit. The deterministic executor enforces origin/path binding, entity and repeat-field policy, exact safe continuations, readback verification, and the final-submit boundary. This is a real LLM planning vertical slice inspired by Foad's multi-agent skill system; it is not the same deployed production Eve/Vertex service and is not yet evidence of production accuracy on unknown benefits sites.
 
@@ -17,6 +17,7 @@ The page command contract follows [WebMCP's typed-tool pattern](https://develope
 ## What is implemented
 
 - Jillian's main flow: find client → choose applications → dashboard → answer questions → review.
+- A connector-backed recertification status view across the caseworker caseload: explicit due-date urgency, proactive data-readiness questions, caseworker alerts, client outreach drafts, recorded outreach state, and explicit client authorization before an AI run can start.
 - Three role-specific model calls for field mapping, gap analysis, and independent review, with schema-constrained JSON output and a local policy validator. The runtime can be Gemini Nano, Codex CLI with a ChatGPT plan, or Claude Code with a Claude plan.
 - Per-application model accounting: prompt count, context units or token counts when exposed, model time, and direct API-key cost. The on-device and subscription-companion paths report `$0.00` direct API-key cost; subscription calls still consume plan allowance.
 - Local document intake for PDF, PNG, JPEG, WebP, DOCX, TXT, CSV, TSV, and JSON files up to 15 MB.
@@ -62,7 +63,7 @@ The page command contract follows [WebMCP's typed-tool pattern](https://develope
 
 Chrome 138 or newer on a supported desktop is required for the Prompt API. Stock Chrome on an iPad or Android phone or tablet cannot install this extension. A Chromebook can, and so can desktop Chrome. Side-panel buttons and fields grow to a 44px touch target on a narrow or touch screen. The caseworker desk and the client link are ordinary web pages, so those work on a tablet browser. Chrome may require an already-open form tab to be refreshed once after the extension is first loaded. If the AI card reports unavailable, verify Chrome's built-in AI device requirements before attempting a live run, or point the start screen at the shared Nava planner.
 
-Reloading the unpacked extension intentionally invalidates the in-memory client session and its model sessions. Close and reopen the side panel, enable agentic AI again, then reload the authorized client record; durable application checkpoints remain available. Version 0.10.0 retries background startup before showing recovery guidance and rejects stale page-agent code after an extension reload.
+Reloading the unpacked extension intentionally invalidates the in-memory client session and its model sessions. Close and reopen the side panel, enable agentic AI again, then reload the authorized client record; durable application checkpoints remain available. Version 0.11.0 retries background startup before showing recovery guidance and rejects stale page-agent code after an extension reload.
 
 ## Use a Codex or Claude subscription for local testing
 
@@ -146,9 +147,15 @@ OCR is capped at 8 pages, 8 million pixels per attempt, 32 million total process
 
 Run `npm run eval:extraction` to reproduce the published [quality report](evaluation/latest-report.md). See [OCR security and limits](docs/OCR_SECURITY_AND_LIMITS.md) for the threat model, resource budgets, abstention policy, and pilot work still required. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for licenses.
 
+## Recertification workflow
+
+Open **Recertification status** from the assistant home or application dashboard. The view loads explicit renewal dates from the managed connector, sorts the caseload by urgency, and tracks contact/address, household, income, expenses, and supporting-document readiness. It drafts separate caseworker and client notices and asks the client whether they want the AI to prepare the recertification through review. The application launcher remains locked until every information area is current or confirmed and the client has explicitly authorized AI preparation.
+
+The extension does not send email or SMS by itself: client copy is an auditable outreach task that an authorized caseworker sends through an approved channel and marks complete. It also never signs, certifies, or submits. The included rolling schedule uses fictional records. A production deployment needs a connector-provided caseload endpoint, approved messaging service, server-side scheduler, authorization retention policy, and sanctioned route validation. See [recertification status and preparation](docs/RECERTIFICATION_WORKFLOW.md).
+
 ## Resumable work queues and handoff
 
-Version 0.10.0 retains the privacy boundary between short-lived client values and durable operational state:
+Version 0.11.0 retains the privacy boundary between short-lived client values and durable operational state:
 
 - Participant values, document proposals, raw page signatures, and full page URLs remain in `chrome.storage.session` and expire with the browser session.
 - `chrome.storage.local` retains only sanitized queue metadata: workflow/program IDs, application label, approved origin and catalog route prefixes, status, progress counts, checkpoint, owner/handoff state, tab ID, timestamps, and opaque checksums of the saved location and page signature.

@@ -4,6 +4,8 @@
 
 Version 0.10.0 connects a runtime-neutral LLM planner to the constrained executor. Chrome's Gemini Nano Prompt API, a ChatGPT-plan-authenticated Codex CLI, or an eligible-plan Claude Code CLI can run the three distinct roles: field mapper, gap analyst, and independent reviewer. They receive a minimized page inventory and available source-purpose names, never participant values. Reviewer-approved output and versioned known-site hints must pass a local validator before the existing origin, entity, navigation, readback, and no-submit policies permit an action.
 
+Version 0.11.0 adds the first recertification operations slice: connector-supplied due dates across a caseworker caseload, urgency and readiness status, proactive five-area client data collection, caseworker and client notification drafts, outreach tracking, explicit client authorization, and a safety-gated handoff into the agentic application runner. Production notification delivery, scheduled server-side evaluation, and durable authorization records still require an authenticated organization service.
+
 This is an adaptation of Foad's role separation and safety protocol, not the deployed Eve/Vertex service. The downloaded model and extensive installed fixture now pass end to end. The subscription companion is a development bridge, not a production gateway. The immediate milestone is to re-run WIC after the gap/checkbox fix, prove two or more unfocused application tabs make independent progress, add adversarial/prompt-injection and schema-drift cases, and then exercise one sanctioned non-production benefits flow.
 
 ## Status of the three candidate areas
