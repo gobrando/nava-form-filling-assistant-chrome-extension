@@ -524,8 +524,81 @@ schema-constrained data.`,
     return { purposeOverrides, approved, rejected, trustedHintMappings };
   }
 
+  async function gatewayConfig() {
+    if (root.NAVA_PLAN_GATEWAY?.endpoint && root.NAVA_PLAN_GATEWAY?.token) return root.NAVA_PLAN_GATEWAY;
+    const storage = root.chrome?.storage?.local;
+    if (!storage?.get) return null;
+    const stored = await storage.get(['navaApiBase', 'navaApiToken', 'navaPlanModel']);
+    const base = String(stored?.navaApiBase || '').replace(/\/$/, '');
+    const token = String(stored?.navaApiToken || '');
+    if (!base || !token) return null;
+    return { endpoint: `${base}/v1/plan`, token, model: stored.navaPlanModel || undefined };
+  }
+
+  function clampGatewayPlan(plan, fields, sources, allowedPurposes) {
+    const fieldKeys = new Set(fields.map((field) => field.fieldKey));
+    const sourceKeys = new Set(sources.map((source) => source.purpose));
+    const purposeOverrides = {};
+    const approved = [];
+    const rejected = [...(plan.rejected || [])];
+    Object.entries(plan.purposeOverrides || {}).forEach(([fieldKey, purpose]) => {
+      const fromAdapter = (plan.approved || []).some((item) => item.fieldKey === fieldKey && item.purpose === purpose && item.source === 'site-adapter');
+      if (!fieldKeys.has(fieldKey) || !allowedPurposes.has(purpose) || (!sourceKeys.has(purpose) && !fromAdapter)) {
+        rejected.push({
+          fieldKey,
+          purpose: String(purpose || ''),
+          reason: 'The extension rejected a gateway mapping that was outside the inventory, the canonical purposes, or the sources on file.',
+        });
+        return;
+      }
+      purposeOverrides[fieldKey] = purpose;
+      approved.push({ fieldKey, purpose, reason: 'Accepted from the shared planner after a local check.' });
+    });
+    const gaps = (plan.gaps || []).filter((gap) => fieldKeys.has(gap.fieldKey) && !purposeOverrides[gap.fieldKey]);
+    return { ...plan, purposeOverrides, approved, rejected, gaps };
+  }
+
+  async function planThroughGateway(args, gateway) {
+    const fields = redactSourceValues(args.engine, args.participant, groupedInventory(args.rawFields));
+    const sources = sourceInventory(args.engine, args.participant);
+    args.onProgress?.({ phase: 'planning', agents: ROLE_NAMES, runtime: 'nava-api' });
+    const response = await fetch(gateway.endpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${gateway.token}`,
+      },
+      body: JSON.stringify({
+        model: gateway.model,
+        page: { domain: compactText(args.page?.domain, 160) },
+        fields,
+        sources,
+      }),
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.ok || !body.plan) {
+      throw new Error(body?.error || 'The shared planner did not return a plan. No form values were changed.');
+    }
+    const clamped = clampGatewayPlan(
+      body.plan,
+      fields,
+      sources,
+      new Set(Object.keys(args.engine.LABELS || {})),
+    );
+    return {
+      ...clamped,
+      metadata: {
+        ...(body.plan.metadata || {}),
+        runtime: body.plan.metadata?.runtime || 'nava-api',
+        mode: 'shared-engine',
+      },
+    };
+  }
+
   async function plan({ engine, page, rawFields, participant, onProgress } = {}) {
     if (!engine?.canonicalizeParticipant || !engine?.buildAnalysis) throw new Error('The form engine is unavailable.');
+    const gateway = await gatewayConfig();
+    if (gateway) return planThroughGateway({ engine, page, rawFields, participant, onProgress }, gateway);
     await prepare({ onProgress });
     const fields = redactSourceValues(engine, participant, groupedInventory(rawFields));
     const sources = sourceInventory(engine, participant);
@@ -629,6 +702,7 @@ schema-constrained data.`,
   const api = {
     availability,
     configure,
+    gatewayConfig,
     groupedInventory,
     plan,
     prepare,

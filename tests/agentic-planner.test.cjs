@@ -268,6 +268,47 @@ test('parallel application plans never prompt the same model session concurrentl
   assert.deepEqual(runtime.maxActive, { mapper: 1, gaps: 1, reviewer: 1 });
 });
 
+test('a configured Nava API plans the page and the extension drops mappings the inventory does not support', async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.NAVA_PLAN_GATEWAY = { endpoint: 'https://api.test/v1/plan', token: 'nava_test_secret' };
+  let sent = null;
+  globalThis.fetch = async (url, init) => {
+    sent = { url, body: JSON.parse(init.body), authorization: init.headers.authorization };
+    return {
+      ok: true,
+      async json() {
+        return {
+          ok: true,
+          plan: {
+            purposeOverrides: { first: 'firstName', ssn: 'firstName' },
+            approved: [],
+            rejected: [],
+            gaps: [{ fieldKey: 'pregnancy', question: 'Are you pregnant?', reason: 'No source.' }],
+            metadata: { runtime: 'gateway:claude-sonnet-4-6' },
+          },
+        };
+      },
+    };
+  };
+  try {
+    const result = await planner.plan({
+      engine,
+      page: { domain: 'ruhealth.org' },
+      rawFields,
+      participant: { participant: { name: { first: 'Celeste', last: 'Thomas' } } },
+    });
+    assert.equal(sent.url, 'https://api.test/v1/plan');
+    assert.equal(sent.authorization, 'Bearer nava_test_secret');
+    assert.equal(JSON.stringify(sent.body).includes('Celeste'), false);
+    assert.equal(result.purposeOverrides.first, 'firstName');
+    assert.equal(result.purposeOverrides.ssn, undefined);
+    assert.equal(result.metadata.mode, 'shared-engine');
+  } finally {
+    globalThis.fetch = previousFetch;
+    globalThis.NAVA_PLAN_GATEWAY = null;
+  }
+});
+
 test('routes the same redacted three-role plan through a paired subscription companion', async () => {
   const calls = [];
   planner.setBridgeFetchForTests(async (url, options = {}) => {

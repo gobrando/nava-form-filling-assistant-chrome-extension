@@ -33,6 +33,7 @@
     coordinatorRevision: 0,
     workerId: globalThis.crypto?.randomUUID?.() || `panel-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     agentRuntime: { status: previewMode ? 'preview' : 'checking', message: '' },
+    plannerBase: '',
     agentProvider: { kind: 'chrome-local' },
   };
 
@@ -1090,6 +1091,17 @@
   async function prepareAgentRuntime({ application = null } = {}) {
     if (previewMode) return { status: 'preview', agents: [] };
     if (!agentPlanner?.prepare) throw new Error('The agentic planner did not load. Reload the extension and try again.');
+    if (agentPlanner.gatewayConfig) {
+      const gateway = await agentPlanner.gatewayConfig();
+      if (gateway) {
+        state.agentRuntime = {
+          status: 'ready',
+          shared: true,
+          message: 'Planning runs on the shared Nava API. Jev decides the confident missing fields. Filling still happens in this tab.',
+        };
+        return { status: 'ready', agents: ['field_mapper', 'gap_analyst', 'form_reviewer'] };
+      }
+    }
     if (state.agentRuntime.status === 'ready') return { status: 'ready' };
     const providerTitle = agentPlanner.runtimeInfo?.().title || 'Agentic AI';
     state.agentRuntime = { status: 'starting', message: `Starting ${providerTitle}…` };
@@ -1157,7 +1169,9 @@
     const companion = state.agentProvider.kind === 'local-cli';
     const title = ready ? `${info.title} ready` : unavailable ? `${info.title} unavailable` : 'Agentic AI required';
     const detail = ready
-      ? `${info.detail} The field mapper, gap analyst, and independent reviewer remain separate model calls.`
+      ? (state.agentRuntime.shared
+        ? 'Field mapping and missing-field decisions run on the shared Nava API. Jev handles the confident ones when the API has a TypeSafe key. Filling still happens in this tab, and client values stay out of the planning prompt.'
+        : `${info.detail} The field mapper, gap analyst, and independent reviewer remain separate model calls.`)
       : unavailable
         ? (state.agentRuntime.message || (companion
           ? 'Start the localhost companion and sign the selected CLI in with its subscription account.'
@@ -1228,7 +1242,26 @@
           </button>
         </div>
         <div class="notice" style="margin-top:16px"><span aria-hidden="true">i</span><span>${managedConnector() ? 'Record lookup uses the organization’s read-only connector. Credentials remain in the Nava connector service, never in Chrome.' : 'No production database is connected. All bundled records are fictional.'}</span></div>
+        ${renderPlannerSettings()}
       </section>`;
+  }
+
+  function renderPlannerSettings() {
+    if (previewMode) return '';
+    const configured = Boolean(state.plannerBase);
+    return `
+      <form id="planner-form" class="stack" style="margin-top:16px">
+        <div class="field">
+          <label for="nava-api-base">Shared planner API</label>
+          <input id="nava-api-base" name="navaApiBase" type="url" inputmode="url" autocomplete="off" placeholder="https://api.example.com" value="${escapeHtml(state.plannerBase || '')}">
+          <p class="field-hint">${configured ? 'A tenant key is already saved on this device. Paste a new one only to replace it.' : 'Paste the API address and a tenant key so planning uses the same engine as the Nava API. The key stays in this browser.'}</p>
+        </div>
+        <div class="field">
+          <label for="nava-api-token">Tenant API key</label>
+          <input id="nava-api-token" name="navaApiToken" type="password" autocomplete="off" placeholder="${configured ? 'Saved' : 'nava_…'}">
+        </div>
+        <button class="secondary-button" type="button" data-action="save-planner">Use the shared planner</button>
+      </form>`;
   }
 
   function renderProviderCatalog() {
@@ -3024,6 +3057,25 @@
     const action = button.dataset.action;
     let uiToken = initialUiGeneration;
     state.error = '';
+    if (action === 'save-planner') {
+      const baseInput = document.getElementById('nava-api-base');
+      const tokenInput = document.getElementById('nava-api-token');
+      const base = String(baseInput?.value || '').trim();
+      const token = String(tokenInput?.value || '').trim();
+      let origin = '';
+      try {
+        origin = new URL(base).origin;
+      } catch {
+        throw new Error('Enter the full API address, including https.');
+      }
+      if (!token && !state.plannerBase) throw new Error('Paste a tenant API key.');
+      const stored = { navaApiBase: origin };
+      if (token) stored.navaApiToken = token;
+      await chrome.storage.local.set(stored);
+      state.plannerBase = origin;
+      await prepareAgentRuntime();
+      assertUiGeneration(uiToken);
+    }
     if (action === 'enable-agent') {
       await prepareAgentRuntime();
       assertUiGeneration(uiToken);
@@ -3782,6 +3834,10 @@
     try {
       await restoreConnector();
       await restore();
+      if (!previewMode && chrome.storage?.local?.get) {
+        const stored = await chrome.storage.local.get(['navaApiBase']);
+        state.plannerBase = String(stored?.navaApiBase || '');
+      }
       await restoreAgentProvider();
       state.activeTab = await getActiveTab();
       assertUiGeneration(uiToken);
