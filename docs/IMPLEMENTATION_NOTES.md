@@ -14,7 +14,7 @@
 
 ## Architecture
 
-The runtime combines an on-device LLM planner with a deterministic execution and enforcement layer. The model never receives client values and cannot call DOM APIs directly. Three role-specific sessions return schema-constrained mappings and gaps; a local validator and the deterministic executor remain authoritative.
+The runtime combines a selectable LLM planner with a deterministic execution and enforcement layer. The planner can use Chrome's on-device model or a paired localhost Codex/Claude subscription CLI. The model never receives client values and cannot call DOM APIs directly. Three role-specific calls return schema-constrained mappings and gaps; a local validator and the deterministic executor remain authoritative.
 
 ```text
 sidepanel/
@@ -26,7 +26,8 @@ sidepanel/
         ├── chrome.storage.session     participant values + live application details
         ├── chrome.storage.local       connector config + sanitized durable queue metadata
         ├── shared/connector-engine.js label-based schema mapping, validation, provenance
-        ├── shared/agentic-planner.js   Gemini Nano mapper + gap analyst + independent reviewer
+        ├── shared/agentic-planner.js   runtime-neutral mapper + gap analyst + independent reviewer
+        ├── model-bridge/               loopback Codex/Claude subscription CLI companion
         ├── shared/program-catalog.js   current routes, approved origins, BenefitsCal grouping
         ├── shared/site-adapters.js     exact IHSS/WIC field scopes and semantic choices
         ├── shared/work-queue-engine.js resume fingerprints, leases, handoff, audit sanitization
@@ -43,9 +44,9 @@ Nava connector service
 
 All executable extension code ships inside the package; there are no remote scripts or analytics calls. Document parsing remains on-device. A configured managed lookup sends the opaque connection/form/record identifiers to the organization's Nava connector service and receives the requested record through the signed-in browser session.
 
-Chrome's built-in Gemini Nano runtime also executes on-device. Prompts include field keys, labels, questions, option labels, types, requiredness, the page domain, and the names of source purposes that are available. They exclude the page URL/title and the participant's actual names, addresses, dates, identifiers, income, and answers. The page command descriptors follow WebMCP's schema-and-annotation pattern, but native WebMCP is only a progressive enhancement while the proposed API remains in origin trial/flagged development and target sites do not expose compatible tools.
+Chrome's built-in Gemini Nano runtime executes on-device. The optional development companion invokes an already authenticated Codex CLI or Claude Code session on loopback without copying provider credentials into Chrome. All three paths receive field keys, labels, questions, option labels, types, requiredness, the page domain, and names of available source purposes. They exclude the page URL/title and the participant's actual names, addresses, dates, identifiers, income, and answers. The page command descriptors follow WebMCP's schema-and-annotation pattern, but native WebMCP is only a progressive enhancement while the proposed API remains in origin trial/flagged development and target sites do not expose compatible tools.
 
-Each model plan returns value-free prompt, context-usage, duration, and API-cost counters. The local runtime reports no per-token API charge. A future cloud provider must sit behind an authenticated Nava gateway; model-provider secrets never belong in the extension. See [model providers and usage accounting](MODEL_PROVIDERS.md).
+Each model plan returns value-free prompt, context/token, duration, and direct API-cost counters. The local and subscription-companion runtimes report no direct API-key charge; subscription runs still consume plan allowance. A future production cloud provider must sit behind an authenticated Nava gateway; model-provider secrets never belong in the extension. See [model providers and usage accounting](MODEL_PROVIDERS.md).
 
 ## Document intake safety model
 
@@ -69,7 +70,7 @@ Each model plan returns value-free prompt, context-usage, duration, and API-cost
 5. **No durable participant storage.** Client data uses `chrome.storage.session`, which is cleared when the browser session ends. The durable queue stores only workflow metadata, application origins, and opaque URL/page checksums. A restart therefore requires reloading the authorized source before resume.
 6. **Verified resume, not blind replay.** Every resume starts with a read-only scan and rejects missing tabs, stale or expired sources, unaccepted handoffs, changed locations, or changed page signatures before any write.
 7. **Local handoff boundary.** Version 0.6 models assignment, acceptance, named checkpoints, and same-profile write leases. Real multi-caseworker synchronization and identity enforcement belong in an authenticated Nava service.
-8. **Tab-bound multi-application runs.** Known application selections open and start automatically with three workers, including background tabs that have never been focused. BenefitsCal program selections collapse into one workflow; every scan, model plan, fill, and continuation remains bound to the saved tab ID rather than the currently focused tab. Model calls are queued per role because one Gemini Nano session cannot accept overlapping prompts, while separate application workers continue page execution independently. The service worker coordinates client sessions, application revisions, leases, and command dispatch, but the side panel must remain open until a durable service-worker/server job replaces the UI-hosted runner loop.
+8. **Tab-bound multi-application runs.** Known application selections open and start automatically with three workers, including background tabs that have never been focused. BenefitsCal program selections collapse into one workflow; every scan, model plan, fill, and continuation remains bound to the saved tab ID rather than the currently focused tab. Model calls are queued per role so one role session/process is never prompted concurrently, while separate application workers continue page execution independently. The service worker coordinates client sessions, application revisions, leases, and command dispatch, but the side panel must remain open until a durable service-worker/server job replaces the UI-hosted runner loop.
 9. **Entity-scope abstention.** When a page repeats the same canonical person or income purpose, the engine creates explicit entity-scope gaps instead of copying one applicant's value into every row. Reuse is permitted only for exact adapter-owned scopes or strict scalar confirmation pairs.
 10. **Conditional-page convergence.** After a verified write pass, the runner rescans the same approved document up to three times before advancing. Newly revealed required fields become assignments or explicit gaps; a page that keeps changing stops for review.
 11. **Human checkpoint, verified resume.** reCAPTCHA, hCaptcha, Turnstile, and one-time-code signals stop the run. The caseworker completes the challenge on the site and explicitly resumes; the extension verifies that the challenge no longer appears before continuing. No challenge-solving or bypass service is called.

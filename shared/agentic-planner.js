@@ -116,9 +116,103 @@ schema-constrained data.`,
   let preparingPromise = null;
   let roleChains = Object.fromEntries(ROLE_NAMES.map((role) => [role, Promise.resolve()]));
   let runtimeOverride = null;
+  let bridgeFetchOverride = null;
+  let providerConfig = { kind: 'chrome-local' };
+
+  function normalizeBridgeEndpoint(value) {
+    let parsed;
+    try {
+      parsed = new URL(String(value || 'http://127.0.0.1:4174'));
+    } catch {
+      throw new Error('Enter a valid localhost model-companion address.');
+    }
+    if (parsed.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(parsed.hostname) || parsed.username || parsed.password) {
+      throw new Error('The subscription model companion must use http://127.0.0.1 or http://localhost.');
+    }
+    parsed.pathname = parsed.pathname.replace(/\/$/, '');
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString().replace(/\/$/, '');
+  }
+
+  function normalizeProviderConfig(input = {}) {
+    const kind = String(input.kind || 'chrome-local');
+    if (kind === 'chrome-local') return { kind };
+    if (kind !== 'local-cli') throw new Error('Choose a supported model runtime.');
+    const provider = String(input.provider || '');
+    if (!['codex', 'claude'].includes(provider)) throw new Error('Choose Codex or Claude for the local companion.');
+    const token = String(input.token || '').trim();
+    if (token.length < 24 || token.length > 512) throw new Error('Paste the pairing token printed by the local model companion.');
+    return {
+      kind,
+      provider,
+      endpoint: normalizeBridgeEndpoint(input.endpoint),
+      token,
+      model: provider === 'claude' ? compactText(input.model || 'sonnet', 80) : compactText(input.model || '', 120),
+    };
+  }
+
+  function configure(input = {}) {
+    const next = normalizeProviderConfig(input);
+    const changed = JSON.stringify(next) !== JSON.stringify(providerConfig);
+    if (changed) reset();
+    providerConfig = next;
+    return runtimeInfo();
+  }
+
+  function runtimeInfo() {
+    if (providerConfig.kind === 'local-cli') {
+      const providerName = providerConfig.provider === 'codex' ? 'Codex CLI' : 'Claude Code';
+      return {
+        kind: providerConfig.kind,
+        provider: providerConfig.provider,
+        endpoint: providerConfig.endpoint,
+        model: providerConfig.model,
+        title: `${providerName} subscription`,
+        detail: `${providerName} runs through the paired localhost companion and the signed-in subscription allowance.`,
+      };
+    }
+    return {
+      kind: 'chrome-local',
+      title: 'Chrome on-device AI',
+      detail: 'Three separate Gemini Nano sessions run locally in Chrome.',
+    };
+  }
 
   function languageModel() {
     return runtimeOverride || root.LanguageModel || null;
+  }
+
+  function bridgeFetch() {
+    return bridgeFetchOverride || root.fetch?.bind(root) || null;
+  }
+
+  async function bridgeRequest(path, options = {}) {
+    const fetcher = bridgeFetch();
+    if (!fetcher) throw new Error('This browser cannot connect to the local model companion.');
+    let response;
+    try {
+      response = await fetcher(`${providerConfig.endpoint}${path}`, {
+        ...options,
+        headers: {
+          Authorization: `Bearer ${providerConfig.token}`,
+          ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+          ...(options.headers || {}),
+        },
+      });
+    } catch {
+      throw new Error('The local model companion is not reachable. Start `npm run model:bridge`, then use the pairing token it prints.');
+    }
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch {
+      // A structured error below is safer than exposing raw companion output.
+    }
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.error || `The local model companion returned HTTP ${response.status}.`);
+    }
+    return payload;
   }
 
   function normalizedAvailability(value) {
@@ -130,6 +224,15 @@ schema-constrained data.`,
   }
 
   async function availability() {
+    if (providerConfig.kind === 'local-cli') {
+      try {
+        const result = await bridgeRequest('/health');
+        const provider = result.providers?.[providerConfig.provider];
+        return provider?.installed && provider?.subscription ? 'available' : 'unavailable';
+      } catch {
+        return 'unavailable';
+      }
+    }
     const model = languageModel();
     if (!model?.availability || !model?.create) return 'unavailable';
     try {
@@ -158,11 +261,22 @@ schema-constrained data.`,
       preparingPromise = (async () => {
         const status = await availability();
         if (status === 'unavailable') {
+          if (providerConfig.kind === 'local-cli') {
+            throw new Error(`The paired ${providerConfig.provider === 'codex' ? 'Codex CLI' : 'Claude Code'} companion is unavailable. Start \`npm run model:bridge\`, confirm the CLI is signed in with the intended subscription, and reconnect.`);
+          }
           throw new Error('The on-device language model is unavailable. Use Chrome 138 or newer on a supported desktop and enable Chrome built-in AI before starting an agentic run.');
         }
-        onProgress?.({ phase: status === 'available' ? 'starting' : 'download', progress: 0 });
-        const created = await Promise.all(ROLE_NAMES.map(async (role) => [role, await createSession(role, onProgress)]));
-        sessions = Object.fromEntries(created);
+        onProgress?.({
+          phase: status === 'available' ? 'starting' : 'download',
+          progress: 0,
+          provider: providerConfig.kind === 'local-cli' ? providerConfig.provider : 'chrome-local',
+        });
+        if (providerConfig.kind === 'local-cli') {
+          sessions = { bridge: true };
+        } else {
+          const created = await Promise.all(ROLE_NAMES.map(async (role) => [role, await createSession(role, onProgress)]));
+          sessions = Object.fromEntries(created);
+        }
         onProgress?.({ phase: 'ready', progress: 1 });
         return { status: 'ready', agents: ROLE_NAMES };
       })().finally(() => {
@@ -176,6 +290,47 @@ schema-constrained data.`,
     const run = roleChains[role]
       .catch(() => undefined)
       .then(async () => {
+        if (providerConfig.kind === 'local-cli') {
+          const startedAt = Date.now();
+          const result = await bridgeRequest('/v1/role', {
+            method: 'POST',
+            body: JSON.stringify({
+              provider: providerConfig.provider,
+              model: providerConfig.model,
+              role,
+              systemPrompt: SYSTEM_PROMPTS[role],
+              prompt,
+              responseSchema: responseConstraint,
+            }),
+          });
+          const inputTokens = result.usage?.inputTokens;
+          const outputTokens = result.usage?.outputTokens;
+          const providerReportedCostUsd = result.usage?.providerReportedCostUsd;
+          return {
+            text: result.text,
+            usage: {
+              role,
+              prompts: 1,
+              inputCharacters: prompt.length,
+              outputCharacters: String(result.text || '').length,
+              inputTokens: inputTokens === null || inputTokens === undefined || !Number.isFinite(Number(inputTokens))
+                ? null
+                : Number(inputTokens),
+              outputTokens: outputTokens === null || outputTokens === undefined || !Number.isFinite(Number(outputTokens))
+                ? null
+                : Number(outputTokens),
+              contextUsageUnits: null,
+              contextWindow: null,
+              durationMs: Number(result.usage?.durationMs || (Date.now() - startedAt)),
+              apiCostUsd: 0,
+              providerReportedCostUsd: providerReportedCostUsd !== null
+                && providerReportedCostUsd !== undefined
+                && Number.isFinite(Number(providerReportedCostUsd))
+                ? Number(providerReportedCostUsd)
+                : null,
+            },
+          };
+        }
         const session = await sessions[role].clone();
         const startedAt = Date.now();
         const contextUsageBefore = Number.isFinite(Number(session.contextUsage))
@@ -198,7 +353,10 @@ schema-constrained data.`,
                 : Math.max(0, contextUsageAfter - contextUsageBefore),
               contextWindow: Number.isFinite(Number(session.contextWindow)) ? Number(session.contextWindow) : null,
               durationMs: Date.now() - startedAt,
+              inputTokens: null,
+              outputTokens: null,
               apiCostUsd: 0,
+              providerReportedCostUsd: null,
             },
           };
         } finally {
@@ -481,28 +639,42 @@ schema-constrained data.`,
         ? null
         : summary.contextUsageUnits + Number(item.contextUsageUnits || 0),
       durationMs: summary.durationMs + Number(item.durationMs || 0),
+      inputTokens: item.inputTokens === null || summary.inputTokens === null
+        ? null
+        : summary.inputTokens + Number(item.inputTokens || 0),
+      outputTokens: item.outputTokens === null || summary.outputTokens === null
+        ? null
+        : summary.outputTokens + Number(item.outputTokens || 0),
       apiCostUsd: 0,
+      providerReportedCostUsd: item.providerReportedCostUsd === null || summary.providerReportedCostUsd === null
+        ? null
+        : summary.providerReportedCostUsd + Number(item.providerReportedCostUsd || 0),
     }), {
       prompts: 0,
       inputCharacters: 0,
       outputCharacters: 0,
       contextUsageUnits: 0,
       durationMs: 0,
+      inputTokens: 0,
+      outputTokens: 0,
       apiCostUsd: 0,
+      providerReportedCostUsd: 0,
     });
+    const companion = providerConfig.kind === 'local-cli';
     return {
       ...validated,
       gaps: validatedGaps,
       metadata: {
-        runtime: 'chrome-gemini-nano',
-        mode: 'on-device-multi-agent',
+        runtime: companion ? `${providerConfig.provider}-cli-subscription` : 'chrome-gemini-nano',
+        mode: companion ? 'localhost-subscription-multi-agent' : 'on-device-multi-agent',
+        provider: companion ? providerConfig.provider : 'chrome-local',
         agents: ROLE_NAMES,
         proposedMappings: (mapping.mappings || []).length,
         approvedMappings: validated.approved.length,
         rejectedMappings: validated.rejected.length,
         trustedHintMappings: validated.trustedHintMappings,
         usage,
-        billing: 'on-device-no-token-charge',
+        billing: companion ? 'subscription-allowance-no-direct-api-key' : 'on-device-no-token-charge',
         reviewedAt: new Date().toISOString(),
         summary: compactText(review.summary, 400),
       },
@@ -518,10 +690,27 @@ schema-constrained data.`,
 
   function setRuntimeForTests(runtime) {
     reset();
+    providerConfig = { kind: 'chrome-local' };
     runtimeOverride = runtime;
   }
 
-  const api = { availability, gatewayConfig, groupedInventory, plan, prepare, reset, setRuntimeForTests };
+  function setBridgeFetchForTests(fetcher) {
+    reset();
+    bridgeFetchOverride = fetcher;
+  }
+
+  const api = {
+    availability,
+    configure,
+    gatewayConfig,
+    groupedInventory,
+    plan,
+    prepare,
+    reset,
+    runtimeInfo,
+    setBridgeFetchForTests,
+    setRuntimeForTests,
+  };
   root.NavaAgenticPlanner = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

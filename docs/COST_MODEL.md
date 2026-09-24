@@ -4,21 +4,21 @@ Date: 2026-09-23
 
 ## Current prototype
 
-The repository's current marginal model/API usage cost is **$0 per application**:
+The default on-device path has **$0 marginal model API cost per application**:
 
 - form classification, filling, verification, queueing, and handoff logic run locally in Chrome;
 - three Gemini Nano planning roles run through Chrome's on-device Prompt API, with no per-token API charge;
 - PDF/image OCR runs on-device with bundled open-source assets;
-- there is no hosted model/API call in the fill loop; and
+- the default path has no hosted model/API call in the fill loop; and
 - the included connector is a local fictional fixture.
 
 That number excludes caseworker time, engineering, support, security/compliance work, and the user's computer/network. It is not a production quote.
 
 The $0 model/API figure does not mean there is no inference or resource consumption: Gemini Nano runs locally on the user's device. A pilot must measure model availability, one-time download size, prompt latency, retries, battery/CPU/memory impact, electricity, and exception-handling time.
 
-Version 0.9.4 displays value-free usage on each application card and includes model runtime, prompt count, model duration, and API cost in the sanitized activity log. Chrome context-usage units are shown when the runtime exposes them. These counters were not present for runs made before 0.9.4, so old sessions cannot be reconstructed exactly; their on-device model API charge was still `$0.00`.
+Version 0.10.0 also offers local Codex CLI and Claude Code subscription companions for development testing. Those calls report `$0.00 direct API-key cost` because the bridge removes provider API-key variables and requires a subscription-authenticated CLI, but they consume the signed-in plan's allowance and the subscription itself has a price. This is bundled usage, not free inference.
 
-The current extension has no hosted model call. A future authenticated Nava/Foad gateway may route the same schema-constrained roles to Claude or another approved cloud model. That path must return provider token usage and calculated cost, keep provider keys out of Chrome, and remain subject to the same local validator. See [model providers and usage accounting](MODEL_PROVIDERS.md).
+The UI displays value-free runtime, prompt, duration, token/context, and direct API-key cost counters when available. Runs before 0.9.4 cannot be reconstructed. A future production Nava/Foad gateway may route the same schema-constrained roles to an approved hosted model with explicit organization billing; the localhost subscription companion is not that production gateway. See [model providers and usage accounting](MODEL_PROVIDERS.md).
 
 ## Production formula
 

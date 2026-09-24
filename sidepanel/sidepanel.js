@@ -34,6 +34,7 @@
     workerId: globalThis.crypto?.randomUUID?.() || `panel-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     agentRuntime: { status: previewMode ? 'preview' : 'checking', message: '' },
     plannerBase: '',
+    agentProvider: { kind: 'chrome-local' },
   };
 
   const MAX_AUTOMATED_PAGES = 60;
@@ -46,6 +47,7 @@
   const APPLICATION_LEASE_MS = 2 * 60 * 1000;
   const QUEUE_STORAGE_KEY = 'nava:work-queue';
   const COORDINATOR_STORAGE_KEY = 'nava:assistant-coordinator';
+  const AGENT_PROVIDER_STORAGE_KEY = 'nava:agent-provider';
   const activeRunTokens = new Map();
   let sessionGeneration = 0;
   let uiGeneration = 0;
@@ -1075,7 +1077,12 @@
         : '';
       return `Downloading Chrome's on-device language model${percent}…`;
     }
-    if (update.phase === 'starting') return 'Starting three on-device form agents…';
+    if (update.phase === 'starting') {
+      if (state.agentProvider.kind === 'local-cli') {
+        return `Connecting three planner roles to ${state.agentProvider.provider === 'codex' ? 'Codex CLI' : 'Claude Code'}…`;
+      }
+      return 'Starting three on-device form agents…';
+    }
     if (update.phase === 'planning') return 'Field-mapping and gap-analysis agents are reviewing this page…';
     if (update.phase === 'reviewing') return 'The independent review agent is checking the proposed plan…';
     return 'Preparing the on-device form agents…';
@@ -1095,8 +1102,9 @@
         return { status: 'ready', agents: ['field_mapper', 'gap_analyst', 'form_reviewer'] };
       }
     }
-    if (state.agentRuntime.status === 'ready' && !state.agentRuntime.shared) return { status: 'ready' };
-    state.agentRuntime = { status: 'starting', message: 'Starting three on-device form agents…' };
+    if (state.agentRuntime.status === 'ready') return { status: 'ready' };
+    const providerTitle = agentPlanner.runtimeInfo?.().title || 'Agentic AI';
+    state.agentRuntime = { status: 'starting', message: `Starting ${providerTitle}…` };
     try {
       const prepared = await agentPlanner.prepare({
         onProgress(update) {
@@ -1106,12 +1114,48 @@
           else setBusy(message);
         },
       });
-      state.agentRuntime = { status: 'ready', message: 'Three on-device agents are ready.' };
+      state.agentRuntime = { status: 'ready', message: `${providerTitle} is ready for three planner roles.` };
       return prepared;
     } catch (error) {
       state.agentRuntime = { status: 'unavailable', message: error.message };
       throw error;
     }
+  }
+
+  async function restoreAgentProvider() {
+    if (previewMode || !agentPlanner?.configure) return;
+    let stored = null;
+    try {
+      stored = (await chrome.storage.session.get(AGENT_PROVIDER_STORAGE_KEY))[AGENT_PROVIDER_STORAGE_KEY] || null;
+      state.agentProvider = stored || { kind: 'chrome-local' };
+      agentPlanner.configure(state.agentProvider);
+    } catch {
+      state.agentProvider = { kind: 'chrome-local' };
+      agentPlanner.configure(state.agentProvider);
+      if (stored) await chrome.storage.session.remove(AGENT_PROVIDER_STORAGE_KEY);
+    }
+  }
+
+  async function saveAgentProvider(form, uiToken) {
+    if (activeRunTokens.size) throw new Error('Wait for the active application runs to pause before changing the model runtime.');
+    const data = new FormData(form);
+    const selected = String(data.get('modelProvider') || 'chrome-local');
+    const config = selected === 'chrome-local'
+      ? { kind: 'chrome-local' }
+      : {
+        kind: 'local-cli',
+        provider: selected,
+        endpoint: String(data.get('modelEndpoint') || '').trim(),
+        token: String(data.get('modelToken') || '').trim(),
+        model: selected === 'claude' ? 'sonnet' : '',
+      };
+    agentPlanner.configure(config);
+    state.agentProvider = config;
+    state.agentRuntime = { status: 'checking', message: '' };
+    await chrome.storage.session.set({ [AGENT_PROVIDER_STORAGE_KEY]: config });
+    setBusy(`Connecting ${selected === 'chrome-local' ? 'Chrome on-device AI' : `${selected === 'codex' ? 'Codex CLI' : 'Claude Code'} subscription`}…`);
+    await prepareAgentRuntime();
+    assertUiGeneration(uiToken);
   }
 
   function renderAgentRuntime() {
@@ -1120,20 +1164,47 @@
     }
     const ready = state.agentRuntime.status === 'ready';
     const unavailable = state.agentRuntime.status === 'unavailable';
-    const title = ready ? 'Agentic AI ready' : unavailable ? 'On-device AI unavailable' : 'Agentic AI required';
+    const info = agentPlanner?.runtimeInfo?.() || { kind: 'chrome-local', title: 'Chrome on-device AI', detail: '' };
+    const selectedProvider = state.agentProvider.kind === 'local-cli' ? state.agentProvider.provider : 'chrome-local';
+    const companion = state.agentProvider.kind === 'local-cli';
+    const title = ready ? `${info.title} ready` : unavailable ? `${info.title} unavailable` : 'Agentic AI required';
     const detail = ready
       ? (state.agentRuntime.shared
         ? 'Field mapping and missing-field decisions run on the shared Nava API. Jev handles the confident ones when the API has a TypeSafe key. Filling still happens in this tab, and client values stay out of the planning prompt.'
-        : 'Three separate Gemini Nano sessions—field mapper, gap analyst, and reviewer—plan every live page locally in Chrome.')
+        : `${info.detail} The field mapper, gap analyst, and independent reviewer remain separate model calls.`)
       : unavailable
-        ? 'This device cannot start Chrome built-in AI. Use Chrome 138 or newer on a supported desktop and enable built-in AI.'
-        : 'Start Chrome’s on-device model before a live form run. Client values are never included in model prompts.';
+        ? (state.agentRuntime.message || (companion
+          ? 'Start the localhost companion and sign the selected CLI in with its subscription account.'
+          : 'This device cannot start Chrome built-in AI. Use Chrome 138 or newer on a supported desktop and enable built-in AI.'))
+        : `${companion ? 'Connect the paired localhost companion' : 'Start Chrome’s on-device model'} before a live form run. Client values are never included in model prompts.`;
     return `
       <div class="notice ${unavailable ? 'error' : ''}" style="margin-bottom:16px">
         <span aria-hidden="true">AI</span>
         <span><strong>${escapeHtml(title)}.</strong> ${escapeHtml(detail)}</span>
       </div>
-      ${ready ? '' : '<button class="secondary-button" style="margin-bottom:16px" type="button" data-action="enable-agent">Enable agentic AI</button>'}`;
+      ${ready ? '' : '<button class="secondary-button" style="margin-bottom:12px" type="button" data-action="enable-agent">Enable agentic AI</button>'}
+      <details class="model-runtime-settings" style="margin-bottom:16px">
+        <summary>Model runtime</summary>
+        <form id="model-provider-form" class="form-stack compact-form">
+          <label for="model-provider">Brain
+            <select id="model-provider" name="modelProvider">
+              <option value="chrome-local" ${selectedProvider === 'chrome-local' ? 'selected' : ''}>Chrome on-device Gemini Nano</option>
+              <option value="codex" ${selectedProvider === 'codex' ? 'selected' : ''}>Codex subscription via local CLI</option>
+              <option value="claude" ${selectedProvider === 'claude' ? 'selected' : ''}>Claude subscription via local CLI</option>
+            </select>
+          </label>
+          <div id="model-companion-fields" class="form-stack compact-form" ${companion ? '' : 'hidden'}>
+            <label for="model-endpoint">Local companion
+              <input id="model-endpoint" name="modelEndpoint" type="text" value="${escapeHtml(state.agentProvider.endpoint || 'http://127.0.0.1:4174')}" autocomplete="off" spellcheck="false">
+            </label>
+            <label for="model-token">Pairing token
+              <input id="model-token" name="modelToken" type="password" value="${escapeHtml(state.agentProvider.token || '')}" autocomplete="off">
+            </label>
+            <p class="field-hint">Run <code>npm run model:bridge</code> in this repository, then paste its token. Provider credentials never enter Chrome.</p>
+          </div>
+          <button class="small-button secondary" type="submit">Use this model runtime</button>
+        </form>
+      </details>`;
   }
 
   function renderError() {
@@ -1612,7 +1683,16 @@
           ? Number(before.contextUsageUnits || 0) + Number(after.contextUsageUnits || 0)
           : null,
         durationMs: Number(before.durationMs || 0) + Number(after.durationMs || 0),
+        inputTokens: before.inputTokens === null || before.inputTokens === undefined || after.inputTokens === null || after.inputTokens === undefined
+          ? null
+          : Number(before.inputTokens || 0) + Number(after.inputTokens || 0),
+        outputTokens: before.outputTokens === null || before.outputTokens === undefined || after.outputTokens === null || after.outputTokens === undefined
+          ? null
+          : Number(before.outputTokens || 0) + Number(after.outputTokens || 0),
         apiCostUsd: Number(before.apiCostUsd || 0) + Number(after.apiCostUsd || 0),
+        providerReportedCostUsd: before.providerReportedCostUsd === null || before.providerReportedCostUsd === undefined || after.providerReportedCostUsd === null || after.providerReportedCostUsd === undefined
+          ? null
+          : Number(before.providerReportedCostUsd || 0) + Number(after.providerReportedCostUsd || 0),
       },
     };
   }
@@ -1626,7 +1706,11 @@
     const context = usage.contextUsageUnits === null || usage.contextUsageUnits === undefined
       ? ''
       : ` · ${Number(usage.contextUsageUnits).toLocaleString()} context units`;
-    return `${prompts} local model prompt${prompts === 1 ? '' : 's'}${context} · ${seconds.toFixed(1)}s model time · $${cost.toFixed(2)} API cost`;
+    const tokens = usage.inputTokens === null || usage.inputTokens === undefined
+      ? ''
+      : ` · ${Number(usage.inputTokens).toLocaleString()} in / ${Number(usage.outputTokens || 0).toLocaleString()} out tokens`;
+    const subscription = agentic?.billing === 'subscription-allowance-no-direct-api-key';
+    return `${prompts} model prompt${prompts === 1 ? '' : 's'}${context}${tokens} · ${seconds.toFixed(1)}s model time · $${cost.toFixed(2)} direct API-key cost${subscription ? ' · subscription allowance used' : ''}`;
   }
 
   function applicationCard(application) {
@@ -1690,7 +1774,7 @@
         <p class="card-note"><strong>${escapeHtml(statusLabel(application))}.</strong> ${escapeHtml(note)}</p>
         ${application.owner ? `<p class="ownership-line"><span class="owner-chip ${application.owner.state}">${application.owner.state === 'pending' ? 'Assigned to' : 'Owned by'} ${escapeHtml(application.owner.assignedTo)}</span></p>` : ''}
         ${application.checkpoint ? `<p class="checkpoint-line"><strong>Checkpoint:</strong> ${escapeHtml(application.checkpoint.label)}</p>` : ''}
-        ${application.agentic ? `<p class="automation-badge">AI-reviewed plan · ${Number(application.agentic.approvedMappings || 0)} mapping${Number(application.agentic.approvedMappings || 0) === 1 ? '' : 's'} · mapper + gap analyst + reviewer</p>` : ''}
+        ${application.agentic ? `<p class="automation-badge">AI-reviewed plan · ${Number(application.agentic.approvedMappings || 0)} mapping${Number(application.agentic.approvedMappings || 0) === 1 ? '' : 's'} · ${application.agentic.provider === 'codex' ? 'Codex' : application.agentic.provider === 'claude' ? 'Claude' : 'Gemini Nano'} mapper + gap analyst + reviewer</p>` : ''}
         ${application.agentic?.usage ? `<p class="card-note">${escapeHtml(agentUsageSummary(application.agentic))}</p>` : ''}
         ${completedPages ? `<p class="automation-badge">✓ ${completedPages} page${completedPages === 1 ? '' : 's'} completed automatically</p>` : ''}
         <div class="card-actions">${actions}</div>
@@ -2316,6 +2400,8 @@
       modelRuntime: agentic?.runtime,
       modelPromptCount: latestAgentUsage?.prompts || 0,
       modelDurationMs: latestAgentUsage?.durationMs || 0,
+      ...(Number.isFinite(latestAgentUsage?.inputTokens) ? { modelInputTokens: latestAgentUsage.inputTokens } : {}),
+      ...(Number.isFinite(latestAgentUsage?.outputTokens) ? { modelOutputTokens: latestAgentUsage.outputTokens } : {}),
       modelApiCostMicros: Math.round(Number(latestAgentUsage?.apiCostUsd || 0) * 1_000_000),
       checkpointKind: nextCheckpoint?.kind,
       toStatus: application.status,
@@ -3223,6 +3309,11 @@
   async function onSubmit(form, uiToken = uiGeneration) {
     assertUiGeneration(uiToken);
     state.error = '';
+    if (form.id === 'model-provider-form') {
+      await saveAgentProvider(form, uiToken);
+      render();
+      return;
+    }
     if (form.id === 'handoff-form') {
       const application = state.apps.find((item) => item.id === state.handoffApplicationId);
       if (!application) throw new Error('That application is no longer available.');
@@ -3698,13 +3789,19 @@
   });
 
   appRoot.addEventListener('change', (event) => {
-    if (event.target.id !== 'connector-provider') return;
-    const provider = connectorEngine.providerDefinition(event.target.value);
-    if (!provider) return;
-    const sourceLabel = document.querySelector('label[for="connector-source-id"]');
-    const sourceInput = document.getElementById('connector-source-id');
-    if (sourceLabel) sourceLabel.textContent = provider.sourceLabel;
-    if (sourceInput) sourceInput.placeholder = provider.sourceLabel;
+    if (event.target.id === 'model-provider') {
+      const fields = document.getElementById('model-companion-fields');
+      if (fields) fields.hidden = event.target.value === 'chrome-local';
+      return;
+    }
+    if (event.target.id === 'connector-provider') {
+      const provider = connectorEngine.providerDefinition(event.target.value);
+      if (!provider) return;
+      const sourceLabel = document.querySelector('label[for="connector-source-id"]');
+      const sourceInput = document.getElementById('connector-source-id');
+      if (sourceLabel) sourceLabel.textContent = provider.sourceLabel;
+      if (sourceInput) sourceInput.placeholder = provider.sourceLabel;
+    }
   });
 
   async function refreshActiveTab() {
@@ -3741,6 +3838,7 @@
         const stored = await chrome.storage.local.get(['navaApiBase']);
         state.plannerBase = String(stored?.navaApiBase || '');
       }
+      await restoreAgentProvider();
       state.activeTab = await getActiveTab();
       assertUiGeneration(uiToken);
       loadPreviewQueueFixture();

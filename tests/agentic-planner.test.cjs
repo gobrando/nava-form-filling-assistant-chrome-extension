@@ -58,7 +58,10 @@ const rawFields = [
   { fieldKey: 'pregnant-no', groupKey: 'pregnancy', type: 'radio', label: 'No', question: 'Are you pregnant?', optionLabel: 'No', optionValue: 'no' },
 ];
 
-test.afterEach(() => planner.setRuntimeForTests(null));
+test.afterEach(() => {
+  planner.setRuntimeForTests(null);
+  planner.setBridgeFetchForTests(null);
+});
 
 test('bounds the untrusted page inventory before it reaches a model prompt', () => {
   const inventory = planner.groupedInventory(Array.from({ length: 100 }, (_, index) => ({
@@ -304,4 +307,64 @@ test('a configured Nava API plans the page and the extension drops mappings the 
     globalThis.fetch = previousFetch;
     globalThis.NAVA_PLAN_GATEWAY = null;
   }
+});
+
+test('routes the same redacted three-role plan through a paired subscription companion', async () => {
+  const calls = [];
+  planner.setBridgeFetchForTests(async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url.endsWith('/health')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { ok: true, providers: { codex: { installed: true, subscription: true } } };
+        },
+      };
+    }
+    const body = JSON.parse(options.body);
+    const roleResults = {
+      field_mapper: { mappings: [{ fieldKey: 'first', purpose: 'firstName', confidence: 'high', reason: 'Exact first-name label.' }] },
+      gap_analyst: { gaps: [{ fieldKey: 'pregnancy', question: 'Is the client pregnant?', reason: 'No safe source answer.' }] },
+      form_reviewer: { approved: [{ fieldKey: 'first', purpose: 'firstName', reason: 'Exact label.' }], rejected: [], summary: 'Approved.' },
+    };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          ok: true,
+          text: JSON.stringify(roleResults[body.role]),
+          usage: { inputTokens: 40, outputTokens: 10, durationMs: 25, providerReportedCostUsd: null },
+        };
+      },
+    };
+  });
+  planner.configure({
+    kind: 'local-cli',
+    provider: 'codex',
+    endpoint: 'http://127.0.0.1:4174',
+    token: 'test-pairing-token-with-32-characters',
+  });
+
+  const result = await planner.plan({
+    engine,
+    page: { title: "Celeste's Application", domain: 'example.gov' },
+    rawFields,
+    participant: {
+      participant: { name: { first: 'Celeste' }, ssn: '123-45-6789' },
+      contact_information: { email: 'celeste@example.org' },
+    },
+  });
+
+  assert.equal(result.metadata.runtime, 'codex-cli-subscription');
+  assert.equal(result.metadata.mode, 'localhost-subscription-multi-agent');
+  assert.equal(result.metadata.billing, 'subscription-allowance-no-direct-api-key');
+  assert.equal(result.metadata.usage.inputTokens, 120);
+  assert.equal(result.metadata.usage.outputTokens, 30);
+  assert.equal(result.metadata.usage.apiCostUsd, 0);
+  assert.equal(calls.filter((call) => call.url.endsWith('/v1/role')).length, 3);
+  assert.ok(calls.every((call) => call.options.headers.Authorization === 'Bearer test-pairing-token-with-32-characters'));
+  const serializedBodies = calls.filter((call) => call.options.body).map((call) => call.options.body).join('\n');
+  assert.doesNotMatch(serializedBodies, /Celeste|123-45-6789|celeste@example\.org/);
 });

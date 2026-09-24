@@ -2,9 +2,9 @@
 
 ## Agentic planner vertical slice implemented; installed evaluation is next
 
-Version 0.9.4 connects a real on-device LLM planner to the constrained executor. Chrome's Gemini Nano Prompt API runs three distinct sessions: field mapper, gap analyst, and independent reviewer. They receive a minimized page inventory and available source-purpose names, never participant values. Reviewer-approved output and versioned known-site hints must pass a local validator before the existing origin, entity, navigation, readback, and no-submit policies permit an action.
+Version 0.10.0 connects a runtime-neutral LLM planner to the constrained executor. Chrome's Gemini Nano Prompt API, a ChatGPT-plan-authenticated Codex CLI, or an eligible-plan Claude Code CLI can run the three distinct roles: field mapper, gap analyst, and independent reviewer. They receive a minimized page inventory and available source-purpose names, never participant values. Reviewer-approved output and versioned known-site hints must pass a local validator before the existing origin, entity, navigation, readback, and no-submit policies permit an action.
 
-This is an adaptation of Foad's role separation and safety protocol, not the deployed Eve/Vertex service. The downloaded model and extensive installed fixture now pass end to end. The immediate milestone is to re-run WIC after the 0.9.4 gap/checkbox fix, prove two or more unfocused application tabs make independent progress, add adversarial/prompt-injection and schema-drift cases, and then exercise one sanctioned non-production benefits flow. A production decision can compare this private on-device planner with the authorized Nava/Foad or Claude service behind the same schema-constrained boundary.
+This is an adaptation of Foad's role separation and safety protocol, not the deployed Eve/Vertex service. The downloaded model and extensive installed fixture now pass end to end. The subscription companion is a development bridge, not a production gateway. The immediate milestone is to re-run WIC after the gap/checkbox fix, prove two or more unfocused application tabs make independent progress, add adversarial/prompt-injection and schema-drift cases, and then exercise one sanctioned non-production benefits flow.
 
 ## Status of the three candidate areas
 
@@ -69,9 +69,10 @@ The next meaningful step crosses the extension/backend boundary. Build the organ
 - **Completed:** local resumable multi-application queue and same-profile handoff vertical slice.
 - **Completed:** provider-neutral source catalog/contract and 28-field fictional adapter validation.
 - **Completed:** on-device three-agent planning vertical slice with schema-constrained output and local review enforcement.
+- **Completed:** loopback Codex and Claude subscription-CLI provider options with token pairing, CLI auth-mode checks, tool/sandbox restrictions, and value-free usage accounting.
 - **Completed:** installed Chrome evaluation of the downloaded model and passive six-page extensive fixture (28/28 fields, stopped at review).
-- **Next:** installed WIC retest after the 0.9.4 checkbox/gap fix, two or more simultaneous unfocused application tabs, and one sanctioned synthetic benefits flow.
-- **Then:** add an authenticated, server-side model-provider adapter so an organization can choose the on-device runtime or an approved Claude model without placing provider keys or participant values in Chrome; return token usage and calculated cost to the existing value-free accounting surface.
+- **Next:** installed WIC retest with the 0.10.0 package, two or more simultaneous unfocused application tabs, and one sanctioned synthetic benefits flow.
+- **Then:** replace the development-only localhost subscription companion with an authenticated, tenant-bound model gateway for managed production use; keep provider keys and participant values out of Chrome and return calculated organization cost to the existing value-free accounting surface.
 - **Then:** productionize the authenticated Nava connector and work-queue service; pilot one Apricot organization in a sandbox.
 - **Later:** add provider adapters in priority order using the published [coverage matrix](CONNECTOR_COVERAGE.md).
 

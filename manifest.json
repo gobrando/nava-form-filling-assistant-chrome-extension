@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Nava Form-Filling Assistant",
-  "version": "0.9.4",
-  "description": "An on-device multi-agent form assistant that maps fields, finds gaps, fills verified values, and always leaves submission to the caseworker.",
+  "version": "0.10.0",
+  "description": "A multi-agent form assistant with on-device and paired subscription runtimes that fills verified values and leaves submission to the caseworker.",
   "minimum_chrome_version": "138",
   "permissions": [
     "activeTab",
