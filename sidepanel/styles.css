@@ -1316,6 +1316,19 @@ button.connector-status:hover {
   }
 }
 
+@media (pointer: coarse), (max-width: 420px) {
+  button,
+  .small-button,
+  .choice-button,
+  .primary-button,
+  .secondary-button,
+  input,
+  select,
+  textarea {
+    min-height: 44px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
