@@ -73,6 +73,24 @@ const records = {
   },
 };
 
+function isoDateOffset(days) {
+  const now = new Date();
+  const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+const recertificationCases = [
+  {
+    id: 'mock-recert-339619-calfresh', recordId: '339619', displayName: 'Celeste Thomas II', firstName: 'Celeste',
+    programId: 'calfresh', programName: 'CalFresh', dueDate: isoDateOffset(12), preferredContact: 'Email',
+    requirements: {
+      contact: { status: 'current' }, household: { status: 'missing' }, income: { status: 'stale' },
+      expenses: { status: 'missing' }, documents: { status: 'missing' },
+    },
+  },
+];
+
 function json(response, status, payload, origin) {
   response.writeHead(status, {
     'Access-Control-Allow-Credentials': 'true',
@@ -97,7 +115,7 @@ const server = http.createServer((request, response) => {
   if (request.method !== 'GET') return json(response, 405, { ok: false, error: 'Read-only mock: GET requests only.' }, origin);
 
   const url = new URL(request.url, `http://${request.headers.host}`);
-  const match = url.pathname.match(/^\/v1\/connectors\/([^/]+)\/(health|schema|records(?:\/([^/]+))?)$/);
+  const match = url.pathname.match(/^\/v1\/connectors\/([^/]+)\/(health|schema|recertifications|records(?:\/([^/]+))?)$/);
   if (!match || decodeURIComponent(match[1]) !== 'nava-demo') {
     return json(response, 404, { ok: false, error: 'Connector not found.' }, origin);
   }
@@ -111,6 +129,9 @@ const server = http.createServer((request, response) => {
   }
   if ((url.searchParams.get('sourceId') || url.searchParams.get('formId')) !== '99') {
     return json(response, 404, { ok: false, error: 'Source not found.' }, origin);
+  }
+  if (resource === 'recertifications') {
+    return json(response, 200, { ok: true, cases: recertificationCases }, origin);
   }
   const recordId = decodeURIComponent(match[3] || '');
   const record = records[recordId];

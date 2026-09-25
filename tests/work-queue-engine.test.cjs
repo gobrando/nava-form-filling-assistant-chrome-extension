@@ -135,7 +135,13 @@ test('audit export allowlists event details and contains no participant payload'
     modelRuntime: 'chrome-gemini-nano',
     modelPromptCount: 3,
     modelDurationMs: 1250,
+    modelInputCharacters: 24000,
+    modelOutputCharacters: 1800,
+    modelContextUsageUnits: 25800,
+    modelInputTokens: 6100,
+    modelOutputTokens: 450,
     modelApiCostMicros: 0,
+    modelProviderReportedCostMicros: 0,
     participantValue: 'Maria',
     rawUrl: sample.url,
     checkpointKind: 'human_input',
@@ -148,7 +154,13 @@ test('audit export allowlists event details and contains no participant payload'
   assert.equal(exported.events[0].details.modelRuntime, 'chrome-gemini-nano');
   assert.equal(exported.events[0].details.modelPromptCount, 3);
   assert.equal(exported.events[0].details.modelDurationMs, 1250);
+  assert.equal(exported.events[0].details.modelInputCharacters, 24000);
+  assert.equal(exported.events[0].details.modelOutputCharacters, 1800);
+  assert.equal(exported.events[0].details.modelContextUsageUnits, 25800);
+  assert.equal(exported.events[0].details.modelInputTokens, 6100);
+  assert.equal(exported.events[0].details.modelOutputTokens, 450);
   assert.equal(exported.events[0].details.modelApiCostMicros, 0);
+  assert.equal(exported.events[0].details.modelProviderReportedCostMicros, 0);
   assert.equal(exported.events[0].details.participantValue, undefined);
   assert.doesNotMatch(serialized, /Maria|123-45-6789|secret-field-value|record=/);
 });

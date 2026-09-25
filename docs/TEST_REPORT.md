@@ -1,6 +1,6 @@
 # Test report
 
-Date: 2026-09-23
+Date: 2026-09-25
 
 ## Automated checks
 
@@ -11,7 +11,7 @@ npm run check
 npm test
 ```
 
-The 151-test suite exercises the three-agent planner, subscription companion, mapping, parsing, connector, queue, recovery, exact IHSS/WIC adapters, and BenefitsCal navigation logic; deterministically tests exclusive client sessions, per-application revisions and leases, sibling-safe partial persistence during an in-flight command, revoke/command ordering, tab closure, connector invalidation, versioned page-agent readiness, and per-application progress; and checks safety invariants around the no-submit boundary, bounded fill batches, document-bound messaging, allowlisted continuation, conditional rescans, semantic checkbox choices, repeated-entity abstention, OTP/CAPTCHA checkpoints, provider grouping/current routes, and the passive 28-field fixture. It also verifies that three role-specific model calls are created, participant values never enter prompts or bridge request bodies, untrusted page inventories are size-bounded, subscription CLI calls are role/schema constrained, API-key environment variables are stripped, stale model gaps cannot survive an approved mapping, singleton checkboxes retain writable IDs, versioned site hints remain authoritative, missing WIC choices group into the site's two select-all-that-apply questions, usage counters remain value-free, reviewer-invented and low-confidence mappings are rejected locally, and simultaneous application plans never overlap calls on the same model role. A VM harness runs the real content-agent fill path and confirms that benign help text stays valid while a delayed 900 ms value reversion or asynchronous invalid state is blocked. The suite does not replace a sanctioned live-site run or real parallel-tab validation.
+The 161-test suite exercises the three-agent planner, shared Nava planner gateway, subscription companion, mapping, parsing, connector, queue, recovery, recertification scheduling/readiness/authorization, exact IHSS/WIC adapters, and BenefitsCal navigation logic; deterministically tests exclusive client sessions, per-application revisions and leases, sibling-safe partial persistence during an in-flight command, revoke/command ordering, tab closure, connector invalidation, versioned page-agent readiness, per-application progress, Codex token parsing, aggregate model metrics, directly analyzed known-site path policy, and the guarded BenefitsCal overview fallback. It also checks safety invariants around the no-submit boundary, bounded fill batches, document-bound messaging, allowlisted continuation, conditional rescans, semantic checkbox choices, repeated-entity abstention, OTP/CAPTCHA checkpoints, provider grouping/current routes, explicit recertification dates, session-only follow-up notes, client opt-in, and the passive 28-field fixture. A VM harness runs the real content-agent fill path and confirms that benign help text stays valid while a delayed 900 ms value reversion or asynchronous invalid state is blocked. The suite does not replace end-to-end live-site validation, real notification delivery, or real parallel-tab validation.
 
 ### Version 0.9.4 agentic, WIC-correctness, recovery, and human-checkpoint regression
 
@@ -40,8 +40,19 @@ The 151-test suite exercises the three-agent planner, subscription companion, ma
 - The Codex invocation is ephemeral, schema constrained, and read-only in an empty temporary directory. The Claude invocation uses safe mode, disables tools, disables Chrome integration, and disables session persistence.
 - Provider API-key environment variables are removed; health checks require a subscription-authenticated CLI before the extension reports the runtime available.
 - Unit coverage verifies that source values remain absent from all three companion request bodies and that token/duration/direct-API-cost accounting reaches the planner metadata.
-- On 2026-09-23, `npm run model:smoke` completed all three roles through the live localhost companion and a Codex CLI whose login status reported ChatGPT: two synthetic mappings were approved, one missing housing answer remained a gap, and direct API-key cost was `$0.00`. Codex CLI did not expose token counts for this run, so they remained unknown rather than being estimated.
-- Installed-extension end-to-end validation of the companion paths is still pending; the existing 28/28 fixture evidence used Chrome's on-device model. Claude Code is installed on the test machine but was signed out, so no live Claude subscription call is claimed.
+- On 2026-09-25, the installed extension completed all three Codex roles twice on the live Riverside IHSS form. The bridge parsed Codex JSONL usage, totaling 104,510 input and 6,061 output tokens across six prompts and 127.9 seconds of model time; direct API-key cost remained `$0.00` because the signed-in ChatGPT subscription path was used.
+- Claude Code is installed on the test machine but was signed out, so no live Claude subscription call is claimed.
+
+### 2026-09-25 live synthetic-data model benchmark
+
+| Runtime | Live site | Prompts | Model time | Usage | Verified writes | Visible-field coverage | Review-ready |
+| --- | --- | ---: | ---: | --- | ---: | ---: | --- |
+| Chrome Gemini Nano | Riverside County IHSS | 6 | 511.0 s | 35,877 context units | 32/35 (91.4%) | 32/44 (72.7%) | No |
+| Codex subscription CLI | Riverside County IHSS | 6 | 127.9 s | 104,510 input / 6,061 output tokens | 34/37 (91.9%) | 34/44 (77.3%) | No |
+
+Both live runs used fictional record `339619`, wrote values into the actual public IHSS form, and stopped before Section 9 affirmation, Cloudflare, and Submit. Codex correctly filled the applicant SSN and SSI/SSP answer that Gemini Nano left unresolved. Neither run was production-quality: applying for self, mailing-address equality, household IHSS status, and living arrangement remained unanswered, and the gap UI did not surface all of them.
+
+A Codex run on the actual BenefitsCal flow verified the live language-preference page and reached the name-information route. It then exposed a path-policy defect specific to workflows started from an already-open known-site tab. Version 6 of the page agent now expands those tabs to the catalog's approved `/ApplyForBenefits/` path scope and adds a guarded fallback for the special overview BEGIN screen. The fix passes the automated suite and requires an installed-extension reload and live rerun before it is counted as end-to-end evidence. Raw value-free audit logs and the reproducible summary live in `evaluation/model-benchmark/`.
 
 ## Resumable queue and handoff walkthrough
 

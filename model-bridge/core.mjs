@@ -57,6 +57,7 @@ export function commandForProvider(request, paths) {
       '--sandbox', 'read-only',
       '--ignore-user-config',
       '--ignore-rules',
+      '--json',
       '--output-schema', paths.schemaPath,
       '--output-last-message', paths.outputPath,
       '--color', 'never',
@@ -164,6 +165,46 @@ function parseClaudeResult(stdout) {
   };
 }
 
+export function parseCodexUsage(stdout) {
+  const totals = { inputTokens: 0, outputTokens: 0 };
+  let found = false;
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const usage = event.usage || event.token_usage || event.tokenUsage || event.data?.usage || {};
+    const input = numberOrNull(
+      usage.input_tokens
+      ?? usage.inputTokens
+      ?? usage.prompt_tokens
+      ?? usage.promptTokens,
+    );
+    const output = numberOrNull(
+      usage.output_tokens
+      ?? usage.outputTokens
+      ?? usage.completion_tokens
+      ?? usage.completionTokens,
+    );
+    if (input !== null) {
+      totals.inputTokens += input;
+      found = true;
+    }
+    if (output !== null) {
+      totals.outputTokens += output;
+      found = true;
+    }
+  }
+  return {
+    inputTokens: found ? totals.inputTokens : null,
+    outputTokens: found ? totals.outputTokens : null,
+    providerReportedCostUsd: null,
+  };
+}
+
 export async function runRoleRequest(value, {
   spawnImpl = spawn,
   timeoutMs = DEFAULT_TIMEOUT_MS,
@@ -187,7 +228,7 @@ export async function runRoleRequest(value, {
     let parsed;
     if (request.provider === 'codex') {
       const text = await readFile(outputPath, 'utf8');
-      parsed = { text: text.trim(), inputTokens: null, outputTokens: null, providerReportedCostUsd: null };
+      parsed = { text: text.trim(), ...parseCodexUsage(result.stdout) };
     } else {
       parsed = parseClaudeResult(result.stdout);
     }

@@ -65,16 +65,24 @@
     'pageCount',
     'modelPromptCount',
     'modelDurationMs',
+    'modelInputCharacters',
+    'modelOutputCharacters',
+    'modelContextUsageUnits',
     'modelInputTokens',
     'modelOutputTokens',
     'modelApiCostMicros',
+    'modelProviderReportedCostMicros',
   ]);
   const COUNT_MAXIMUMS = {
     modelPromptCount: 1_000,
     modelDurationMs: 600_000,
+    modelInputCharacters: 50_000_000,
+    modelOutputCharacters: 50_000_000,
+    modelContextUsageUnits: 50_000_000,
     modelInputTokens: 5_000_000,
     modelOutputTokens: 5_000_000,
     modelApiCostMicros: 100_000_000,
+    modelProviderReportedCostMicros: 100_000_000,
   };
 
   function cleanText(value, limit = 100) {

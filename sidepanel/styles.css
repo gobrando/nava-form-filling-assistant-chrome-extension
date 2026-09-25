@@ -1307,6 +1307,125 @@ button.connector-status:hover {
   background: var(--soft-line);
 }
 
+.recertification-entry {
+  display: grid;
+  width: 100%;
+  margin-bottom: 14px;
+  padding: 16px;
+  grid-template-columns: 56px 1fr auto;
+  gap: 14px;
+  align-items: center;
+  border: 2px solid #d6b0d0;
+  border-radius: 14px;
+  background: #fff8fe;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.recertification-entry:hover { border-color: var(--plum); }
+.recert-summary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+.recert-card {
+  padding: 16px;
+  border: 1px solid var(--soft-line);
+  border-left: 5px solid var(--plum);
+  border-radius: 12px;
+  background: white;
+}
+
+.recert-card.overdue,
+.recert-card.due,
+.recert-card.urgent { border-left-color: var(--danger); }
+
+.recert-card-top {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.urgency-chip {
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: var(--plum-light);
+  color: var(--plum-dark);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.urgency-chip.overdue,
+.urgency-chip.due,
+.urgency-chip.urgent {
+  background: var(--danger-light);
+  color: var(--danger);
+}
+
+.notification-plan {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.notification-plan article,
+.recert-requirement,
+.recert-consent,
+.ready-recertification {
+  padding: 15px;
+  border: 1px solid var(--soft-line);
+  border-radius: 12px;
+  background: white;
+}
+
+.notification-plan strong,
+.notification-plan p {
+  display: block;
+  margin: 6px 0 0;
+}
+
+.outreach-actions { margin-bottom: 20px; }
+.recert-intake { margin-top: 22px; }
+.recert-requirement { margin: 0; }
+
+.recert-requirement.open {
+  border-color: #d6b0d0;
+  background: #fff8fe;
+}
+
+.recert-requirement legend,
+.recert-consent legend {
+  padding: 0 5px;
+  font-weight: 800;
+}
+
+.recert-requirement p,
+.recert-consent p {
+  margin: 4px 0 12px;
+  color: var(--muted);
+}
+
+.recert-requirement label,
+.recert-consent label {
+  display: block;
+  margin-top: 10px;
+  font-weight: 700;
+}
+
+.recert-requirement select,
+.recert-requirement textarea {
+  width: 100%;
+  margin-top: 6px;
+}
+
+.ready-recertification {
+  margin-top: 18px;
+  border-color: #9bc5ad;
+  background: #f2faf5;
+}
+
+.ready-recertification p { margin-top: 0; }
+
 .loading {
   display: grid;
   min-height: 260px;
@@ -1339,7 +1458,8 @@ button.connector-status:hover {
     font-size: 25px;
   }
 
-  .summary-grid {
+  .summary-grid,
+  .recert-summary {
     grid-template-columns: 1fr;
   }
 

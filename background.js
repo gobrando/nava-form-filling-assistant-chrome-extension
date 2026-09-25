@@ -1,10 +1,12 @@
 import './shared/connector-engine.js';
 import './shared/work-queue-engine.js';
 import './shared/program-catalog.js';
+import './shared/recertification-engine.js';
 
 const connectorEngine = globalThis.NavaConnectorEngine;
 const workQueueEngine = globalThis.NavaWorkQueueEngine;
 const programCatalog = globalThis.NavaProgramCatalog;
+const recertificationEngine = globalThis.NavaRecertificationEngine;
 const CONNECTOR_STORAGE_KEY = 'nava:connector';
 const QUEUE_STORAGE_KEY = 'nava:work-queue';
 const LEASE_STORAGE_KEY = 'nava:application-leases';
@@ -568,6 +570,44 @@ function demoConnectorStatus() {
   };
 }
 
+function isoDateOffset(days, now = new Date()) {
+  const base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  base.setUTCDate(base.getUTCDate() + days);
+  return base.toISOString().slice(0, 10);
+}
+
+function demoRecertifications(now = new Date()) {
+  return recertificationEngine.normalizeCaseload([
+    {
+      id: 'demo-recert-339637-calworks', recordId: '339637', displayName: 'Sawyer Thomas XX', firstName: 'Sawyer',
+      programId: 'calworks', programName: 'CalWORKs', dueDate: isoDateOffset(-3, now), preferredContact: 'Phone',
+      requirements: {
+        contact: { status: 'current' }, household: { status: 'confirmed' }, income: { status: 'current' },
+        expenses: { status: 'confirmed' }, documents: { status: 'current' },
+      },
+      source: 'fictional-demo',
+    },
+    {
+      id: 'demo-recert-339619-calfresh', recordId: '339619', displayName: 'Celeste Thomas II', firstName: 'Celeste',
+      programId: 'calfresh', programName: 'CalFresh', dueDate: isoDateOffset(12, now), preferredContact: 'Email',
+      requirements: {
+        contact: { status: 'current' }, household: { status: 'missing' }, income: { status: 'stale' },
+        expenses: { status: 'missing' }, documents: { status: 'missing' },
+      },
+      source: 'fictional-demo',
+    },
+    {
+      id: 'demo-recert-338618-medical', recordId: '338618', displayName: 'Amelie Thomas I', firstName: 'Amelie',
+      programId: 'medical', programName: 'Medi-Cal', dueDate: isoDateOffset(33, now), preferredContact: 'Email',
+      requirements: {
+        contact: { status: 'stale' }, household: { status: 'missing' }, income: { status: 'missing' },
+        expenses: { status: 'missing' }, documents: { status: 'missing' },
+      },
+      source: 'fictional-demo',
+    },
+  ], { today: now });
+}
+
 async function storedConnector() {
   const saved = await chrome.storage.local.get(CONNECTOR_STORAGE_KEY);
   return saved[CONNECTOR_STORAGE_KEY] || null;
@@ -658,6 +698,20 @@ async function lookupManagedRecord(recordId, saved) {
           ? `Record loaded, but the source was last updated more than ${saved.config.maxAgeDays} days ago.`
         : 'Record loaded from the managed connector.'
       : 'The connector returned no mapped values for that record ID.',
+  };
+}
+
+async function listManagedRecertifications(saved) {
+  const payload = await connectorRequest(saved.config, 'recertifications', connectorSourceQuery(saved.config));
+  const cases = recertificationEngine.normalizeCaseload(payload?.cases || payload?.items || []);
+  return {
+    ok: true,
+    cases,
+    source: 'managed-connector',
+    connector: { organizationName: saved.config.organizationName },
+    message: cases.length
+      ? `${cases.length} recertification record${cases.length === 1 ? '' : 's'} loaded.`
+      : 'The connector returned no upcoming recertifications.',
   };
 }
 
@@ -1340,6 +1394,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       })
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, record: null, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'LIST_RECERTIFICATIONS') {
+    storedConnector()
+      .then((saved) => saved
+        ? listManagedRecertifications(saved)
+        : {
+          ok: true,
+          cases: demoRecertifications(),
+          source: 'fictional-demo',
+          connector: { organizationName: 'Nava fictional test data' },
+          message: 'Fictional recertification caseload loaded.',
+        })
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, cases: [], error: error.message }));
     return true;
   }
 

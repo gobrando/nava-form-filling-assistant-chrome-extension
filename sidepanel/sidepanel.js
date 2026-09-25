@@ -7,6 +7,7 @@
   const connectorEngine = globalThis.NavaConnectorEngine;
   const workQueueEngine = globalThis.NavaWorkQueueEngine;
   const programCatalog = globalThis.NavaProgramCatalog;
+  const recertificationEngine = globalThis.NavaRecertificationEngine;
   const previewMode = new URLSearchParams(location.search).get('preview') === '1'
     || !globalThis.chrome?.runtime?.id;
   const demoMode = new URLSearchParams(location.search).get('demo') === '1';
@@ -35,19 +36,24 @@
     agentRuntime: { status: previewMode ? 'preview' : 'checking', message: '' },
     plannerBase: '',
     agentProvider: { kind: 'chrome-local' },
+    recertifications: [],
+    recertificationWorkspace: {},
+    currentRecertificationId: '',
+    recertificationSource: '',
   };
 
   const MAX_AUTOMATED_PAGES = 60;
   const DEFAULT_AUTOMATED_PAGES = 12;
   const MAX_SAME_PAGE_FILL_PASSES = 3;
   const MAX_PARALLEL_APPLICATIONS = 3;
-  const PAGE_AGENT_VERSION = 5;
+  const PAGE_AGENT_VERSION = 6;
   const TAB_READY_TIMEOUT_MS = 60_000;
   const NAVIGATION_TIMEOUT_MS = 60_000;
   const APPLICATION_LEASE_MS = 2 * 60 * 1000;
   const QUEUE_STORAGE_KEY = 'nava:work-queue';
   const COORDINATOR_STORAGE_KEY = 'nava:assistant-coordinator';
   const AGENT_PROVIDER_STORAGE_KEY = 'nava:agent-provider';
+  const RECERTIFICATION_WORKSPACE_KEY = 'nava:recertification-workspace';
   const activeRunTokens = new Map();
   let sessionGeneration = 0;
   let uiGeneration = 0;
@@ -1213,6 +1219,153 @@
       : '';
   }
 
+  function recertificationById(id = state.currentRecertificationId) {
+    return state.recertifications.find((item) => item.id === id) || null;
+  }
+
+  function recertificationWorkspaceEntry(item) {
+    return {
+      requirements: Object.fromEntries(item.requirements.map((requirement) => [requirement.key, {
+        status: requirement.status,
+        note: requirement.note,
+        confirmedAt: requirement.confirmedAt,
+      }])),
+      consent: item.consent,
+      outreach: item.outreach,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  async function saveRecertificationWorkspace(item) {
+    state.recertificationWorkspace[item.id] = recertificationWorkspaceEntry(item);
+    if (!previewMode) {
+      await chrome.storage.session.set({ [RECERTIFICATION_WORKSPACE_KEY]: state.recertificationWorkspace });
+    }
+  }
+
+  async function loadRecertifications(uiToken = uiGeneration) {
+    setBusy('Checking the recertification caseload…');
+    if (!previewMode) {
+      const stored = await chrome.storage.session.get(RECERTIFICATION_WORKSPACE_KEY);
+      state.recertificationWorkspace = stored[RECERTIFICATION_WORKSPACE_KEY] || {};
+    }
+    const response = await sendRuntime({ type: 'LIST_RECERTIFICATIONS' });
+    assertUiGeneration(uiToken);
+    if (!response?.ok) throw new Error(response?.error || 'The recertification schedule could not be loaded.');
+    state.recertifications = recertificationEngine.normalizeCaseload(response.cases)
+      .map((item) => recertificationEngine.mergeWorkspace(item, state.recertificationWorkspace[item.id]));
+    state.recertificationSource = response.connector?.organizationName || response.source || '';
+    state.view = 'recertifications';
+  }
+
+  function recertificationCard(item) {
+    const open = item.openRequirements.length;
+    const readiness = item.readyToPrepare
+      ? 'Authorized and ready for AI preparation'
+      : open
+        ? `${open} information area${open === 1 ? '' : 's'} need follow-up`
+        : item.consent.status === 'declined'
+          ? 'Client declined AI preparation'
+          : 'Ready to ask for client authorization';
+    return `
+      <article class="recert-card ${escapeHtml(item.urgency.key)}">
+        <div class="recert-card-top">
+          <div><strong>${escapeHtml(item.displayName)}</strong><p class="card-note">${escapeHtml(item.programName)} · due ${escapeHtml(recertificationEngine.dueDateLabel(item.dueDate))}</p></div>
+          <span class="urgency-chip ${escapeHtml(item.urgency.key)}">${escapeHtml(item.urgency.label)}</span>
+        </div>
+        <p class="card-note"><strong>${escapeHtml(readiness)}.</strong> Client outreach: ${escapeHtml(item.outreach.status.replaceAll('_', ' '))}.</p>
+        <div class="card-actions"><button class="secondary-button" type="button" data-action="review-recertification" data-recert="${encoded(item.id)}">Review and follow up</button></div>
+      </article>`;
+  }
+
+  function renderRecertifications() {
+    const summary = recertificationEngine.summarize(state.recertifications);
+    appRoot.innerHTML = `
+      <section>
+        <button class="back-button" type="button" data-action="home"><span aria-hidden="true">←</span> Home</button>
+        <div class="intro">
+          <p class="eyebrow">Recertification status</p>
+          <h1>Upcoming renewals</h1>
+          <p class="lede">Track every due date, collect missing updates before the deadline, and record the client’s choice about AI-assisted preparation.</p>
+        </div>
+        ${renderError()}
+        <div class="notice"><span aria-hidden="true">i</span><span><strong>${escapeHtml(state.recertificationSource || 'Connected caseload')}.</strong> The dashboard alerts the caseworker. Client messages remain drafts until an authorized worker sends them through an approved channel and marks outreach complete.</span></div>
+        <div class="queue-summary recert-summary" aria-label="Recertification summary">
+          <span><strong>${summary.total}</strong> clients</span>
+          <span><strong>${summary.dueWithin45Days}</strong> due soon</span>
+          <span><strong>${summary.needsData}</strong> need data</span>
+          <span><strong>${summary.ready}</strong> AI-ready</span>
+        </div>
+        <div class="stack">${state.recertifications.length ? state.recertifications.map(recertificationCard).join('') : '<div class="notice"><span>✓</span><span>No upcoming recertifications were returned by the connected source.</span></div>'}</div>
+        <p class="field-hint">Due dates must come from the authorized source system. The extension does not estimate renewal dates from program enrollment or benefit history.</p>
+      </section>`;
+  }
+
+  function renderRecertificationDetail() {
+    const item = recertificationById();
+    if (!item) {
+      state.view = 'recertifications';
+      return renderRecertifications();
+    }
+    const notification = recertificationEngine.notificationPlan(item);
+    appRoot.innerHTML = `
+      <section>
+        <button class="back-button" type="button" data-action="back-recertifications"><span aria-hidden="true">←</span> Recertifications</button>
+        <div class="intro">
+          <p class="eyebrow">${escapeHtml(item.programName)} · ${escapeHtml(item.urgency.label)}</p>
+          <h1>${escapeHtml(item.displayName)}</h1>
+          <p class="lede">Due ${escapeHtml(recertificationEngine.dueDateLabel(item.dueDate))}. Verify each information area, complete outreach, and record the client’s explicit choice.</p>
+        </div>
+        ${renderError()}
+        <div class="notification-plan">
+          <article><span class="section-label">CASEWORKER ALERT</span><strong>${escapeHtml(notification.caseworker.title)}</strong><p>${escapeHtml(notification.caseworker.body)}</p></article>
+          <article><span class="section-label">CLIENT MESSAGE DRAFT</span><strong>${escapeHtml(notification.client.title)}</strong><p>${escapeHtml(notification.client.body)}</p><p class="field-hint">Preferred channel: ${escapeHtml(item.outreach.channel)} · ${escapeHtml(item.outreach.status.replaceAll('_', ' '))}</p></article>
+        </div>
+        <div class="card-actions outreach-actions">
+          ${item.outreach.status === 'not_started' ? '<button class="secondary-button" type="button" data-action="draft-recertification-outreach">Create outreach task</button>' : ''}
+          ${item.outreach.status === 'drafted' ? '<button class="secondary-button" type="button" data-action="complete-recertification-outreach">Mark client contacted</button>' : ''}
+          ${item.outreach.status === 'completed' ? '<span class="automation-badge">✓ Client outreach recorded</span>' : ''}
+        </div>
+        <form id="recertification-intake-form" class="stack recert-intake">
+          <div>
+            <p class="section-label">PROACTIVE DATA CHECK</p>
+            <p class="card-note">Ask the client these questions before starting the application. Notes and answers stay in this browser session.</p>
+          </div>
+          ${item.requirements.map((requirement) => `
+            <fieldset class="recert-requirement ${['missing', 'stale'].includes(requirement.status) ? 'open' : ''}">
+              <legend>${escapeHtml(requirement.label)}</legend>
+              <p>${escapeHtml(requirement.question)}</p>
+              <label>Status
+                <select name="requirement-${escapeHtml(requirement.key)}" required>
+                  <option value="missing" ${requirement.status === 'missing' ? 'selected' : ''}>Still needs follow-up</option>
+                  <option value="confirmed" ${requirement.status === 'confirmed' ? 'selected' : ''}>Client confirmed current</option>
+                  <option value="current" ${requirement.status === 'current' ? 'selected' : ''}>Current source data verified</option>
+                  <option value="stale" ${requirement.status === 'stale' ? 'selected' : ''}>Source data may be stale</option>
+                </select>
+              </label>
+              <label>Update or caseworker note
+                <textarea name="note-${escapeHtml(requirement.key)}" rows="2" maxlength="240" placeholder="Record the client-provided update or what is still needed.">${escapeHtml(requirement.note)}</textarea>
+              </label>
+            </fieldset>`).join('')}
+          <fieldset class="recert-consent">
+            <legend>Client authorization</legend>
+            <p>Would you like the AI assistant to prepare your ${escapeHtml(item.programName)} recertification through the review page?</p>
+            <label><input type="radio" name="consent" value="authorized" ${item.consent.status === 'authorized' ? 'checked' : ''}> Yes, prepare it for review</label>
+            <label><input type="radio" name="consent" value="declined" ${item.consent.status === 'declined' ? 'checked' : ''}> No, do not use AI for this recertification</label>
+            <label><input type="radio" name="consent" value="not_asked" ${['not_asked', 'invited'].includes(item.consent.status) ? 'checked' : ''}> Not answered yet</label>
+            <p class="field-hint">Authorization covers preparation and form filling only. The assistant never signs, certifies, or submits.</p>
+          </fieldset>
+          <button class="primary-button" type="submit">Save recertification status</button>
+        </form>
+        ${item.readyToPrepare ? `
+          <div class="ready-recertification">
+            <p><strong>Ready to prepare.</strong> The client authorized AI assistance and every required information area is current or confirmed.</p>
+            <button class="primary-button" type="button" data-action="prepare-recertification">Prepare with AI</button>
+          </div>` : `
+          <div class="notice warning"><span aria-hidden="true">!</span><span>The AI run stays locked until all information areas are current or confirmed and the client explicitly authorizes preparation.</span></div>`}
+      </section>`;
+  }
+
   function renderChoice() {
     appRoot.innerHTML = `
       <section>
@@ -1223,6 +1376,11 @@
         </div>
         ${renderError()}
         ${renderAgentRuntime()}
+        <button class="recertification-entry" type="button" data-action="open-recertifications">
+          <span class="choice-icon" aria-hidden="true">↻</span>
+          <span class="choice-copy"><strong>Recertification status</strong><small>See upcoming renewals across the caseload, gather updates, and request client authorization.</small></span>
+          <span class="chevron" aria-hidden="true">›</span>
+        </button>
         ${renderConnectorStatus()}
         <div class="stack">
           <button class="choice-button" type="button" data-action="choose-id">
@@ -1806,6 +1964,7 @@
           <div class="stack">${apps.map(applicationCard).join('')}</div>` : '').join('')}
         ${state.apps.length ? '' : '<div class="notice"><span>i</span><span>No application has been added yet.</span></div>'}
         <div class="form-actions">
+          <button class="secondary-button" type="button" data-action="open-recertifications">Recertification status</button>
           <button class="secondary-button" type="button" data-action="${state.participant ? 'add-application' : 'reload-source'}">${state.participant ? 'Add another application' : 'Reload client data'}</button>
           <button class="secondary-button" type="button" data-action="export-audit">Export activity log</button>
           <button class="link-button" type="button" data-action="start-over">End this session</button>
@@ -1995,6 +2154,8 @@
       'document-review': renderDocumentReview,
       programs: renderPrograms,
       dashboard: renderDashboard,
+      recertifications: renderRecertifications,
+      'recertification-detail': renderRecertificationDetail,
       handoff: renderHandoff,
       questions: renderQuestions,
       review: renderReview,
@@ -2356,7 +2517,7 @@
     const fieldsFound = safeAnalysis.counts?.fields || 0;
     const canContinue = response.navigationGate?.kind === 'next';
     const nextCheckpoint = checkpointFromScan({ ...response, analysis: safeAnalysis }, fieldsFound);
-    const application = {
+    const application = attachApplicationPolicy({
       ...previous,
       id,
       tabId: tab.id,
@@ -2393,7 +2554,7 @@
         capturedAt: new Date().toISOString(),
       },
       updatedAt: new Date().toISOString(),
-    };
+    });
     const existing = state.apps.findIndex((item) => item.id === id);
     if (existing >= 0) state.apps.splice(existing, 1, application);
     else state.apps.unshift(application);
@@ -2403,9 +2564,15 @@
       modelRuntime: agentic?.runtime,
       modelPromptCount: latestAgentUsage?.prompts || 0,
       modelDurationMs: latestAgentUsage?.durationMs || 0,
+      modelInputCharacters: latestAgentUsage?.inputCharacters || 0,
+      modelOutputCharacters: latestAgentUsage?.outputCharacters || 0,
+      ...(Number.isFinite(latestAgentUsage?.contextUsageUnits) ? { modelContextUsageUnits: latestAgentUsage.contextUsageUnits } : {}),
       ...(Number.isFinite(latestAgentUsage?.inputTokens) ? { modelInputTokens: latestAgentUsage.inputTokens } : {}),
       ...(Number.isFinite(latestAgentUsage?.outputTokens) ? { modelOutputTokens: latestAgentUsage.outputTokens } : {}),
       modelApiCostMicros: Math.round(Number(latestAgentUsage?.apiCostUsd || 0) * 1_000_000),
+      ...(Number.isFinite(latestAgentUsage?.providerReportedCostUsd)
+        ? { modelProviderReportedCostMicros: Math.round(Number(latestAgentUsage.providerReportedCostUsd) * 1_000_000) }
+        : {}),
       checkpointKind: nextCheckpoint?.kind,
       toStatus: application.status,
     });
@@ -3122,6 +3289,30 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  async function prepareRecertification(item, uiToken) {
+    if (!item.readyToPrepare) throw new Error('Complete the data check and record the client’s authorization first.');
+    const activeRecordId = String(state.participant?.record_id || state.participant?.recordId || '');
+    if (state.apps.length && activeRecordId && activeRecordId !== item.recordId) {
+      throw new Error('Finish or end the active client session before loading a different client’s recertification.');
+    }
+    setBusy(`Loading ${item.displayName}'s authorized source record…`);
+    const response = await sendRuntime({ type: 'LOOKUP_RECORD', recordId: item.recordId });
+    assertUiGeneration(uiToken);
+    if (!response?.ok || !response.record) throw new Error(response?.error || response?.message || 'The client record could not be loaded.');
+    if (!activeRecordId || activeRecordId !== item.recordId) await commitParticipant(response.record);
+    assertUiGeneration(uiToken);
+    await prepareAgentRuntime();
+    assertUiGeneration(uiToken);
+    const applications = await openSelectedPrograms([item.programId]);
+    state.view = 'dashboard';
+    await persist({ applicationIds: applications.map((application) => application.id), includeCurrentAppId: true });
+    render();
+    void enqueueApplicationBatch(applications.map((application) => application.id)).catch((error) => {
+      state.error = error.message;
+      if (state.view === 'dashboard') render();
+    });
+  }
+
   async function onClick(button, initialUiGeneration = uiGeneration) {
     const action = button.dataset.action;
     let uiToken = initialUiGeneration;
@@ -3169,6 +3360,27 @@
       state.documentResult = null;
       state.handoffApplicationId = null;
       state.view = canonicalHomeView();
+    }
+    if (action === 'open-recertifications') await loadRecertifications(uiToken);
+    if (action === 'back-recertifications') state.view = 'recertifications';
+    if (action === 'review-recertification') {
+      state.currentRecertificationId = decoded(button.dataset.recert);
+      if (!recertificationById()) throw new Error('That recertification is no longer in the current caseload.');
+      state.view = 'recertification-detail';
+    }
+    if (['draft-recertification-outreach', 'complete-recertification-outreach'].includes(action)) {
+      const item = recertificationById();
+      if (!item) throw new Error('That recertification is no longer in the current caseload.');
+      item.outreach = action === 'draft-recertification-outreach'
+        ? { ...item.outreach, status: 'drafted', completedAt: '' }
+        : { ...item.outreach, status: 'completed', completedAt: new Date().toISOString() };
+      await saveRecertificationWorkspace(item);
+    }
+    if (action === 'prepare-recertification') {
+      const item = recertificationById();
+      if (!item) throw new Error('That recertification is no longer in the current caseload.');
+      await prepareRecertification(item, uiToken);
+      return;
     }
     if (action === 'choose-id') state.view = 'record';
     if (action === 'choose-json') state.view = 'json';
@@ -3387,6 +3599,35 @@
     state.error = '';
     if (form.id === 'model-provider-form') {
       await saveAgentProvider(form, uiToken);
+      render();
+      return;
+    }
+    if (form.id === 'recertification-intake-form') {
+      const item = recertificationById();
+      if (!item) throw new Error('That recertification is no longer in the current caseload.');
+      const data = new FormData(form);
+      const recordedAt = new Date().toISOString();
+      const requirements = Object.fromEntries(item.requirements.map((requirement) => {
+        const status = String(data.get(`requirement-${requirement.key}`) || 'missing');
+        const note = String(data.get(`note-${requirement.key}`) || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+        return [requirement.key, { status, note, confirmedAt: status === 'confirmed' ? recordedAt : '' }];
+      }));
+      const requestedConsent = String(data.get('consent') || 'not_asked');
+      const consentStatus = requestedConsent === 'not_asked' && item.outreach.status !== 'not_started' ? 'invited' : requestedConsent;
+      const updated = recertificationEngine.normalizeCase({
+        ...item,
+        requirements,
+        consent: {
+          status: consentStatus,
+          recordedAt: ['authorized', 'declined'].includes(consentStatus) ? recordedAt : '',
+        },
+        outreach: item.outreach,
+      });
+      const index = state.recertifications.findIndex((candidate) => candidate.id === item.id);
+      state.recertifications.splice(index, 1, updated);
+      await saveRecertificationWorkspace(updated);
+      state.currentRecertificationId = updated.id;
+      state.view = 'recertification-detail';
       render();
       return;
     }
@@ -3685,6 +3926,24 @@
         ok: Boolean(record),
         record,
         message: record ? 'Demo record loaded.' : 'Preview mode only includes demo ID 339619.',
+      });
+    }
+    if (message.type === 'LIST_RECERTIFICATIONS') {
+      const now = new Date();
+      const due = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 12)).toISOString().slice(0, 10);
+      return Promise.resolve({
+        ok: true,
+        source: 'fictional-demo',
+        connector: { organizationName: 'Nava fictional test data' },
+        cases: [{
+          id: 'preview-recert-339619-calfresh', recordId: '339619', displayName: 'Celeste Thomas II', firstName: 'Celeste',
+          programId: 'calfresh', programName: 'CalFresh', dueDate: due, preferredContact: 'Email',
+          requirements: {
+            contact: { status: 'current' }, household: { status: 'missing' }, income: { status: 'stale' },
+            expenses: { status: 'missing' }, documents: { status: 'missing' },
+          },
+          source: 'fictional-demo',
+        }],
       });
     }
     if (message.type === 'OPEN_PROGRAMS') {

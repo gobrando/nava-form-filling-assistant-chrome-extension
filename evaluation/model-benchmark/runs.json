@@ -1,0 +1,117 @@
+{
+  "schema": "nava.form-filling.model-evaluation.v1",
+  "generatedAt": "2026-09-25T18:54:00.000Z",
+  "runs": [
+    {
+      "id": "2026-09-25-gemini-nano-live-ihss-01",
+      "recordedAt": "2026-09-25T18:48:06.539Z",
+      "provider": "chrome-gemini-nano",
+      "scenario": "live-riverside-ihss",
+      "site": "Riverside County IHSS",
+      "url": "https://riversideihss.org/IntakeApp",
+      "liveGovernmentSite": true,
+      "syntheticRecordId": "339619",
+      "outcome": "needs_attention_incomplete",
+      "metrics": {
+        "visibleFields": 44,
+        "attemptedWrites": 35,
+        "verifiedWrites": 32,
+        "blockedWrites": 3,
+        "reportedGaps": 2,
+        "promptCount": 6,
+        "modelDurationMs": 510961,
+        "contextUsageUnits": 35877,
+        "inputTokens": null,
+        "outputTokens": null,
+        "directApiKeyCostUsd": 0
+      },
+      "adjudication": {
+        "verifiedWriteRate": 0.9143,
+        "verifiedCoverage": 0.7273,
+        "reviewReady": false,
+        "correctlyStoppedBeforeSubmit": true,
+        "notes": [
+          "Thirty-two attempted values were read back successfully on the live form.",
+          "The gap UI surfaced applicant SSN and SSI/SSP, but the SSN question was phrased as an entity-disambiguation question even though the applicant source value existed.",
+          "Applying for self, mailing address same, household receiving IHSS, and living arrangement remained unanswered without appearing in the gap analysis.",
+          "The run stopped before the affirmation, Cloudflare challenge, and Submit control."
+        ]
+      },
+      "audit": "gemini-nano-live-ihss-2026-09-25.json"
+    },
+    {
+      "id": "2026-09-25-codex-subscription-live-ihss-01",
+      "recordedAt": "2026-09-25T19:04:19.966Z",
+      "provider": "codex-cli-subscription",
+      "scenario": "live-riverside-ihss",
+      "site": "Riverside County IHSS",
+      "url": "https://riversideihss.org/IntakeApp",
+      "liveGovernmentSite": true,
+      "syntheticRecordId": "339619",
+      "outcome": "needs_attention_incomplete",
+      "metrics": {
+        "visibleFields": 44,
+        "attemptedWrites": 37,
+        "verifiedWrites": 34,
+        "blockedWrites": 3,
+        "reportedGaps": 0,
+        "promptCount": 6,
+        "modelDurationMs": 127853,
+        "contextUsageUnits": null,
+        "inputTokens": 104510,
+        "outputTokens": 6061,
+        "directApiKeyCostUsd": 0
+      },
+      "adjudication": {
+        "verifiedWriteRate": 0.9189,
+        "verifiedCoverage": 0.7727,
+        "reviewReady": false,
+        "correctlyStoppedBeforeSubmit": true,
+        "notes": [
+          "Thirty-four attempted values were read back successfully on the live form.",
+          "Codex correctly filled the applicant SSN and SSI/SSP answer that Gemini Nano left unresolved.",
+          "Applying for self, mailing address same, household receiving IHSS, living arrangement, and spouse or child of a veteran remained unanswered.",
+          "The run stopped before the affirmation, Cloudflare challenge, and Submit control."
+        ]
+      },
+      "audit": "codex-subscription-live-ihss-2026-09-25.json"
+    },
+    {
+      "id": "2026-09-25-codex-subscription-live-benefitscal-01",
+      "recordedAt": "2026-09-25T19:16:35.658Z",
+      "provider": "codex-cli-subscription",
+      "scenario": "live-benefitscal-calfresh-navigation",
+      "site": "BenefitsCal",
+      "url": "https://benefitscal.com/ApplyForBenefits/ABLPR",
+      "liveGovernmentSite": true,
+      "syntheticRecordId": "339619",
+      "outcome": "navigation_checkpoint_before_name_fill",
+      "metrics": {
+        "visibleFields": 4,
+        "attemptedWrites": 0,
+        "verifiedWrites": 0,
+        "blockedWrites": 0,
+        "reportedGaps": 0,
+        "promptCount": 6,
+        "modelDurationMs": 35614,
+        "contextUsageUnits": null,
+        "inputTokens": 88641,
+        "outputTokens": 420,
+        "directApiKeyCostUsd": 0
+      },
+      "adjudication": {
+        "verifiedWriteRate": null,
+        "verifiedCoverage": 0,
+        "reviewReady": false,
+        "correctlyStoppedBeforeSubmit": true,
+        "notes": [
+          "The extension inspected the live language-preference page, verified the existing English defaults, and activated Next.",
+          "BenefitsCal reached the live name-information route, proving the continuation action worked.",
+          "The runner then timed out because a directly analyzed known-site tab retained a one-page path allowlist; the run did not fill the name page.",
+          "The path-policy bug and the overview BEGIN activation fallback were fixed after this run and are covered by the automated suite; a Chrome extension reload is required before retesting."
+        ]
+      },
+      "audit": "codex-subscription-live-benefitscal-2026-09-25.json"
+    }
+  ]
+}
