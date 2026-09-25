@@ -2072,7 +2072,10 @@
           </div>
           <div class="form-actions">
             <button class="primary-button" type="submit">${application.autoRun ? 'Fill and continue automatically' : 'Fill this page'}</button>
+            <button class="secondary-button" type="button" data-action="client-link">Send these questions to the client</button>
           </div>
+          ${renderError()}
+          ${application.clientLink ? `<div class="notice"><span aria-hidden="true">i</span><span>Client link, valid until it expires: ${escapeHtml(application.clientLink)}</span></div>` : ''}
         </form>
       </section>`;
   }
@@ -3206,6 +3209,72 @@
     return rescanned;
   }
 
+  function clientLinkPrograms(programIds) {
+    const ids = (programIds || []).filter(Boolean);
+    const benefitsCal = new Set(['calfresh', 'medical', 'calworks']);
+    if (benefitsCal.has(ids[0])) return ids.filter((id) => benefitsCal.has(id));
+    return ids.slice(0, 1);
+  }
+
+  function apiInputType(gap) {
+    const type = String(gap.inputType || '');
+    if (type === 'multi_choice') return 'checkbox';
+    if (['text', 'select', 'radio', 'checkbox', 'date', 'number'].includes(type)) return type;
+    return Array.isArray(gap.options) && gap.options.length ? 'select' : 'text';
+  }
+
+  /**
+   * Creates an API application for the open questions and returns a link the
+   * client can answer. Values stay in this tab. The request sends questions
+   * only, and the audit log on the API records that an application was added.
+   */
+  async function mintClientLink(application) {
+    const gateway = await agentPlanner.gatewayConfig();
+    if (!gateway) throw new Error('Save the shared planner API address and a tenant key first.');
+    const programIds = clientLinkPrograms(application.programIds);
+    if (!programIds.length) throw new Error('Choose a program before creating a client link.');
+    const questions = (application.analysis?.gaps || []).slice(0, 40).map((gap) => ({
+      fieldKey: String(gap.fieldKey || '').slice(0, 180),
+      label: String(gap.label || gap.fieldKey || 'Question').slice(0, 200),
+      question: String(gap.question || 'What is the answer?').slice(0, 240),
+      required: Boolean(gap.required),
+      inputType: apiInputType(gap),
+      options: (Array.isArray(gap.options) ? gap.options : [])
+        .map((option) => String(option.label || option.value || option))
+        .filter(Boolean)
+        .slice(0, 20),
+    })).filter((gap) => gap.fieldKey && gap.question);
+    if (!questions.length) throw new Error('This page has no questions to send.');
+    const base = gateway.endpoint.replace(/\/v1\/plan$/, '');
+    const headers = {
+      authorization: `Bearer ${gateway.token}`,
+      'content-type': 'application/json',
+    };
+    async function post(path, body) {
+      const response = await fetch(`${base}${path}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error || `The API returned ${response.status}.`);
+      }
+      return payload;
+    }
+    const household = await post('/v1/households', { externalRef: `extension-${application.id}` });
+    const created = await post('/v1/applications', {
+      householdId: household.household.id,
+      programIds,
+      questions,
+    });
+    const share = await post(`/v1/applications/${created.application.id}/share`, {
+      createdBy: 'extension-caseworker',
+    });
+    application.clientLink = share.url;
+    await persist({ applicationIds: [application.id] });
+  }
+
   async function exportAuditLog(uiToken) {
     recordAudit('audit_exported', null);
     await persist({ applicationIds: [] });
@@ -3266,6 +3335,13 @@
       state.plannerBase = origin;
       await prepareAgentRuntime();
       assertUiGeneration(uiToken);
+    }
+    if (action === 'client-link') {
+      const application = state.apps.find((item) => item.id === state.currentAppId);
+      if (!application) return;
+      await mintClientLink(application);
+      assertUiGeneration(uiToken);
+      render();
     }
     if (action === 'enable-agent') {
       await prepareAgentRuntime();
