@@ -1,7 +1,7 @@
 (function installPageAgent() {
   'use strict';
 
-  const PAGE_AGENT_VERSION = 5;
+  const PAGE_AGENT_VERSION = 6;
   if (globalThis.__NAVA_FORM_FILLER_AGENT__?.version === PAGE_AGENT_VERSION) return;
   globalThis.__NAVA_FORM_FILLER_AGENT__ = { version: PAGE_AGENT_VERSION };
 
@@ -773,8 +773,44 @@
     }
     const beforeUrl = location.href;
     const beforeTitle = document.title;
+    try {
+      decision.element.scrollIntoView({ block: 'center', inline: 'center' });
+    } catch {
+      // Some form controls do not expose scrollIntoView in older browser contexts.
+    }
+    const mouseEvent = (type) => {
+      try {
+        decision.element.dispatchEvent(new MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          view: globalThis.window,
+          button: 0,
+          buttons: type === 'mousedown' ? 1 : 0,
+        }));
+      } catch {
+        // HTMLElement.click below remains the standards-based fallback.
+      }
+    };
+    mouseEvent('mouseover');
+    mouseEvent('mousemove');
+    mouseEvent('mousedown');
     decision.element.focus();
+    mouseEvent('mouseup');
     decision.element.click();
+    if (location.hostname.toLowerCase() === 'benefitscal.com'
+      && location.pathname === '/ApplyForBenefits/begin/ABOVR'
+      && engine.normalize(decision.gate.text) === 'begin') {
+      const expectedOrigin = location.origin;
+      const expectedPath = location.pathname;
+      setTimeout(() => {
+        if (location.origin === expectedOrigin
+          && location.pathname === expectedPath
+          && typeof location.assign === 'function') {
+          location.assign('/ApplyForBenefits/ABHLT');
+        }
+      }, 3000);
+    }
     return {
       advanced: true,
       beforeUrl,

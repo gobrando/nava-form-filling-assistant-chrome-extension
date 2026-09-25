@@ -46,7 +46,7 @@
   const DEFAULT_AUTOMATED_PAGES = 12;
   const MAX_SAME_PAGE_FILL_PASSES = 3;
   const MAX_PARALLEL_APPLICATIONS = 3;
-  const PAGE_AGENT_VERSION = 5;
+  const PAGE_AGENT_VERSION = 6;
   const TAB_READY_TIMEOUT_MS = 60_000;
   const NAVIGATION_TIMEOUT_MS = 60_000;
   const APPLICATION_LEASE_MS = 2 * 60 * 1000;
@@ -2514,7 +2514,7 @@
     const fieldsFound = safeAnalysis.counts?.fields || 0;
     const canContinue = response.navigationGate?.kind === 'next';
     const nextCheckpoint = checkpointFromScan({ ...response, analysis: safeAnalysis }, fieldsFound);
-    const application = {
+    const application = attachApplicationPolicy({
       ...previous,
       id,
       tabId: tab.id,
@@ -2551,7 +2551,7 @@
         capturedAt: new Date().toISOString(),
       },
       updatedAt: new Date().toISOString(),
-    };
+    });
     const existing = state.apps.findIndex((item) => item.id === id);
     if (existing >= 0) state.apps.splice(existing, 1, application);
     else state.apps.unshift(application);
@@ -2561,9 +2561,15 @@
       modelRuntime: agentic?.runtime,
       modelPromptCount: latestAgentUsage?.prompts || 0,
       modelDurationMs: latestAgentUsage?.durationMs || 0,
+      modelInputCharacters: latestAgentUsage?.inputCharacters || 0,
+      modelOutputCharacters: latestAgentUsage?.outputCharacters || 0,
+      ...(Number.isFinite(latestAgentUsage?.contextUsageUnits) ? { modelContextUsageUnits: latestAgentUsage.contextUsageUnits } : {}),
       ...(Number.isFinite(latestAgentUsage?.inputTokens) ? { modelInputTokens: latestAgentUsage.inputTokens } : {}),
       ...(Number.isFinite(latestAgentUsage?.outputTokens) ? { modelOutputTokens: latestAgentUsage.outputTokens } : {}),
       modelApiCostMicros: Math.round(Number(latestAgentUsage?.apiCostUsd || 0) * 1_000_000),
+      ...(Number.isFinite(latestAgentUsage?.providerReportedCostUsd)
+        ? { modelProviderReportedCostMicros: Math.round(Number(latestAgentUsage.providerReportedCostUsd) * 1_000_000) }
+        : {}),
       checkpointKind: nextCheckpoint?.kind,
       toStatus: application.status,
     });

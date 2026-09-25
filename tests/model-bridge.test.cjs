@@ -44,10 +44,22 @@ test('Codex subscription invocation is ephemeral, read-only, schema constrained,
   assert.equal(invocation.command, 'codex');
   assert.ok(invocation.args.includes('--ephemeral'));
   assert.equal(invocation.args[invocation.args.indexOf('--sandbox') + 1], 'read-only');
+  assert.ok(invocation.args.includes('--json'));
   assert.ok(invocation.args.includes('--output-schema'));
   assert.equal(invocation.args.at(-1), '-');
   assert.match(invocation.input, /Do not use tools/);
   assert.doesNotMatch(invocation.args.join(' '), /First name/);
+});
+
+test('Codex JSONL usage parser captures subscription token counts', async () => {
+  const bridge = await import('../model-bridge/core.mjs');
+  const usage = bridge.parseCodexUsage([
+    JSON.stringify({ type: 'thread.started', thread_id: 'test' }),
+    JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 321, cached_input_tokens: 12, output_tokens: 45 } }),
+  ].join('\n'));
+  assert.equal(usage.inputTokens, 321);
+  assert.equal(usage.outputTokens, 45);
+  assert.equal(usage.providerReportedCostUsd, null);
 });
 
 test('Claude runner strips API-key billing variables and parses structured usage', async () => {

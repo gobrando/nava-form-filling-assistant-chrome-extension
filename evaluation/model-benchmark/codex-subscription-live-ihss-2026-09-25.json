@@ -1,0 +1,189 @@
+{
+  "schema": "nava.form-filling.audit.v1",
+  "generatedAt": "2026-09-25T19:04:48.172Z",
+  "applications": [
+    {
+      "id": "workflow:b6245c95-f267-4fcd-921a-1afb8f3439d2",
+      "name": "Riverside County IHSS application",
+      "location": "https://riversideihss.org",
+      "status": "needs_attention",
+      "progress": 55,
+      "completedPages": 0,
+      "checkpoint": {
+        "kind": "direct_entry",
+        "label": "Direct caseworker entry required",
+        "createdAt": "2026-09-25T19:04:19.966Z"
+      },
+      "owner": null,
+      "handoff": null,
+      "updatedAt": "2026-09-25T19:04:19.966Z"
+    }
+  ],
+  "events": [
+    {
+      "id": "1790361901931:a308x5s5",
+      "type": "scan_completed",
+      "at": "2026-09-25T18:45:01.931Z",
+      "applicationId": "workflow:1afc91b1-eaa1-4065-9382-366ed50ac119",
+      "details": {
+        "fieldCount": 44,
+        "gapCount": 0,
+        "modelRuntime": "chrome-gemini-nano",
+        "modelPromptCount": 3,
+        "modelDurationMs": 305118,
+        "modelApiCostMicros": 0,
+        "checkpointKind": "signature",
+        "toStatus": "ready_to_fill"
+      }
+    },
+    {
+      "id": "1790362064420:2su2bg15",
+      "type": "scan_completed",
+      "at": "2026-09-25T18:47:44.420Z",
+      "applicationId": "workflow:1afc91b1-eaa1-4065-9382-366ed50ac119",
+      "details": {
+        "fieldCount": 44,
+        "gapCount": 2,
+        "modelRuntime": "chrome-gemini-nano",
+        "modelPromptCount": 3,
+        "modelDurationMs": 205843,
+        "modelApiCostMicros": 0,
+        "checkpointKind": "human_input",
+        "toStatus": "needs_attention"
+      }
+    },
+    {
+      "id": "1790362064420:gyap88us",
+      "type": "questions_required",
+      "at": "2026-09-25T18:47:44.420Z",
+      "applicationId": "workflow:1afc91b1-eaa1-4065-9382-366ed50ac119",
+      "details": {
+        "gapCount": 2,
+        "checkpointKind": "human_input"
+      }
+    },
+    {
+      "id": "1790362064462:j18om4c1",
+      "type": "fill_started",
+      "at": "2026-09-25T18:47:44.462Z",
+      "applicationId": "workflow:1afc91b1-eaa1-4065-9382-366ed50ac119",
+      "details": {
+        "fieldCount": 35,
+        "fromStatus": "needs_attention"
+      }
+    },
+    {
+      "id": "1790362086539:laq10bnw",
+      "type": "checkpoint_reached",
+      "at": "2026-09-25T18:48:06.539Z",
+      "applicationId": "workflow:1afc91b1-eaa1-4065-9382-366ed50ac119",
+      "details": {
+        "checkpointKind": "direct_entry",
+        "toStatus": "needs_attention"
+      }
+    },
+    {
+      "id": "1790362086539:879p0pnx",
+      "type": "page_verified",
+      "at": "2026-09-25T18:48:06.539Z",
+      "applicationId": "workflow:1afc91b1-eaa1-4065-9382-366ed50ac119",
+      "details": {
+        "verifiedCount": 32,
+        "blockedCount": 3,
+        "gapCount": 2,
+        "pageCount": 1,
+        "toStatus": "needs_attention"
+      }
+    },
+    {
+      "id": "1790362329576:h3jowh8j",
+      "type": "audit_exported",
+      "at": "2026-09-25T18:52:09.576Z",
+      "applicationId": "",
+      "details": {}
+    },
+    {
+      "id": "1790362546496:b81lmgpj",
+      "type": "session_ended",
+      "at": "2026-09-25T18:55:46.496Z",
+      "applicationId": "",
+      "details": {}
+    },
+    {
+      "id": "1790362982977:29u4lpek",
+      "type": "scan_completed",
+      "at": "2026-09-25T19:03:02.977Z",
+      "applicationId": "workflow:b6245c95-f267-4fcd-921a-1afb8f3439d2",
+      "details": {
+        "fieldCount": 44,
+        "gapCount": 0,
+        "modelRuntime": "codex-cli-subscription",
+        "modelPromptCount": 3,
+        "modelDurationMs": 68405,
+        "modelInputTokens": 52229,
+        "modelOutputTokens": 2997,
+        "modelApiCostMicros": 0,
+        "checkpointKind": "signature",
+        "toStatus": "ready_to_fill"
+      }
+    },
+    {
+      "id": "1790363036915:gaoi93b5",
+      "type": "scan_completed",
+      "at": "2026-09-25T19:03:56.915Z",
+      "applicationId": "workflow:b6245c95-f267-4fcd-921a-1afb8f3439d2",
+      "details": {
+        "fieldCount": 44,
+        "gapCount": 0,
+        "modelRuntime": "codex-cli-subscription",
+        "modelPromptCount": 3,
+        "modelDurationMs": 59448,
+        "modelInputTokens": 52281,
+        "modelOutputTokens": 3064,
+        "modelApiCostMicros": 0,
+        "checkpointKind": "signature",
+        "toStatus": "ready_to_fill"
+      }
+    },
+    {
+      "id": "1790363036943:e4d5b5qh",
+      "type": "fill_started",
+      "at": "2026-09-25T19:03:56.943Z",
+      "applicationId": "workflow:b6245c95-f267-4fcd-921a-1afb8f3439d2",
+      "details": {
+        "fieldCount": 37,
+        "fromStatus": "ready_to_fill"
+      }
+    },
+    {
+      "id": "1790363059966:7c3iowfe",
+      "type": "checkpoint_reached",
+      "at": "2026-09-25T19:04:19.966Z",
+      "applicationId": "workflow:b6245c95-f267-4fcd-921a-1afb8f3439d2",
+      "details": {
+        "checkpointKind": "direct_entry",
+        "toStatus": "needs_attention"
+      }
+    },
+    {
+      "id": "1790363059966:b6ek3t19",
+      "type": "page_verified",
+      "at": "2026-09-25T19:04:19.966Z",
+      "applicationId": "workflow:b6245c95-f267-4fcd-921a-1afb8f3439d2",
+      "details": {
+        "verifiedCount": 34,
+        "blockedCount": 3,
+        "gapCount": 0,
+        "pageCount": 1,
+        "toStatus": "needs_attention"
+      }
+    },
+    {
+      "id": "1790363088165:oai10bfu",
+      "type": "audit_exported",
+      "at": "2026-09-25T19:04:48.165Z",
+      "applicationId": "",
+      "details": {}
+    }
+  ]
+}

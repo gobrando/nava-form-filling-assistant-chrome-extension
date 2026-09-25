@@ -42,7 +42,7 @@ test('dynamic page-agent injection installs site adapters before the content age
 
 test('page-agent readiness is versioned and requires the exact live-site adapters', () => {
   const source = section('async function ensurePageAgent', 'async function sendToTab');
-  assert.match(panel, /const PAGE_AGENT_VERSION = 5/);
+  assert.match(panel, /const PAGE_AGENT_VERSION = 6/);
   assert.match(source, /pong\.agentVersion === PAGE_AGENT_VERSION && pong\.adaptersReady/);
   assert.match(source, /verified\.agentVersion === PAGE_AGENT_VERSION && verified\.adaptersReady/);
   assert.match(source, /older form-filling agent.*Refresh this tab once/i);
@@ -132,6 +132,12 @@ test('BenefitsCal overview must reach a different route and cannot loop on reloa
   assert.match(wait, /benefitsCalOverview/);
   assert.match(wait, /commandLocation\(tab\.url\) === previousLocation/);
   assert.match(wait, /stopped after one attempt instead of reloading it again/);
+});
+
+test('a directly analyzed known site inherits its full approved workflow path', () => {
+  const scan = section('async function scanTab', 'async function openSelectedPrograms');
+  assert.match(scan, /const application = attachApplicationPolicy\(\{/);
+  assert.match(scan, /allowedPathPrefixes: previous\.allowedPathPrefixes\?\.length/);
 });
 
 test('manual autonomous runs keep the application dashboard and per-card progress visible', () => {

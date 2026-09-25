@@ -550,6 +550,7 @@ test('the BenefitsCal overview authorizes only exact Begin on the exact ABOVR ro
   assert.equal(response.advanced, true);
   assert.equal(response.navigationGate.kind, 'next');
   assert.equal(begin.clicked, true);
+  assert.match(agentSource, /location\.assign\('\/ApplyForBenefits\/ABHLT'\)/);
 
   const wrongUrl = 'https://benefitscal.com/ApplyForBenefits/ABHLT?lang=en';
   const wrongBegin = control('Begin', ['button[name="common_continue"]']);

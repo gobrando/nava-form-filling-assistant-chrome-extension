@@ -11,6 +11,7 @@
     "ocr:fixtures": "node scripts/generate-ocr-fixtures.mjs",
     "ocr:assets": "node scripts/vendor-ocr-assets.mjs",
     "eval:extraction": "node scripts/run-extraction-eval.mjs",
+    "eval:models": "node scripts/summarize-model-evaluation.mjs",
     "test": "node --test tests/*.test.cjs"
   },
   "devDependencies": {
