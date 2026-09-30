@@ -286,89 +286,122 @@ schema-constrained data.`,
     return preparingPromise;
   }
 
+  // A numeric session reading (Chrome exposes these as numbers); anything non-finite is unknown.
+  function finiteNumber(value) {
+    return Number.isFinite(Number(value)) ? Number(value) : null;
+  }
+
+  // A usage figure the companion may omit: absent (null/undefined) stays unknown instead of becoming 0.
+  function reportedNumber(value) {
+    return value === null || value === undefined ? null : finiteNumber(value);
+  }
+
+  async function promptCompanionRole(role, prompt, responseConstraint) {
+    const startedAt = Date.now();
+    const result = await bridgeRequest('/v1/role', {
+      method: 'POST',
+      body: JSON.stringify({
+        provider: providerConfig.provider,
+        model: providerConfig.model,
+        role,
+        systemPrompt: SYSTEM_PROMPTS[role],
+        prompt,
+        responseSchema: responseConstraint,
+      }),
+    });
+    return {
+      text: result.text,
+      usage: {
+        role,
+        prompts: 1,
+        inputCharacters: prompt.length,
+        outputCharacters: String(result.text || '').length,
+        inputTokens: reportedNumber(result.usage?.inputTokens),
+        outputTokens: reportedNumber(result.usage?.outputTokens),
+        contextUsageUnits: null,
+        contextWindow: null,
+        durationMs: Number(result.usage?.durationMs || (Date.now() - startedAt)),
+        apiCostUsd: 0,
+        providerReportedCostUsd: reportedNumber(result.usage?.providerReportedCostUsd),
+      },
+    };
+  }
+
+  // Each on-device prompt runs in a fresh clone of the role's session, so roles never share context.
+  async function promptOnDeviceRole(role, prompt, responseConstraint) {
+    const session = await sessions[role].clone();
+    const startedAt = Date.now();
+    const contextUsageBefore = finiteNumber(session.contextUsage);
+    try {
+      const text = await session.prompt(prompt, { responseConstraint });
+      const contextUsageAfter = finiteNumber(session.contextUsage);
+      return {
+        text,
+        usage: {
+          role,
+          prompts: 1,
+          inputCharacters: prompt.length,
+          outputCharacters: String(text || '').length,
+          contextUsageUnits: contextUsageBefore === null || contextUsageAfter === null
+            ? null
+            : Math.max(0, contextUsageAfter - contextUsageBefore),
+          contextWindow: finiteNumber(session.contextWindow),
+          durationMs: Date.now() - startedAt,
+          inputTokens: null,
+          outputTokens: null,
+          apiCostUsd: 0,
+          providerReportedCostUsd: null,
+        },
+      };
+    } finally {
+      session.destroy();
+    }
+  }
+
+  // Prompts are serialized per role, so one role's session is never prompted concurrently.
   function promptRole(role, prompt, responseConstraint) {
     const run = roleChains[role]
       .catch(() => undefined)
-      .then(async () => {
-        if (providerConfig.kind === 'local-cli') {
-          const startedAt = Date.now();
-          const result = await bridgeRequest('/v1/role', {
-            method: 'POST',
-            body: JSON.stringify({
-              provider: providerConfig.provider,
-              model: providerConfig.model,
-              role,
-              systemPrompt: SYSTEM_PROMPTS[role],
-              prompt,
-              responseSchema: responseConstraint,
-            }),
-          });
-          const inputTokens = result.usage?.inputTokens;
-          const outputTokens = result.usage?.outputTokens;
-          const providerReportedCostUsd = result.usage?.providerReportedCostUsd;
-          return {
-            text: result.text,
-            usage: {
-              role,
-              prompts: 1,
-              inputCharacters: prompt.length,
-              outputCharacters: String(result.text || '').length,
-              inputTokens: inputTokens === null || inputTokens === undefined || !Number.isFinite(Number(inputTokens))
-                ? null
-                : Number(inputTokens),
-              outputTokens: outputTokens === null || outputTokens === undefined || !Number.isFinite(Number(outputTokens))
-                ? null
-                : Number(outputTokens),
-              contextUsageUnits: null,
-              contextWindow: null,
-              durationMs: Number(result.usage?.durationMs || (Date.now() - startedAt)),
-              apiCostUsd: 0,
-              providerReportedCostUsd: providerReportedCostUsd !== null
-                && providerReportedCostUsd !== undefined
-                && Number.isFinite(Number(providerReportedCostUsd))
-                ? Number(providerReportedCostUsd)
-                : null,
-            },
-          };
-        }
-        const session = await sessions[role].clone();
-        const startedAt = Date.now();
-        const contextUsageBefore = Number.isFinite(Number(session.contextUsage))
-          ? Number(session.contextUsage)
-          : null;
-        try {
-          const text = await session.prompt(prompt, { responseConstraint });
-          const contextUsageAfter = Number.isFinite(Number(session.contextUsage))
-            ? Number(session.contextUsage)
-            : null;
-          return {
-            text,
-            usage: {
-              role,
-              prompts: 1,
-              inputCharacters: prompt.length,
-              outputCharacters: String(text || '').length,
-              contextUsageUnits: contextUsageBefore === null || contextUsageAfter === null
-                ? null
-                : Math.max(0, contextUsageAfter - contextUsageBefore),
-              contextWindow: Number.isFinite(Number(session.contextWindow)) ? Number(session.contextWindow) : null,
-              durationMs: Date.now() - startedAt,
-              inputTokens: null,
-              outputTokens: null,
-              apiCostUsd: 0,
-              providerReportedCostUsd: null,
-            },
-          };
-        } finally {
-          session.destroy();
-        }
-      });
+      .then(() => (providerConfig.kind === 'local-cli'
+        ? promptCompanionRole(role, prompt, responseConstraint)
+        : promptOnDeviceRole(role, prompt, responseConstraint)));
     roleChains[role] = run.catch(() => undefined);
     return run;
   }
 
   function compactText(value, limit = 240) {
     return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
+  }
+
+  // The bounded, value-free description of one page control that a model is allowed to see.
+  // A singleton group keeps its own writable field key; a real group is keyed by the group.
+  function inventoryEntry(field, singletonGroup) {
+    return {
+      fieldKey: compactText(singletonGroup ? field.fieldKey : (field.groupKey || field.fieldKey), 180),
+      type: compactText(field.type, 40),
+      label: compactText(field.label),
+      question: compactText(field.question),
+      required: Boolean(field.required),
+      alreadyFilled: Boolean(field.value || field.checked),
+      purposeHint: compactText(field.purpose, 100),
+      allowRepeatedPurpose: Boolean(field.allowRepeatedPurpose),
+      options: [],
+    };
+  }
+
+  function standaloneOptions(field) {
+    return (field.options || []).slice(0, 80).map((option) => compactText(option.label || option.value, 120));
+  }
+
+  // Folds one radio/checkbox group member into the group's entry: the group is required or filled
+  // when any member is, and each member contributes its option text.
+  function mergeGroupMember(groupEntry, memberEntry, field) {
+    groupEntry.required = groupEntry.required || memberEntry.required;
+    groupEntry.alreadyFilled = groupEntry.alreadyFilled || memberEntry.alreadyFilled;
+    groupEntry.question = groupEntry.question || memberEntry.question;
+    groupEntry.purposeHint = groupEntry.purposeHint || memberEntry.purposeHint;
+    groupEntry.options.push(compactText(field.optionLabel || field.optionValue || field.label, 120));
+    return groupEntry;
   }
 
   function groupedInventory(rawFields) {
@@ -381,29 +414,13 @@ schema-constrained data.`,
     });
     (rawFields || []).forEach((field) => {
       const singletonGroup = field.groupKey && groupCounts.get(field.groupKey) === 1;
-      const safe = {
-        fieldKey: compactText(singletonGroup ? field.fieldKey : (field.groupKey || field.fieldKey), 180),
-        type: compactText(field.type, 40),
-        label: compactText(field.label),
-        question: compactText(field.question),
-        required: Boolean(field.required),
-        alreadyFilled: Boolean(field.value || field.checked),
-        purposeHint: compactText(field.purpose, 100),
-        allowRepeatedPurpose: Boolean(field.allowRepeatedPurpose),
-        options: [],
-      };
+      const entry = inventoryEntry(field, singletonGroup);
       if (!field.groupKey || singletonGroup) {
-        safe.options = (field.options || []).slice(0, 80).map((option) => compactText(option.label || option.value, 120));
-        singles.push(safe);
+        entry.options = standaloneOptions(field);
+        singles.push(entry);
         return;
       }
-      const existing = groups.get(field.groupKey) || safe;
-      existing.required = existing.required || safe.required;
-      existing.alreadyFilled = existing.alreadyFilled || safe.alreadyFilled;
-      existing.question = existing.question || safe.question;
-      existing.purposeHint = existing.purposeHint || safe.purposeHint;
-      existing.options.push(compactText(field.optionLabel || field.optionValue || field.label, 120));
-      groups.set(field.groupKey, existing);
+      groups.set(field.groupKey, mergeGroupMember(groups.get(field.groupKey) || entry, entry, field));
     });
     const inventory = [...singles, ...groups.values()]
       .slice(0, 80)
@@ -446,6 +463,18 @@ schema-constrained data.`,
       question: redact(field.question),
       options: field.options.map(redact),
     }));
+  }
+
+  // Everything a planner (local roles or the shared gateway) may see: the bounded page inventory with
+  // participant values redacted, and the source purposes on file without their values.
+  function planningInventory(engine, participant, rawFields) {
+    const fields = redactSourceValues(engine, participant, groupedInventory(rawFields));
+    const sources = sourceInventory(engine, participant);
+    return { fields, sources };
+  }
+
+  function canonicalPurposes(engine) {
+    return new Set(Object.keys(engine.LABELS || {}));
   }
 
   function parseResult(text, label) {
@@ -524,6 +553,27 @@ schema-constrained data.`,
     return { purposeOverrides, approved, rejected, trustedHintMappings };
   }
 
+  // A proposed gap needs a caseworker only for a known, still-empty field that no approved mapping
+  // can answer from a source on file, and only when it is required, a choice, or a checkbox.
+  function gapNeedsAnswer(field, purposeOverrides, availablePurposes) {
+    if (!field || field.alreadyFilled) return false;
+    const mappedPurpose = purposeOverrides[field.fieldKey];
+    if (mappedPurpose && availablePurposes.has(mappedPurpose)) return false;
+    return field.required || field.options.length > 0 || field.type === 'checkbox';
+  }
+
+  function validateGaps(gaps, fields, sources, purposeOverrides) {
+    const availablePurposes = new Set(sources.map((source) => source.purpose));
+    const fieldFor = (gap) => fields.find((candidate) => candidate.fieldKey === gap.fieldKey);
+    return (gaps.gaps || [])
+      .filter((gap) => gapNeedsAnswer(fieldFor(gap), purposeOverrides, availablePurposes))
+      .map((gap) => ({
+        fieldKey: String(gap.fieldKey),
+        question: compactText(gap.question, 280),
+        reason: compactText(gap.reason, 280),
+      }));
+  }
+
   async function gatewayConfig() {
     if (root.NAVA_PLAN_GATEWAY?.endpoint && root.NAVA_PLAN_GATEWAY?.token) return root.NAVA_PLAN_GATEWAY;
     const storage = root.chrome?.storage?.local;
@@ -559,8 +609,7 @@ schema-constrained data.`,
   }
 
   async function planThroughGateway(args, gateway) {
-    const fields = redactSourceValues(args.engine, args.participant, groupedInventory(args.rawFields));
-    const sources = sourceInventory(args.engine, args.participant);
+    const { fields, sources } = planningInventory(args.engine, args.participant, args.rawFields);
     args.onProgress?.({ phase: 'planning', agents: ROLE_NAMES, runtime: 'nava-api' });
     const response = await fetch(gateway.endpoint, {
       method: 'POST',
@@ -579,12 +628,7 @@ schema-constrained data.`,
     if (!response.ok || !body?.ok || !body.plan) {
       throw new Error(body?.error || 'The shared planner did not return a plan. No form values were changed.');
     }
-    const clamped = clampGatewayPlan(
-      body.plan,
-      fields,
-      sources,
-      new Set(Object.keys(args.engine.LABELS || {})),
-    );
+    const clamped = clampGatewayPlan(body.plan, fields, sources, canonicalPurposes(args.engine));
     return {
       ...clamped,
       metadata: {
@@ -595,89 +639,89 @@ schema-constrained data.`,
     };
   }
 
-  async function plan({ engine, page, rawFields, participant, onProgress } = {}) {
-    if (!engine?.canonicalizeParticipant || !engine?.buildAnalysis) throw new Error('The form engine is unavailable.');
-    const gateway = await gatewayConfig();
-    if (gateway) return planThroughGateway({ engine, page, rawFields, participant, onProgress }, gateway);
-    await prepare({ onProgress });
-    const fields = redactSourceValues(engine, participant, groupedInventory(rawFields));
-    const sources = sourceInventory(engine, participant);
+  // A total stays unknown (null) once any role could not report that figure.
+  function sumKnown(total, value) {
+    return total === null || value === null ? null : total + Number(value || 0);
+  }
+
+  function addRoleUsage(summary, item) {
+    return {
+      prompts: summary.prompts + Number(item.prompts || 0),
+      inputCharacters: summary.inputCharacters + Number(item.inputCharacters || 0),
+      outputCharacters: summary.outputCharacters + Number(item.outputCharacters || 0),
+      contextUsageUnits: sumKnown(summary.contextUsageUnits, item.contextUsageUnits),
+      durationMs: summary.durationMs + Number(item.durationMs || 0),
+      inputTokens: sumKnown(summary.inputTokens, item.inputTokens),
+      outputTokens: sumKnown(summary.outputTokens, item.outputTokens),
+      apiCostUsd: 0,
+      providerReportedCostUsd: sumKnown(summary.providerReportedCostUsd, item.providerReportedCostUsd),
+    };
+  }
+
+  function summarizeUsage(usageEvents) {
+    return usageEvents.reduce(addRoleUsage, {
+      prompts: 0, inputCharacters: 0, outputCharacters: 0, contextUsageUnits: 0, durationMs: 0,
+      inputTokens: 0, outputTokens: 0, apiCostUsd: 0, providerReportedCostUsd: 0,
+    });
+  }
+
+  function localPlanMetadata({ mapping, review, validated, usage }) {
+    const companion = providerConfig.kind === 'local-cli';
+    return {
+      runtime: companion ? `${providerConfig.provider}-cli-subscription` : 'chrome-gemini-nano',
+      mode: companion ? 'localhost-subscription-multi-agent' : 'on-device-multi-agent',
+      provider: companion ? providerConfig.provider : 'chrome-local',
+      agents: ROLE_NAMES,
+      proposedMappings: (mapping.mappings || []).length,
+      approvedMappings: validated.approved.length,
+      rejectedMappings: validated.rejected.length,
+      trustedHintMappings: validated.trustedHintMappings,
+      usage,
+      billing: companion ? 'subscription-allowance-no-direct-api-key' : 'on-device-no-token-charge',
+      reviewedAt: new Date().toISOString(),
+      summary: compactText(review.summary, 400),
+    };
+  }
+
+  // Roles 1 and 2: the mapper and gap analyst run concurrently, each on its own role queue,
+  // and neither sees the other's output.
+  async function proposePlan(page, fields, sources, onProgress) {
     onProgress?.({ phase: 'planning', agents: ['field_mapper', 'gap_analyst'] });
     const [mappingResult, gapResult] = await Promise.all([
       promptRole('field_mapper', mappingPrompt(page, fields, sources), MAPPING_SCHEMA),
       promptRole('gap_analyst', gapPrompt(page, fields, sources), GAP_SCHEMA),
     ]);
-    const mapping = parseResult(mappingResult.text, 'field-mapping');
-    const gaps = parseResult(gapResult.text, 'gap-analysis');
+    return {
+      mapping: parseResult(mappingResult.text, 'field-mapping'),
+      gaps: parseResult(gapResult.text, 'gap-analysis'),
+      usageEvents: [mappingResult.usage, gapResult.usage],
+    };
+  }
+
+  // Role 3: an independent reviewer session judges the proposals after both are complete.
+  async function reviewProposals(page, fields, sources, proposal, onProgress) {
     onProgress?.({ phase: 'reviewing', agents: ['form_reviewer'] });
-    const reviewResult = await promptRole(
-      'form_reviewer',
-      reviewPrompt(page, fields, sources, mapping, gaps),
-      REVIEW_SCHEMA,
-    );
-    const review = parseResult(reviewResult.text, 'form-review');
-    const validated = validateReview(fields, sources, mapping, review, new Set(Object.keys(engine.LABELS || {})));
-    const availablePurposes = new Set(sources.map((source) => source.purpose));
-    const validatedGaps = (gaps.gaps || []).filter((gap) => {
-      const field = fields.find((candidate) => candidate.fieldKey === gap.fieldKey);
-      const mappedPurpose = validated.purposeOverrides[field?.fieldKey];
-      return field
-        && !field.alreadyFilled
-        && !(mappedPurpose && availablePurposes.has(mappedPurpose))
-        && (field.required || field.options.length > 0 || field.type === 'checkbox');
-    }).map((gap) => ({
-      fieldKey: String(gap.fieldKey),
-      question: compactText(gap.question, 280),
-      reason: compactText(gap.reason, 280),
-    }));
-    const usageEvents = [mappingResult.usage, gapResult.usage, reviewResult.usage];
-    const usage = usageEvents.reduce((summary, item) => ({
-      prompts: summary.prompts + Number(item.prompts || 0),
-      inputCharacters: summary.inputCharacters + Number(item.inputCharacters || 0),
-      outputCharacters: summary.outputCharacters + Number(item.outputCharacters || 0),
-      contextUsageUnits: item.contextUsageUnits === null || summary.contextUsageUnits === null
-        ? null
-        : summary.contextUsageUnits + Number(item.contextUsageUnits || 0),
-      durationMs: summary.durationMs + Number(item.durationMs || 0),
-      inputTokens: item.inputTokens === null || summary.inputTokens === null
-        ? null
-        : summary.inputTokens + Number(item.inputTokens || 0),
-      outputTokens: item.outputTokens === null || summary.outputTokens === null
-        ? null
-        : summary.outputTokens + Number(item.outputTokens || 0),
-      apiCostUsd: 0,
-      providerReportedCostUsd: item.providerReportedCostUsd === null || summary.providerReportedCostUsd === null
-        ? null
-        : summary.providerReportedCostUsd + Number(item.providerReportedCostUsd || 0),
-    }), {
-      prompts: 0,
-      inputCharacters: 0,
-      outputCharacters: 0,
-      contextUsageUnits: 0,
-      durationMs: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      apiCostUsd: 0,
-      providerReportedCostUsd: 0,
-    });
-    const companion = providerConfig.kind === 'local-cli';
+    const prompt = reviewPrompt(page, fields, sources, proposal.mapping, proposal.gaps);
+    const reviewResult = await promptRole('form_reviewer', prompt, REVIEW_SCHEMA);
+    return { review: parseResult(reviewResult.text, 'form-review'), usage: reviewResult.usage };
+  }
+
+  // Orchestration: resolve the runtime, redact the inventory, run the three roles, then keep only
+  // what the local policy validator accepts.
+  async function plan({ engine, page, rawFields, participant, onProgress } = {}) {
+    if (!engine?.canonicalizeParticipant || !engine?.buildAnalysis) throw new Error('The form engine is unavailable.');
+    const gateway = await gatewayConfig();
+    if (gateway) return planThroughGateway({ engine, page, rawFields, participant, onProgress }, gateway);
+    await prepare({ onProgress });
+    const { fields, sources } = planningInventory(engine, participant, rawFields);
+    const proposal = await proposePlan(page, fields, sources, onProgress);
+    const { review, usage: reviewUsage } = await reviewProposals(page, fields, sources, proposal, onProgress);
+    const validated = validateReview(fields, sources, proposal.mapping, review, canonicalPurposes(engine));
+    const usage = summarizeUsage([...proposal.usageEvents, reviewUsage]);
     return {
       ...validated,
-      gaps: validatedGaps,
-      metadata: {
-        runtime: companion ? `${providerConfig.provider}-cli-subscription` : 'chrome-gemini-nano',
-        mode: companion ? 'localhost-subscription-multi-agent' : 'on-device-multi-agent',
-        provider: companion ? providerConfig.provider : 'chrome-local',
-        agents: ROLE_NAMES,
-        proposedMappings: (mapping.mappings || []).length,
-        approvedMappings: validated.approved.length,
-        rejectedMappings: validated.rejected.length,
-        trustedHintMappings: validated.trustedHintMappings,
-        usage,
-        billing: companion ? 'subscription-allowance-no-direct-api-key' : 'on-device-no-token-charge',
-        reviewedAt: new Date().toISOString(),
-        summary: compactText(review.summary, 400),
-      },
+      gaps: validateGaps(proposal.gaps, fields, sources, validated.purposeOverrides),
+      metadata: localPlanMetadata({ mapping: proposal.mapping, review, validated, usage }),
     };
   }
 
