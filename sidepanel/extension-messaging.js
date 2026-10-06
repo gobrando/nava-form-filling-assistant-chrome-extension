@@ -84,6 +84,9 @@
         await chrome.scripting.executeScript({
           target: documentId ? { tabId: tab.id, documentIds: [documentId] } : { tabId: tab.id },
           files: [
+            'shared/form-purposes.js',
+            'shared/participant-record.js',
+            'shared/field-values.js',
             'shared/form-engine.js',
             'shared/site-adapters.js',
             'content/page-dom.js',
