@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const engine = require('../shared/form-engine.js');
 const planner = require('../shared/agentic-planner.js');
 
-function runtimeFor({ reviewerApproved, mapperConfidence = 'high', mapperMappings, gapItems } = {}) {
+function runtimeFor({ reviewerApproved, reviewerRejected, mapperConfidence = 'high', mapperMappings, gapItems, rawOutput = {} } = {}) {
   const prompts = [];
   let createCount = 0;
   const active = { mapper: 0, gaps: 0, reviewer: 0 };
@@ -27,6 +27,7 @@ function runtimeFor({ reviewerApproved, mapperConfidence = 'high', mapperMapping
           maxActive[role] = Math.max(maxActive[role], active[role]);
           await new Promise((resolve) => setTimeout(resolve, 5));
           active[role] -= 1;
+          if (rawOutput[role] !== undefined) return rawOutput[role];
           if (role === 'mapper') {
             return JSON.stringify({
               mappings: mapperMappings || [{ fieldKey: 'first', purpose: 'firstName', confidence: mapperConfidence, reason: 'First-name label.' }],
@@ -39,7 +40,7 @@ function runtimeFor({ reviewerApproved, mapperConfidence = 'high', mapperMapping
           }
           return JSON.stringify({
             approved: reviewerApproved || [{ fieldKey: 'first', purpose: 'firstName', reason: 'The label is exact.' }],
-            rejected: [],
+            rejected: reviewerRejected || [],
             summary: 'One exact mapping was approved.',
           });
         },
@@ -367,4 +368,391 @@ test('routes the same redacted three-role plan through a paired subscription com
   assert.ok(calls.every((call) => call.options.headers.Authorization === 'Bearer test-pairing-token-with-32-characters'));
   const serializedBodies = calls.filter((call) => call.options.body).map((call) => call.options.body).join('\n');
   assert.doesNotMatch(serializedBodies, /Celeste|123-45-6789|celeste@example\.org/);
+});
+
+// Runtime/gateway resolution step.
+
+test('refuses to plan without a usable form engine and never starts a model or gateway call', async () => {
+  const runtime = runtimeFor();
+  planner.setRuntimeForTests(runtime);
+  await assert.rejects(planner.plan({ rawFields }), /The form engine is unavailable\./);
+  await assert.rejects(planner.plan({ engine: { canonicalizeParticipant() {} }, rawFields }), /The form engine is unavailable\./);
+  assert.equal(runtime.createCount, 0);
+  assert.equal(runtime.prompts.length, 0);
+});
+
+test('resolves the shared gateway from extension storage and falls back to local roles without a token', async () => {
+  const previousChrome = globalThis.chrome;
+  const previousFetch = globalThis.fetch;
+  let stored = { navaApiBase: 'https://api.test/', navaApiToken: 'nava_stored_secret', navaPlanModel: 'planner-large' };
+  let requestedKeys = null;
+  globalThis.chrome = { storage: { local: { async get(keys) { requestedKeys = keys; return stored; } } } };
+  let sent = null;
+  globalThis.fetch = async (url, init) => {
+    sent = { url, body: JSON.parse(init.body), authorization: init.headers.authorization };
+    return { ok: true, async json() { return { ok: true, plan: { purposeOverrides: {}, gaps: [] } }; } };
+  };
+  try {
+    assert.deepEqual(await planner.gatewayConfig(), {
+      endpoint: 'https://api.test/v1/plan',
+      token: 'nava_stored_secret',
+      model: 'planner-large',
+    });
+    assert.deepEqual(requestedKeys, ['navaApiBase', 'navaApiToken', 'navaPlanModel']);
+    const viaGateway = await planner.plan({ engine, page: { domain: 'example.gov' }, rawFields, participant: {} });
+    assert.equal(sent.url, 'https://api.test/v1/plan');
+    assert.equal(sent.authorization, 'Bearer nava_stored_secret');
+    assert.equal(sent.body.model, 'planner-large');
+    assert.equal(viaGateway.metadata.runtime, 'nava-api');
+    assert.equal(viaGateway.metadata.mode, 'shared-engine');
+
+    stored = { navaApiBase: 'https://api.test', navaApiToken: '' };
+    sent = null;
+    assert.equal(await planner.gatewayConfig(), null);
+    const runtime = runtimeFor();
+    planner.setRuntimeForTests(runtime);
+    const local = await planner.plan({ engine, page: { domain: 'example.gov' }, rawFields, participant: {} });
+    assert.equal(sent, null);
+    assert.equal(runtime.createCount, 3);
+    assert.equal(local.metadata.mode, 'on-device-multi-agent');
+  } finally {
+    globalThis.chrome = previousChrome;
+    globalThis.fetch = previousFetch;
+  }
+});
+
+// Redacted source inventory step.
+
+test('participant values never reach any role prompt, including option text, grouped choices, and regex-special values', async () => {
+  const runtime = runtimeFor({ mapperMappings: [], gapItems: [], reviewerApproved: [] });
+  planner.setRuntimeForTests(runtime);
+  const participant = {
+    participant: { name: { first: 'Celeste', last: 'Thomas' }, ssn: '123-45-6789' },
+    contact_information: { email: 'c.thomas+wic@example.org' },
+  };
+  await planner.plan({
+    engine,
+    page: { title: 'Application for Celeste Thomas', domain: 'example.gov' },
+    rawFields: [
+      { fieldKey: 'applicant', type: 'select-one', label: 'Applicant (CELESTE)', question: 'Who is applying?', options: [{ label: 'Celeste Thomas' }, { value: 'thomas' }] },
+      { fieldKey: 'contact-email', groupKey: 'contact', type: 'radio', label: 'Email', question: 'Send notices to c.thomas+wic@example.org?', optionLabel: 'Use c.thomas+wic@example.org' },
+      { fieldKey: 'contact-mail', groupKey: 'contact', type: 'radio', label: 'Mail', question: 'Send notices to c.thomas+wic@example.org?', optionLabel: 'Use postal mail' },
+      { fieldKey: 'ssn-confirm', type: 'text', label: 'Confirm SSN ending 123-45-6789', question: '', required: true },
+    ],
+    participant,
+  });
+
+  assert.equal(runtime.prompts.length, 3);
+  assert.deepEqual(runtime.prompts.map((entry) => entry.role).sort(), ['gaps', 'mapper', 'reviewer']);
+  runtime.prompts.forEach(({ role, input }) => {
+    assert.doesNotMatch(input, /celeste|thomas|123-45-6789|example\.org/i, `${role} prompt leaked a participant value`);
+    assert.match(input, /\[source value\]/, `${role} prompt should carry the redaction marker`);
+  });
+  const mapperInput = JSON.parse(runtime.prompts.find((entry) => entry.role === 'mapper').input);
+  assert.deepEqual(mapperInput.page, { domain: 'example.gov' });
+  assert.deepEqual(mapperInput.availableSources.find((source) => source.purpose === 'ssn'), {
+    purpose: 'ssn',
+    label: 'Social Security Number',
+    kind: 'string',
+    sensitive: true,
+  });
+  assert.deepEqual(mapperInput.fields.find((field) => field.fieldKey === 'contact').options, ['Use [source value]', 'Use postal mail']);
+});
+
+// Mapper, gap-analyst and reviewer role steps.
+
+test('an unreadable role response aborts the plan before any mapping is returned', async () => {
+  const mapperRuntime = runtimeFor({ rawOutput: { mapper: 'not json' } });
+  planner.setRuntimeForTests(mapperRuntime);
+  const phases = [];
+  await assert.rejects(
+    planner.plan({ engine, page: { domain: 'example.gov' }, rawFields, participant: {}, onProgress: (event) => phases.push(event.phase) }),
+    /The field-mapping agent returned an unreadable plan\. No form values were changed\./,
+  );
+  assert.ok(phases.includes('planning'));
+  assert.equal(phases.includes('reviewing'), false);
+  assert.equal(mapperRuntime.prompts.some((entry) => entry.role === 'reviewer'), false);
+
+  planner.setRuntimeForTests(runtimeFor({ rawOutput: { gaps: '{"gaps":' } }));
+  await assert.rejects(
+    planner.plan({ engine, page: { domain: 'example.gov' }, rawFields, participant: {} }),
+    /The gap-analysis agent returned an unreadable plan\./,
+  );
+
+  planner.setRuntimeForTests(runtimeFor({ rawOutput: { reviewer: '' } }));
+  await assert.rejects(
+    planner.plan({ engine, page: { domain: 'example.gov' }, rawFields, participant: {} }),
+    /The form-review agent returned an unreadable plan\./,
+  );
+});
+
+// Validation step.
+
+test('reviewer-rejected mappings are dropped, and a field keeps only its first approved purpose', async () => {
+  const runtime = runtimeFor({
+    mapperMappings: [
+      { fieldKey: 'first', purpose: 'firstName', confidence: 'high', reason: 'First-name label.' },
+      { fieldKey: 'first', purpose: 'fullName', confidence: 'medium', reason: 'Could be a full name.' },
+      { fieldKey: 'last', purpose: 'lastName', confidence: 'high', reason: 'Last-name label.' },
+    ],
+    gapItems: [],
+    reviewerApproved: [
+      { fieldKey: 'first', purpose: 'firstName', reason: 'The label is exact.' },
+      { fieldKey: 'first', purpose: 'fullName', reason: 'Also plausible.' },
+    ],
+    reviewerRejected: [{ fieldKey: 'last', purpose: 'lastName', reason: 'The label names a different person.' }],
+  });
+  planner.setRuntimeForTests(runtime);
+  const result = await planner.plan({
+    engine,
+    page: { domain: 'example.gov' },
+    rawFields: [
+      { fieldKey: 'first', type: 'text', label: 'First name', required: true },
+      { fieldKey: 'last', type: 'text', label: "Parent's last name", required: true },
+    ],
+    participant: { participant: { name: { first: 'Celeste', last: 'Thomas' } } },
+  });
+
+  assert.deepEqual(result.purposeOverrides, { first: 'firstName' });
+  assert.deepEqual(result.approved.map((item) => [item.fieldKey, item.purpose]), [['first', 'firstName']]);
+  assert.deepEqual(result.rejected[0], { fieldKey: 'last', purpose: 'lastName', reason: 'The label names a different person.' });
+  assert.equal(result.rejected[1].fieldKey, 'first');
+  assert.equal(result.rejected[1].purpose, 'fullName');
+  assert.match(result.rejected[1].reason, /duplicate/);
+  assert.equal(result.metadata.proposedMappings, 3);
+  assert.equal(result.metadata.approvedMappings, 1);
+  assert.equal(result.metadata.rejectedMappings, 2);
+  assert.equal(result.metadata.summary, 'One exact mapping was approved.');
+});
+
+test('proposed gaps survive only for known, empty fields that still need a caseworker answer', async () => {
+  const runtime = runtimeFor({
+    mapperMappings: [{ fieldKey: 'first', purpose: 'firstName', confidence: 'high', reason: 'First-name label.' }],
+    reviewerApproved: [{ fieldKey: 'first', purpose: 'firstName', reason: 'Exact label.' }],
+    gapItems: [
+      { fieldKey: 'first', question: 'What is the first name?', reason: 'Answered by an approved mapping.' },
+      { fieldKey: 'nickname', question: 'Any nickname?', reason: 'Optional free text.' },
+      { fieldKey: 'filled', question: 'What is the case number?', reason: 'Already on the page.' },
+      { fieldKey: 'ghost', question: 'Unknown?', reason: 'Not in the inventory.' },
+      { fieldKey: 'pregnancy', question: 'Is the client pregnant?', reason: 'A choice with no source.' },
+      { fieldKey: 'agree', question: 'Does the client agree?', reason: 'A checkbox decision.' },
+      { fieldKey: 'appointment-video', question: 'Video appointments?', reason: 'Site-hinted, but no source answer.' },
+      { fieldKey: 'city', question: `Which city? ${'x'.repeat(400)}`, reason: 'Required, no source.' },
+    ],
+  });
+  planner.setRuntimeForTests(runtime);
+  const result = await planner.plan({
+    engine,
+    page: { domain: 'example.gov' },
+    rawFields: [
+      { fieldKey: 'first', type: 'text', label: 'First name', required: true },
+      { fieldKey: 'nickname', type: 'text', label: 'Nickname' },
+      { fieldKey: 'filled', type: 'text', label: 'Case number', required: true, value: 'on page' },
+      rawFields[1],
+      rawFields[2],
+      { fieldKey: 'agree', type: 'checkbox', label: 'I agree' },
+      { fieldKey: 'appointment-video', type: 'checkbox', label: 'Telehealth (video)', purpose: 'wicAppointmentVideo' },
+      { fieldKey: 'city', type: 'text', label: 'City', required: true },
+    ],
+    participant: { participant: { name: { first: 'Celeste' } } },
+  });
+
+  assert.deepEqual(result.purposeOverrides, { first: 'firstName', 'appointment-video': 'wicAppointmentVideo' });
+  assert.deepEqual(result.gaps.map((gap) => gap.fieldKey), ['pregnancy', 'agree', 'appointment-video', 'city']);
+  assert.equal(result.gaps[3].question.length, 280);
+});
+
+// Gateway clamp.
+
+test('a gateway plan is clamped to the inventory, the canonical purposes, and the sources on file', async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.NAVA_PLAN_GATEWAY = { endpoint: 'https://api.test/v1/plan', token: 'nava_test_secret' };
+  let sent = null;
+  globalThis.fetch = async (url, init) => {
+    sent = JSON.parse(init.body);
+    return {
+      ok: true,
+      async json() {
+        return {
+          ok: true,
+          plan: {
+            purposeOverrides: {
+              first: 'firstName',
+              ghost: 'firstName',
+              pregnancy: 'notACanonicalPurpose',
+              'child-under-five': 'wicChildUnderFive',
+              'appointment-video': 'wicAppointmentVideo',
+            },
+            approved: [{ fieldKey: 'child-under-five', purpose: 'wicChildUnderFive', source: 'site-adapter' }],
+            rejected: [{ fieldKey: 'last', purpose: 'lastName', reason: 'Gateway reviewer rejected it.' }],
+            gaps: [
+              { fieldKey: 'first', question: 'First name?', reason: 'Mapped already.' },
+              { fieldKey: 'ghost', question: 'Ghost?', reason: 'Not on the page.' },
+              { fieldKey: 'pregnancy', question: 'Is the client pregnant?', reason: 'No source.' },
+            ],
+          },
+        };
+      },
+    };
+  };
+  try {
+    const result = await planner.plan({
+      engine,
+      page: { domain: 'ruhealth.org' },
+      rawFields: [
+        ...rawFields,
+        { fieldKey: 'child-under-five', type: 'checkbox', label: 'Children 0-5' },
+        { fieldKey: 'appointment-video', type: 'checkbox', label: 'Telehealth (video)' },
+      ],
+      participant: { participant: { name: { first: 'Celeste' } } },
+    });
+
+    assert.deepEqual(result.purposeOverrides, { first: 'firstName', 'child-under-five': 'wicChildUnderFive' });
+    assert.deepEqual(result.approved.map((item) => item.fieldKey), ['first', 'child-under-five']);
+    assert.deepEqual(
+      result.rejected.map((item) => [item.fieldKey, item.purpose]),
+      [['last', 'lastName'], ['ghost', 'firstName'], ['pregnancy', 'notACanonicalPurpose'], ['appointment-video', 'wicAppointmentVideo']],
+    );
+    assert.deepEqual(result.gaps.map((gap) => gap.fieldKey), ['pregnancy']);
+    assert.equal(result.metadata.runtime, 'nava-api');
+    assert.equal(result.metadata.mode, 'shared-engine');
+    assert.deepEqual(sent.sources, [{ purpose: 'firstName', label: 'First name', kind: 'string', sensitive: false }, { purpose: 'fullName', label: 'Full name', kind: 'string', sensitive: false }]);
+    assert.equal(JSON.stringify(sent).includes('Celeste'), false);
+  } finally {
+    globalThis.fetch = previousFetch;
+    globalThis.NAVA_PLAN_GATEWAY = null;
+  }
+});
+
+test('a failed gateway response stops planning with a safe error', async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.NAVA_PLAN_GATEWAY = { endpoint: 'https://api.test/v1/plan', token: 'nava_test_secret' };
+  try {
+    globalThis.fetch = async () => ({ ok: false, async json() { return { ok: false, error: 'The shared planner is over quota.' }; } });
+    await assert.rejects(planner.plan({ engine, page: { domain: 'example.gov' }, rawFields, participant: {} }), /over quota/);
+    globalThis.fetch = async () => ({ ok: true, async json() { throw new Error('not json'); } });
+    await assert.rejects(
+      planner.plan({ engine, page: { domain: 'example.gov' }, rawFields, participant: {} }),
+      /The shared planner did not return a plan\. No form values were changed\./,
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    globalThis.NAVA_PLAN_GATEWAY = null;
+  }
+});
+
+// Metadata and usage step.
+
+function meteredRuntime(readings) {
+  const outputs = {
+    mapper: JSON.stringify({ mappings: [] }),
+    gaps: JSON.stringify({ gaps: [] }),
+    reviewer: JSON.stringify({ approved: [], rejected: [], summary: 'Nothing to approve.' }),
+  };
+  const prompts = [];
+  return {
+    prompts,
+    outputs,
+    async availability() { return 'available'; },
+    async create(options) {
+      const system = options.initialPrompts[0].content;
+      const role = system.includes('field-mapping') ? 'mapper'
+        : system.includes('gap-analysis') ? 'gaps'
+          : 'reviewer';
+      const reading = readings[role] || {};
+      return {
+        async clone() {
+          let used = reading.before;
+          return {
+            get contextUsage() { return used; },
+            contextWindow: reading.window,
+            async prompt(input) {
+              prompts.push(input);
+              used = reading.after;
+              return outputs[role];
+            },
+            destroy() {},
+          };
+        },
+        destroy() {},
+      };
+    },
+  };
+}
+
+test('on-device usage sums each role and turns unknown once any role cannot report context usage', async () => {
+  const runtime = meteredRuntime({
+    mapper: { before: 100, after: 140, window: 6000 },
+    gaps: { before: 300, after: 250, window: 6000 },
+    reviewer: { before: 50, after: 80, window: 6000 },
+  });
+  planner.setRuntimeForTests(runtime);
+  const result = await planner.plan({ engine, page: { domain: 'example.gov' }, rawFields, participant: {} });
+  const { usage } = result.metadata;
+
+  assert.equal(usage.prompts, 3);
+  assert.equal(usage.contextUsageUnits, 70);
+  assert.equal(usage.inputCharacters, runtime.prompts.reduce((total, input) => total + input.length, 0));
+  assert.equal(usage.outputCharacters, Object.values(runtime.outputs).reduce((total, text) => total + text.length, 0));
+  assert.equal(usage.inputTokens, null);
+  assert.equal(usage.outputTokens, null);
+  assert.equal(usage.providerReportedCostUsd, null);
+  assert.equal(usage.apiCostUsd, 0);
+  assert.ok(Number.isFinite(usage.durationMs));
+  assert.equal(result.metadata.provider, 'chrome-local');
+  assert.equal(result.metadata.runtime, 'chrome-gemini-nano');
+  assert.deepEqual(result.metadata.agents, ['field_mapper', 'gap_analyst', 'form_reviewer']);
+  assert.ok(!Number.isNaN(Date.parse(result.metadata.reviewedAt)));
+
+  planner.setRuntimeForTests(meteredRuntime({
+    mapper: { before: 100, after: 140 },
+    gaps: { before: 300, after: 350 },
+    reviewer: {},
+  }));
+  const partial = await planner.plan({ engine, page: { domain: 'example.gov' }, rawFields, participant: {} });
+  assert.equal(partial.metadata.usage.contextUsageUnits, null);
+  assert.equal(partial.metadata.usage.prompts, 3);
+});
+
+test('companion usage sums reported tokens and cost, and a token count any role omits stays unknown', async () => {
+  const roleResults = {
+    field_mapper: { mappings: [] },
+    gap_analyst: { gaps: [] },
+    form_reviewer: { approved: [], rejected: [], summary: 'Nothing to approve.' },
+  };
+  const roleUsage = {
+    field_mapper: { inputTokens: 40, outputTokens: 10, durationMs: 25, providerReportedCostUsd: 0.25 },
+    gap_analyst: { inputTokens: '35', outputTokens: 5, durationMs: 20, providerReportedCostUsd: 0.5 },
+    form_reviewer: { inputTokens: 50, durationMs: 30, providerReportedCostUsd: 0.25 },
+  };
+  planner.setBridgeFetchForTests(async (url, options = {}) => {
+    if (url.endsWith('/health')) {
+      return { ok: true, status: 200, async json() { return { ok: true, providers: { claude: { installed: true, subscription: true } } }; } };
+    }
+    const { role } = JSON.parse(options.body);
+    return {
+      ok: true,
+      status: 200,
+      async json() { return { ok: true, text: JSON.stringify(roleResults[role]), usage: roleUsage[role] }; },
+    };
+  });
+  planner.configure({
+    kind: 'local-cli',
+    provider: 'claude',
+    endpoint: 'http://localhost:4174/',
+    token: 'test-pairing-token-with-32-characters',
+  });
+
+  const result = await planner.plan({ engine, page: { domain: 'example.gov' }, rawFields, participant: {} });
+  const { usage } = result.metadata;
+
+  assert.equal(result.metadata.runtime, 'claude-cli-subscription');
+  assert.equal(result.metadata.provider, 'claude');
+  assert.equal(usage.prompts, 3);
+  assert.equal(usage.inputTokens, 125);
+  assert.equal(usage.outputTokens, null);
+  assert.equal(usage.durationMs, 75);
+  assert.equal(usage.providerReportedCostUsd, 1);
+  assert.equal(usage.contextUsageUnits, null);
+  assert.equal(usage.apiCostUsd, 0);
 });
