@@ -91,10 +91,10 @@
   const automaticRunQueue = [];
   const queuedAutomaticApplicationIds = new Set();
 
+  // The preview serves only the shared demo connector's primary fictional record, cloned so the panel never mutates the shared copy.
   const DEMO_RECORDS = Object.fromEntries(demoConnectorData.CLIENT_RECORDS
     .filter((record) => record.record_id === String(demoConnectorData.RECORD_ID))
-    .map((record) => [record.record_id, record]));
-
+    .map((record) => [record.record_id, structuredClone(record)]));
 
   const PREVIEW_CONNECTOR_SCHEMA = demoConnectorData.SCHEMA;
   const PREVIEW_RAW_RECORD = {
@@ -685,6 +685,76 @@
     else state.view = 'choice';
   }
 
+  /** True when this window's control generation or revision for an application differs from the coordinator's. */
+  function controlDiffersFromCoordinator(application, coordinator) {
+    return Number(coordinator.applicationGenerations?.[application.id] || 0) !== Number(application.controlGeneration || 0)
+      || Number(coordinator.applicationRevisions?.[application.id] || 0) !== Number(application.controlRevision || 0);
+  }
+
+  /**
+   * Merges this window's applications with the coordinator's for the same client session. An application changed
+   * elsewhere (control moved, or removed by the coordinator) takes the authoritative copy; an unchanged one keeps the
+   * local copy; one the coordinator has never seen stays local. Order: authoritative first, then locally unpersisted.
+   */
+  function mergeApplicationsWithCoordinator(localApps, authoritativeApps, coordinator) {
+    const localById = new Map(localApps.map((application) => [application.id, application]));
+    const authoritativeIds = new Set(authoritativeApps.map((application) => application.id));
+    const locallyUnpersistedIds = new Set(localApps.filter((application) => (
+      !authoritativeIds.has(application.id)
+      && !Object.hasOwn(coordinator.applicationGenerations || {}, application.id)
+      && !Object.hasOwn(coordinator.applicationRevisions || {}, application.id)
+    )).map((application) => application.id));
+    const changedIds = new Set(localApps.filter((application) => (
+      (!authoritativeIds.has(application.id) && !locallyUnpersistedIds.has(application.id))
+      || controlDiffersFromCoordinator(application, coordinator)
+    )).map((application) => application.id));
+    const apps = authoritativeApps.map((authoritative) => {
+      const local = localById.get(authoritative.id);
+      return local && !changedIds.has(authoritative.id)
+        ? local
+        : authoritative;
+    }).concat([...locallyUnpersistedIds].map((id) => localById.get(id)).filter(Boolean));
+    return { apps, changedIds, localById };
+  }
+
+  /** The coordinator's audit plus this window's events for the applications it kept (and session-wide events), in time order. */
+  function mergeAuditWithCoordinator(localAudit, authoritativeAudit, preservedIds) {
+    const mergedAudit = new Map(authoritativeAudit.map((event) => [event.id, event]));
+    localAudit
+      .filter((event) => !event.applicationId || preservedIds.has(event.applicationId))
+      .forEach((event) => mergedAudit.set(event.id, event));
+    return workQueueEngine.buildQueue([], [...mergedAudit.values()]
+      .sort((left, right) => Date.parse(left.at || 0) - Date.parse(right.at || 0))).audit;
+  }
+
+  /** Keeps the current application if it survived a sync; otherwise adopts the coordinator's saved choice when that one exists. */
+  function currentApplicationAfterSync(apps, currentAppId, savedCurrentAppId) {
+    const exists = (id) => apps.some((application) => application.id === id);
+    if (exists(currentAppId)) return currentAppId;
+    return exists(savedCurrentAppId) ? savedCurrentAppId : null;
+  }
+
+  /**
+   * Same client session: cancels applications changed elsewhere, takes the merged applications and audit, and leaves
+   * the current application's screen when that application changed.
+   */
+  function adoptCoordinatorChanges(response, authoritativeApps, authoritativeAudit, previousView) {
+    const { apps, changedIds, localById } = mergeApplicationsWithCoordinator(state.apps, authoritativeApps, response);
+    changedIds.forEach((id) => {
+      const application = localById.get(id);
+      if (application) cancelApplicationRun(application);
+    });
+    state.apps = apps;
+    const preservedIds = new Set(state.apps
+      .filter((application) => localById.get(application.id) === application)
+      .map((application) => application.id));
+    state.audit = mergeAuditWithCoordinator(state.audit, authoritativeAudit, preservedIds);
+    if (state.currentAppId && changedIds.has(state.currentAppId)
+      && !['choice', 'programs', 'dashboard'].includes(previousView)) {
+      state.view = 'dashboard';
+    }
+  }
+
   async function synchronizeCoordinator() {
     if (previewMode || coordinatorMutationDepth > 0) {
       coordinatorSyncPending = true;
@@ -703,52 +773,23 @@
       state.apps = authoritativeApps;
       state.audit = authoritativeAudit;
     } else {
-      const localById = new Map(state.apps.map((application) => [application.id, application]));
-      const authoritativeIds = new Set(authoritativeApps.map((application) => application.id));
-      const locallyUnpersistedIds = new Set(state.apps.filter((application) => (
-        !authoritativeIds.has(application.id)
-        && !Object.hasOwn(response.applicationGenerations || {}, application.id)
-        && !Object.hasOwn(response.applicationRevisions || {}, application.id)
-      )).map((application) => application.id));
-      const changedIds = new Set(state.apps.filter((application) => (
-        (!authoritativeIds.has(application.id) && !locallyUnpersistedIds.has(application.id))
-        || Number(response.applicationGenerations?.[application.id] || 0) !== Number(application.controlGeneration || 0)
-        || Number(response.applicationRevisions?.[application.id] || 0) !== Number(application.controlRevision || 0)
-      )).map((application) => application.id));
-      changedIds.forEach((id) => {
-        const application = localById.get(id);
-        if (application) cancelApplicationRun(application);
-      });
-      state.apps = authoritativeApps.map((authoritative) => {
-        const local = localById.get(authoritative.id);
-        return local && !changedIds.has(authoritative.id)
-          ? local
-          : authoritative;
-      }).concat([...locallyUnpersistedIds].map((id) => localById.get(id)).filter(Boolean));
-      const preservedIds = new Set(state.apps
-        .filter((application) => localById.get(application.id) === application)
-        .map((application) => application.id));
-      const mergedAudit = new Map(authoritativeAudit.map((event) => [event.id, event]));
-      state.audit
-        .filter((event) => !event.applicationId || preservedIds.has(event.applicationId))
-        .forEach((event) => mergedAudit.set(event.id, event));
-      state.audit = workQueueEngine.buildQueue([], [...mergedAudit.values()]
-        .sort((left, right) => Date.parse(left.at || 0) - Date.parse(right.at || 0))).audit;
-      if (state.currentAppId && changedIds.has(state.currentAppId)
-        && !['choice', 'programs', 'dashboard'].includes(previousView)) {
-        state.view = 'dashboard';
-      }
+      adoptCoordinatorChanges(response, authoritativeApps, authoritativeAudit, previousView);
     }
     state.participant = response.session?.participant || null;
-    if (!state.apps.some((application) => application.id === state.currentAppId)) {
-      state.currentAppId = state.apps.some((application) => application.id === response.session?.currentAppId)
-        ? response.session.currentAppId
-        : null;
-    }
+    state.currentAppId = currentApplicationAfterSync(state.apps, state.currentAppId, response.session?.currentAppId);
     applyCoordinatorMetadata(response);
     if (identityChanged) state.view = canonicalHomeView();
     else if (!state.apps.length && state.view === 'dashboard') state.view = canonicalHomeView();
     render();
+  }
+
+  /** True when the coordinator tracks an application this window has not loaded. */
+  function coordinatorHasUnknownApplications(coordinator) {
+    const localIds = new Set(state.apps.map((application) => application.id));
+    return [
+      ...Object.keys(coordinator.applicationGenerations || {}),
+      ...Object.keys(coordinator.applicationRevisions || {}),
+    ].some((id) => !localIds.has(id));
   }
 
   function coordinatorDelta(coordinator) {
@@ -757,16 +798,10 @@
       || String(coordinator.participantSessionId || '') !== state.participantSessionId) {
       return { full: true, applicationIds: [] };
     }
-    const localIds = new Set(state.apps.map((application) => application.id));
-    const coordinatedIds = new Set([
-      ...Object.keys(coordinator.applicationGenerations || {}),
-      ...Object.keys(coordinator.applicationRevisions || {}),
-    ]);
-    if ([...coordinatedIds].some((id) => !localIds.has(id))) return { full: true, applicationIds: [] };
-    const applicationIds = state.apps.filter((application) => (
-      Number(coordinator.applicationGenerations?.[application.id] || 0) !== Number(application.controlGeneration || 0)
-      || Number(coordinator.applicationRevisions?.[application.id] || 0) !== Number(application.controlRevision || 0)
-    )).map((application) => application.id);
+    if (coordinatorHasUnknownApplications(coordinator)) return { full: true, applicationIds: [] };
+    const applicationIds = state.apps
+      .filter((application) => controlDiffersFromCoordinator(application, coordinator))
+      .map((application) => application.id);
     if (applicationIds.length) return { full: false, applicationIds };
     return {
       full: Number(coordinator.stateRevision || 0) !== Number(state.coordinatorRevision || 0),
@@ -1475,552 +1510,704 @@
 
   async function onClick(button, initialUiGeneration = uiGeneration) {
     const action = button.dataset.action;
-    let uiToken = initialUiGeneration;
     state.error = '';
-    if (action === 'save-planner') {
-      const baseInput = document.getElementById('nava-api-base');
-      const tokenInput = document.getElementById('nava-api-token');
-      const base = String(baseInput?.value || '').trim();
-      const token = String(tokenInput?.value || '').trim();
-      let origin = '';
-      try {
-        origin = new URL(base).origin;
-      } catch {
-        throw new Error('Enter the full API address, including https.');
-      }
-      if (!token && !state.plannerBase) throw new Error('Paste a tenant API key.');
-      const stored = { navaApiBase: origin };
-      if (token) stored.navaApiToken = token;
-      await chrome.storage.local.set(stored);
-      state.plannerBase = origin;
-      await prepareAgentRuntime();
-      assertUiGeneration(uiToken);
-    }
-    if (action === 'client-link') {
-      const application = state.apps.find((item) => item.id === state.currentAppId);
-      if (!application) return;
-      await mintClientLink(application);
-      assertUiGeneration(uiToken);
-      render();
-    }
-    if (action === 'enable-agent') {
-      await prepareAgentRuntime();
-      assertUiGeneration(uiToken);
-      const interruptedRuns = state.apps
-        .filter((application) => application.autoRun && ['not_started', 'ready_to_fill'].includes(application.status) && application.tabId)
-        .map((application) => application.id);
-      if (interruptedRuns.length) void enqueueApplicationBatch(interruptedRuns);
-    }
-    if (action === 'home') {
-      await cancelUiBoundRuns();
-      uiToken = cancelPendingUiWork();
-      state.connectorDraft = null;
-      state.connectorSchema = [];
-      state.pendingConnectorRecord = null;
-      state.documentResult = null;
-      state.handoffApplicationId = null;
-      state.view = canonicalHomeView();
-    }
-    if (action === 'open-recertifications') await loadRecertifications(uiToken);
-    if (action === 'back-recertifications') state.view = 'recertifications';
-    if (action === 'review-recertification') {
-      state.currentRecertificationId = decoded(button.dataset.recert);
-      if (!recertificationById()) throw new Error('That recertification is no longer in the current caseload.');
-      state.view = 'recertification-detail';
-    }
-    if (['draft-recertification-outreach', 'complete-recertification-outreach'].includes(action)) {
-      const item = recertificationById();
-      if (!item) throw new Error('That recertification is no longer in the current caseload.');
-      item.outreach = action === 'draft-recertification-outreach'
-        ? { ...item.outreach, status: 'drafted', completedAt: '' }
-        : { ...item.outreach, status: 'completed', completedAt: new Date().toISOString() };
-      await saveRecertificationWorkspace(item);
-    }
-    if (action === 'prepare-recertification') {
-      const item = recertificationById();
-      if (!item) throw new Error('That recertification is no longer in the current caseload.');
-      await prepareRecertification(item, uiToken);
-      return;
-    }
-    if (action === 'choose-id') state.view = 'record';
-    if (action === 'choose-json') state.view = 'json';
-    if (action === 'configure-connector') {
-      state.connectorDraft = null;
-      state.connectorSchema = [];
-      state.pendingConnectorRecord = null;
-      state.view = managedConnector() ? 'connector' : 'providers';
-    }
-    if (action === 'back-providers') state.view = 'providers';
-    if (action === 'select-provider') {
-      const provider = connectorEngine.providerDefinition(button.dataset.provider);
-      if (!provider) throw new Error('Choose a supported data source.');
-      state.connectorDraft = {
-        provider: provider.id,
-        organizationName: '',
-        backendUrl: '',
-        connectionId: '',
-        sourceId: '',
-        maxAgeDays: 30,
-        mappings: {},
-      };
-      state.connectorSchema = [];
-      state.view = 'connector';
-    }
-    if (action === 'back-connector') state.view = 'connector';
-    if (action === 'local-connector-settings') {
-      const providerSelect = document.getElementById('connector-provider');
-      providerSelect.value = 'apricot360';
-      providerSelect.dispatchEvent(new Event('change', { bubbles: true }));
-      document.getElementById('connector-org').value = 'Riverside Community Services';
-      document.getElementById('connector-url').value = 'http://127.0.0.1:4789';
-      document.getElementById('connection-id').value = 'nava-demo';
-      document.getElementById('connector-source-id').value = '99';
-      return;
-    }
-    if (action === 'reset-connector') {
-      setBusy('Disconnecting the data source…');
-      await withCoordinatorMutation(async () => {
-        const response = await sendRuntime({ type: 'RESET_CONNECTOR', sessionEpoch: state.sessionEpoch });
-        await reconcileConnectorMutation(response, uiToken, 'choice');
-      });
-    }
-    if (action === 'choose-document') {
-      state.documentResult = null;
-      state.view = 'document';
-    }
-    if (action === 'back-choice') state.view = 'choice';
-    if (action === 'back-record-id') {
-      state.pendingConnectorRecord = null;
-      state.view = 'record';
-    }
-    if (action === 'confirm-connector-record') {
-      if (!state.pendingConnectorRecord) throw new Error('Retrieve and review a connector record first.');
-      const participant = state.pendingConnectorRecord;
-      const activeTab = await getActiveTab();
-      assertUiGeneration(uiToken);
-      await commitParticipant(participant);
-      assertUiGeneration(uiToken);
-      state.pendingConnectorRecord = null;
-      state.activeTab = activeTab;
-      state.view = 'programs';
-      await persist();
-    }
-    if (action === 'back-programs') state.view = 'programs';
-    if (action === 'back-document') {
-      state.documentResult = null;
-      state.view = 'document';
-    }
-    if (action === 'change-client') {
-      cancelAllRuns();
-      uiToken = cancelPendingUiWork();
-      state.participant = null;
-      state.documentResult = null;
-      state.pendingConnectorRecord = null;
-      state.apps = [];
-      state.currentAppId = null;
-      state.previewPage = 1;
-      state.view = 'choice';
-      await clearAssistantState();
-    }
-    if (action === 'back-dashboard') {
-      state.handoffApplicationId = null;
-      state.view = 'dashboard';
-    }
-    if (action === 'add-application') {
-      const activeTab = await getActiveTab();
-      assertUiGeneration(uiToken);
-      state.activeTab = activeTab;
-      state.view = 'programs';
-    }
-    if (action === 'reload-source') {
-      state.view = 'choice';
-    }
-    if (action === 'export-audit') {
-      await exportAuditLog(uiToken);
-      return;
-    }
-    if (action === 'use-sample') {
-      document.getElementById('client-json').value = JSON.stringify(DEMO_RECORDS['339619'], null, 2);
-      return;
-    }
-    if (action === 'start-over') {
-      cancelAllRuns();
-      uiToken = cancelPendingUiWork();
-      recordAudit('session_ended', null);
-      state.participant = null;
-      state.documentResult = null;
-      state.pendingConnectorRecord = null;
-      state.apps = [];
-      state.currentAppId = null;
-      state.previewPage = 1;
-      state.view = 'choice';
-      await clearAssistantState();
-    }
-    if (['answer', 'answer-run', 'fill', 'run', 'review', 'rescan', 'go-tab', 'scan-application', 'resume', 'resume-current', 'resume-human-checkpoint', 'open-handoff', 'pause', 'accept-handoff'].includes(action)) {
-      const id = decoded(button.dataset.app);
-      const application = state.apps.find((item) => item.id === id);
-      if (!application) throw new Error('That application is no longer available.');
-      state.currentAppId = id;
-      if (action === 'answer' || action === 'answer-run') {
-        application.autoRun = action === 'answer-run';
-        state.view = 'questions';
-      }
-      if (action === 'fill') {
-        await withNewApplicationRun(
-          application,
-          (runToken) => withApplicationLease(
-            application,
-            () => fillApplication(application, [], [], { runToken }),
-          ),
-          { uiBound: true },
-        );
-      }
-      if (action === 'run') {
-        state.view = 'dashboard';
-        render();
-        await withNewApplicationRun(
-          application,
-          (runToken) => withApplicationLease(
-            application,
-            () => runThroughApplication(application, [], [], { background: true, runToken }),
-          ),
-          { uiBound: true },
-        );
-      }
-      if (action === 'review') state.view = 'review';
-      if (action === 'rescan') {
-        const tab = previewMode ? { id: application.tabId, url: application.url } : await chrome.tabs.get(application.tabId);
-        assertUiGeneration(uiToken);
-        await scanTab(tab, { applicationId: application.id, uiToken });
-      }
-      if (action === 'scan-application') {
-        const tab = previewMode ? { id: application.tabId, url: application.url } : await chrome.tabs.get(application.tabId);
-        assertUiGeneration(uiToken);
-        await scanTab(tab, { applicationId: application.id, uiToken });
-      }
-      if (action === 'resume' || action === 'resume-current') {
-        await withNewApplicationRun(
-          application,
-          (runToken) => withApplicationLease(
-            application,
-            () => resumeApplication(application, action === 'resume-current', { runToken }),
-          ),
-          { uiBound: true },
-        );
-      }
-      if (action === 'resume-human-checkpoint') {
-        await withNewApplicationRun(
-          application,
-          (runToken) => withApplicationLease(
-            application,
-            () => resumeHumanCheckpoint(application, { runToken }),
-          ),
-          { uiBound: true },
-        );
-      }
-      if (action === 'open-handoff') {
-        await revokeApplicationRun(application);
-        setCheckpoint(application, 'voluntary_pause', 'Paused while caseworker chooses a handoff', 'paused');
-        state.handoffApplicationId = application.id;
-        state.view = 'handoff';
-        await persist({ applicationIds: [application.id] });
-      }
-      if (action === 'pause') {
-        await revokeApplicationRun(application);
-        setCheckpoint(application, 'voluntary_pause', 'Paused by caseworker', 'paused');
-        state.handoffApplicationId = null;
-        state.view = 'dashboard';
-        await persist({ applicationIds: [application.id] });
-      }
-      if (action === 'accept-handoff') {
-        const acceptedAt = new Date().toISOString();
-        application.handoff = { ...application.handoff, acceptedAt };
-        application.owner = { ...application.owner, state: 'active', assignedAt: application.owner?.assignedAt || acceptedAt };
-        application.status = 'paused';
-        application.checkpoint = checkpoint('voluntary_pause', 'Handoff accepted; verify page before resuming');
-        application.updatedAt = acceptedAt;
-        recordAudit('handoff_accepted', application, { actor: application.owner?.assignedTo, toStatus: 'paused' });
-        await persist({ applicationIds: [application.id] });
-      }
-      if (action === 'go-tab') await goToApplication(application);
-    }
-    if (action === 'analyze-current') {
-      const activeTab = await getActiveTab();
-      assertUiGeneration(uiToken);
-      state.activeTab = activeTab;
-      await scanTab(state.activeTab, { uiToken });
-    }
-    assertUiGeneration(uiToken);
-    render();
+    await runUiHandler(CLICK_ACTIONS, action, { action, button, uiToken: initialUiGeneration });
   }
 
   async function onSubmit(form, uiToken = uiGeneration) {
     assertUiGeneration(uiToken);
     state.error = '';
-    if (form.id === 'model-provider-form') {
-      await saveAgentProvider(form, uiToken);
-      render();
-      return;
+    await runUiHandler(SUBMIT_ACTIONS, form.id, { form, uiToken });
+  }
+
+  // Click and submit handlers share one ending. By default the dispatcher re-checks the UI generation and renders.
+  // A handler that starts a new UI generation returns { uiToken } so the check uses it. SKIP_FINAL_RENDER means the
+  // handler has already rendered, or it changed inputs on the current screen that a render would wipe out.
+  const SKIP_FINAL_RENDER = Object.freeze({ skipFinalRender: true });
+
+  async function runUiHandler(handlers, key, context) {
+    const handler = handlers.get(key);
+    const outcome = handler ? await handler(context) : undefined;
+    if (outcome === SKIP_FINAL_RENDER) return;
+    assertUiGeneration(outcome?.uiToken ?? context.uiToken);
+    render();
+  }
+
+  /** A handler for buttons whose only effect is switching to another screen. */
+  function showScreen(view) {
+    return () => {
+      state.view = view;
+    };
+  }
+
+  // Agent runtime and shared planner gateway actions.
+
+  async function savePlannerGateway({ uiToken }) {
+    const baseInput = document.getElementById('nava-api-base');
+    const tokenInput = document.getElementById('nava-api-token');
+    const base = String(baseInput?.value || '').trim();
+    const token = String(tokenInput?.value || '').trim();
+    let origin = '';
+    try {
+      origin = new URL(base).origin;
+    } catch {
+      throw new Error('Enter the full API address, including https.');
     }
-    if (form.id === 'recertification-intake-form') {
-      const item = recertificationById();
-      if (!item) throw new Error('That recertification is no longer in the current caseload.');
-      const data = new FormData(form);
-      const recordedAt = new Date().toISOString();
-      const requirements = Object.fromEntries(item.requirements.map((requirement) => {
-        const status = String(data.get(`requirement-${requirement.key}`) || 'missing');
-        const note = String(data.get(`note-${requirement.key}`) || '').replace(/\s+/g, ' ').trim().slice(0, 240);
-        return [requirement.key, { status, note, confirmedAt: status === 'confirmed' ? recordedAt : '' }];
-      }));
-      const requestedConsent = String(data.get('consent') || 'not_asked');
-      const consentStatus = requestedConsent === 'not_asked' && item.outreach.status !== 'not_started' ? 'invited' : requestedConsent;
-      const updated = recertificationEngine.normalizeCase({
-        ...item,
-        requirements,
-        consent: {
-          status: consentStatus,
-          recordedAt: ['authorized', 'declined'].includes(consentStatus) ? recordedAt : '',
-        },
-        outreach: item.outreach,
-      });
-      const index = state.recertifications.findIndex((candidate) => candidate.id === item.id);
-      state.recertifications.splice(index, 1, updated);
-      await saveRecertificationWorkspace(updated);
-      state.currentRecertificationId = updated.id;
-      state.view = 'recertification-detail';
-      render();
-      return;
-    }
-    if (form.id === 'handoff-form') {
-      const application = state.apps.find((item) => item.id === state.handoffApplicationId);
-      if (!application) throw new Error('That application is no longer available.');
-      const data = new FormData(form);
-      const assignedTo = String(data.get('assignedTo') || '').replace(/\s+/g, ' ').trim().slice(0, 80);
-      const reason = String(data.get('reason') || 'other');
-      if (assignedTo.length < 2) throw new Error('Enter the caseworker or team receiving this handoff.');
-      const createdAt = new Date().toISOString();
-      application.owner = { assignedTo, state: 'pending', assignedAt: createdAt };
-      application.handoff = { to: assignedTo, reason, createdAt, acceptedAt: null };
-      application.status = 'handoff_pending';
-      application.checkpoint = checkpoint('handoff', 'Assigned handoff awaiting acceptance');
-      application.autoRun = false;
-      application.updatedAt = createdAt;
-      recordAudit('handoff_created', application, { actor: assignedTo, checkpointKind: 'handoff', toStatus: 'handoff_pending' });
-      state.handoffApplicationId = null;
-      state.view = 'dashboard';
-      await persist({ applicationIds: [application.id] });
-      assertUiGeneration(uiToken);
-    }
-    if (form.id === 'connector-form') {
-      const data = new FormData(form);
-      const submittedIdentity = {
-        provider: String(data.get('provider') || '').trim(),
-        backendUrl: String(data.get('backendUrl') || '').trim(),
-        connectionId: String(data.get('connectionId') || '').trim(),
-        sourceId: String(data.get('sourceId') || '').trim(),
-      };
-      const sameMappedSource = managedConnector()
-        && ['provider', 'backendUrl', 'connectionId', 'sourceId']
-          .every((key) => String(state.connector[key] || '').trim() === submittedIdentity[key]);
-      const config = {
-        ...submittedIdentity,
-        organizationName: String(data.get('organizationName') || '').trim(),
-        maxAgeDays: Number(data.get('maxAgeDays')),
-        mappings: sameMappedSource ? state.connector.mappings : {},
-        mappingVersion: sameMappedSource ? Number(state.connector.mappingVersion || 1) + 1 : 1,
-      };
-      setBusy('Testing the connector and loading labeled fields…');
-      const response = await sendRuntime({ type: 'DISCOVER_CONNECTOR', config });
-      assertUiGeneration(uiToken);
-      if (!response?.ok) throw new Error(response?.error || 'The connector could not be verified.');
-      state.connectorDraft = { ...response.config, mappings: response.suggestions || {} };
-      state.connectorSchema = response.schema || [];
-      state.view = 'connector-mapping';
-    }
-    if (form.id === 'connector-mapping-form') {
-      const data = new FormData(form);
-      const mappings = {};
-      connectorEngine.CANONICAL_FIELDS.forEach((field) => {
-        const source = String(data.get(`map-${field.key}`) || '').trim();
-        if (source) mappings[field.key] = source;
-      });
-      const config = { ...state.connectorDraft, mappings };
-      setBusy('Saving the reviewed field mapping…');
-      await withCoordinatorMutation(async () => {
-        const response = await sendRuntime({
-          type: 'SAVE_CONNECTOR',
-          sessionEpoch: state.sessionEpoch,
-          config,
-          schema: state.connectorSchema,
-        });
-        await reconcileConnectorMutation(response, uiToken);
-      });
-    }
-    if (form.id === 'record-form') {
-      await lookupRecord(new FormData(form).get('recordId'), uiToken);
-    }
-    if (form.id === 'json-form') {
-      const raw = new FormData(form).get('clientJson');
-      let parsed;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        throw new Error('That is not valid JSON. Check the commas and quotation marks, then try again.');
-      }
-      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('Paste one client record as a JSON object.');
-      const activeTab = await getActiveTab();
-      assertUiGeneration(uiToken);
-      await commitParticipant(parsed);
-      assertUiGeneration(uiToken);
-      state.activeTab = activeTab;
-      state.view = 'programs';
-      await persist();
-    }
-    if (form.id === 'document-form') {
-      const file = form.elements.clientDocument?.files?.[0];
-      setBusy('Reading the document on this device…');
-      const documentResult = await globalThis.NavaDocumentParser.parseDocument(file, {
-        onProgress(update) {
-          if (uiToken !== uiGeneration) return;
-          const page = update.pageNumber ? ` page ${update.pageNumber}${update.totalPages ? ` of ${update.totalPages}` : ''}` : '';
-          const percent = Number.isFinite(update.progress) && update.progress > 0 ? ` · ${Math.round(update.progress * 100)}%` : '';
-          setBusy(`On-device OCR${page}: ${update.status || 'working'}${percent}`);
-        },
-      });
-      assertUiGeneration(uiToken);
-      state.documentResult = documentResult;
-      state.view = 'document-review';
-    }
-    if (form.id === 'document-review-form') {
-      const result = state.documentResult;
-      if (!result) throw new Error('Choose and read a document first.');
-      const selectedIndexes = new FormData(form).getAll('fieldIndex').map(Number);
-      if (!selectedIndexes.length) throw new Error('Select at least one detail to use.');
-      const selected = selectedIndexes.map((index) => result.fields[index]).filter(Boolean);
-      const currentValues = state.participant ? clientSummary().values : {};
-      const existing = Object.fromEntries(Object.entries(currentValues).filter(([, value]) => value !== undefined && value !== null && value !== ''));
-      const additions = Object.fromEntries(selected.map((field) => [field.key, field.value]));
-      const activeTab = await getActiveTab();
-      assertUiGeneration(uiToken);
-      const participant = {
-        ...existing,
-        ...additions,
-        ...(state.participant?._connector ? { _connector: state.participant._connector } : {}),
-        _documentSources: [
-          ...(state.participant?._documentSources || []),
-          {
-            name: result.file.name,
-            fields: selected.map((field) => field.key),
-            quality: result.quality,
-            provenance: selected.map((field) => ({
-              key: field.key,
-              confidence: field.confidence,
-              ocrConfidence: field.ocrConfidence,
-              source: field.source,
-            })),
-          },
-        ],
-      };
-      await commitParticipant(participant);
-      assertUiGeneration(uiToken);
-      state.documentResult = null;
-      state.activeTab = activeTab;
-      state.view = 'programs';
-      await persist();
-    }
-    if (form.id === 'program-form') {
-      const values = new FormData(form).getAll('program');
-      if (!values.length) throw new Error('Choose at least one application or the current form.');
-      await prepareAgentRuntime();
-      assertUiGeneration(uiToken);
-      const applicationsToRun = [];
-      if (values.includes('current')) {
-        const activeTab = await getActiveTab();
-        assertUiGeneration(uiToken);
-        state.activeTab = activeTab;
-        applicationsToRun.push(await scanTab(state.activeTab, { uiToken }));
-      }
-      applicationsToRun.push(...await openSelectedPrograms(values));
-      const showDashboard = uiToken === uiGeneration;
-      if (showDashboard) state.view = 'dashboard';
-      await persist({
-        applicationIds: applicationsToRun.map((application) => application.id),
-        includeCurrentAppId: true,
-      });
-      if (showDashboard) render();
-      void enqueueApplicationBatch(applicationsToRun.map((application) => application.id)).catch((error) => {
-        state.error = error.message;
-        if (state.view === 'dashboard') render();
-      });
-      return;
-    }
-    if (form.id === 'questions-form') {
-      const application = state.apps.find((item) => item.id === state.currentAppId);
-      if (!application) throw new Error('That application is no longer available.');
-      const data = new FormData(form);
-      const userAssignments = [];
-      const unresolved = [];
-      (application.analysis?.gaps || []).forEach((gap, index) => {
-        if (gap.inputType === 'multi_choice') {
-          const selected = data.getAll(`answer-${index}`).map((value) => String(value));
-          const noneSelected = selected.includes('__none__');
-          const chosen = new Set(selected.filter((value) => value !== '__none__'));
-          if (!selected.length || (noneSelected && chosen.size)) {
-            unresolved.push(gap);
-            return;
-          }
-          (gap.members || []).forEach((member) => userAssignments.push({
-            fieldKey: member.fieldKey,
-            label: member.label,
-            purpose: member.purpose,
-            value: noneSelected || !chosen.has(member.fieldKey) ? 'no' : 'yes',
-            source: 'user',
-            detail: 'Your answer in this browser session',
-            sensitive: Boolean(member.sensitive),
-          }));
-          return;
-        }
-        const answer = String(data.get(`answer-${index}`) || '').trim();
-        if (!answer) {
-          unresolved.push(gap);
-          return;
-        }
-        userAssignments.push({
-          fieldKey: gap.fieldKey,
-          label: gap.label,
-          purpose: gap.purpose,
-          value: answer,
-          source: 'user',
-          detail: 'Your answer in this browser session',
-          sensitive: gap.sensitive,
-        });
-      });
-      if (application.autoRun) {
-        state.view = 'dashboard';
-        render();
-        await withNewApplicationRun(
-          application,
-          (runToken) => withApplicationLease(
-            application,
-            () => runThroughApplication(application, userAssignments, unresolved, { background: true, runToken }),
-          ),
-          { uiBound: true },
-        );
-      }
-      else {
-        await withNewApplicationRun(
-          application,
-          (runToken) => withApplicationLease(
-            application,
-            () => fillApplication(application, userAssignments, unresolved, { runToken }),
-          ),
-          { uiBound: true },
-        );
-      }
-    }
+    if (!token && !state.plannerBase) throw new Error('Paste a tenant API key.');
+    const stored = { navaApiBase: origin };
+    if (token) stored.navaApiToken = token;
+    await chrome.storage.local.set(stored);
+    state.plannerBase = origin;
+    await prepareAgentRuntime();
+    assertUiGeneration(uiToken);
+  }
+
+  async function createClientLink({ uiToken }) {
+    const application = state.apps.find((item) => item.id === state.currentAppId);
+    if (!application) return SKIP_FINAL_RENDER;
+    await mintClientLink(application);
     assertUiGeneration(uiToken);
     render();
   }
+
+  async function enableAgent({ uiToken }) {
+    await prepareAgentRuntime();
+    assertUiGeneration(uiToken);
+    const interruptedRuns = state.apps
+      .filter((application) => application.autoRun && ['not_started', 'ready_to_fill'].includes(application.status) && application.tabId)
+      .map((application) => application.id);
+    if (interruptedRuns.length) void enqueueApplicationBatch(interruptedRuns);
+  }
+
+  async function submitModelProvider({ form, uiToken }) {
+    await saveAgentProvider(form, uiToken);
+    render();
+    return SKIP_FINAL_RENDER;
+  }
+
+  const AGENT_CLICK_ACTIONS = [
+    ['save-planner', savePlannerGateway],
+    ['client-link', createClientLink],
+    ['enable-agent', enableAgent],
+  ];
+  const AGENT_SUBMIT_ACTIONS = [
+    ['model-provider-form', submitModelProvider],
+  ];
+
+  // Recertification caseload actions.
+
+  function currentRecertification() {
+    const item = recertificationById();
+    if (!item) throw new Error('That recertification is no longer in the current caseload.');
+    return item;
+  }
+
+  async function openRecertifications({ uiToken }) {
+    await loadRecertifications(uiToken);
+  }
+
+  function reviewRecertification({ button }) {
+    state.currentRecertificationId = decoded(button.dataset.recert);
+    currentRecertification();
+    state.view = 'recertification-detail';
+  }
+
+  async function draftRecertificationOutreach() {
+    const item = currentRecertification();
+    item.outreach = { ...item.outreach, status: 'drafted', completedAt: '' };
+    await saveRecertificationWorkspace(item);
+  }
+
+  async function completeRecertificationOutreach() {
+    const item = currentRecertification();
+    item.outreach = { ...item.outreach, status: 'completed', completedAt: new Date().toISOString() };
+    await saveRecertificationWorkspace(item);
+  }
+
+  async function prepareCurrentRecertification({ uiToken }) {
+    await prepareRecertification(currentRecertification(), uiToken);
+    return SKIP_FINAL_RENDER;
+  }
+
+  async function submitRecertificationIntake({ form }) {
+    const item = currentRecertification();
+    const data = new FormData(form);
+    const recordedAt = new Date().toISOString();
+    const requirements = Object.fromEntries(item.requirements.map((requirement) => {
+      const status = String(data.get(`requirement-${requirement.key}`) || 'missing');
+      const note = String(data.get(`note-${requirement.key}`) || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+      return [requirement.key, { status, note, confirmedAt: status === 'confirmed' ? recordedAt : '' }];
+    }));
+    const requestedConsent = String(data.get('consent') || 'not_asked');
+    const consentStatus = requestedConsent === 'not_asked' && item.outreach.status !== 'not_started' ? 'invited' : requestedConsent;
+    const updated = recertificationEngine.normalizeCase({
+      ...item,
+      requirements,
+      consent: {
+        status: consentStatus,
+        recordedAt: ['authorized', 'declined'].includes(consentStatus) ? recordedAt : '',
+      },
+      outreach: item.outreach,
+    });
+    const index = state.recertifications.findIndex((candidate) => candidate.id === item.id);
+    state.recertifications.splice(index, 1, updated);
+    await saveRecertificationWorkspace(updated);
+    state.currentRecertificationId = updated.id;
+    state.view = 'recertification-detail';
+    render();
+    return SKIP_FINAL_RENDER;
+  }
+
+  const RECERTIFICATION_CLICK_ACTIONS = [
+    ['open-recertifications', openRecertifications],
+    ['back-recertifications', showScreen('recertifications')],
+    ['review-recertification', reviewRecertification],
+    ['draft-recertification-outreach', draftRecertificationOutreach],
+    ['complete-recertification-outreach', completeRecertificationOutreach],
+    ['prepare-recertification', prepareCurrentRecertification],
+  ];
+  const RECERTIFICATION_SUBMIT_ACTIONS = [
+    ['recertification-intake-form', submitRecertificationIntake],
+  ];
+
+  // Client intake actions: choosing the client source, the programs, and returning home or ending the session.
+
+  async function returnHome() {
+    await cancelUiBoundRuns();
+    const uiToken = cancelPendingUiWork();
+    state.connectorDraft = null;
+    state.connectorSchema = [];
+    state.pendingConnectorRecord = null;
+    state.documentResult = null;
+    state.handoffApplicationId = null;
+    state.view = canonicalHomeView();
+    return { uiToken };
+  }
+
+  /** Stops every run, cancels pending screens, forgets the client and their applications, and clears the saved session. */
+  async function endClientSession({ recordSessionEnd }) {
+    cancelAllRuns();
+    const uiToken = cancelPendingUiWork();
+    if (recordSessionEnd) recordAudit('session_ended', null);
+    state.participant = null;
+    state.documentResult = null;
+    state.pendingConnectorRecord = null;
+    state.apps = [];
+    state.currentAppId = null;
+    state.previewPage = 1;
+    state.view = 'choice';
+    await clearAssistantState();
+    return { uiToken };
+  }
+
+  async function changeClient() {
+    return endClientSession({ recordSessionEnd: false });
+  }
+
+  async function startOver() {
+    return endClientSession({ recordSessionEnd: true });
+  }
+
+  function openDocumentUpload() {
+    state.documentResult = null;
+    state.view = 'document';
+  }
+
+  function useSampleRecord() {
+    document.getElementById('client-json').value = JSON.stringify(DEMO_RECORDS['339619'], null, 2);
+    return SKIP_FINAL_RENDER;
+  }
+
+  async function submitRecordId({ form, uiToken }) {
+    await lookupRecord(new FormData(form).get('recordId'), uiToken);
+  }
+
+  async function submitClientJson({ form, uiToken }) {
+    const raw = new FormData(form).get('clientJson');
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error('That is not valid JSON. Check the commas and quotation marks, then try again.');
+    }
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('Paste one client record as a JSON object.');
+    const activeTab = await getActiveTab();
+    assertUiGeneration(uiToken);
+    await commitParticipant(parsed);
+    assertUiGeneration(uiToken);
+    state.activeTab = activeTab;
+    state.view = 'programs';
+    await persist();
+  }
+
+  async function submitClientDocument({ form, uiToken }) {
+    const file = form.elements.clientDocument?.files?.[0];
+    setBusy('Reading the document on this device…');
+    const documentResult = await globalThis.NavaDocumentParser.parseDocument(file, {
+      onProgress(update) {
+        if (uiToken !== uiGeneration) return;
+        const page = update.pageNumber ? ` page ${update.pageNumber}${update.totalPages ? ` of ${update.totalPages}` : ''}` : '';
+        const percent = Number.isFinite(update.progress) && update.progress > 0 ? ` · ${Math.round(update.progress * 100)}%` : '';
+        setBusy(`On-device OCR${page}: ${update.status || 'working'}${percent}`);
+      },
+    });
+    assertUiGeneration(uiToken);
+    state.documentResult = documentResult;
+    state.view = 'document-review';
+  }
+
+  async function submitDocumentReview({ form, uiToken }) {
+    const result = state.documentResult;
+    if (!result) throw new Error('Choose and read a document first.');
+    const selectedIndexes = new FormData(form).getAll('fieldIndex').map(Number);
+    if (!selectedIndexes.length) throw new Error('Select at least one detail to use.');
+    const selected = selectedIndexes.map((index) => result.fields[index]).filter(Boolean);
+    const currentValues = state.participant ? clientSummary().values : {};
+    const existing = Object.fromEntries(Object.entries(currentValues).filter(([, value]) => value !== undefined && value !== null && value !== ''));
+    const additions = Object.fromEntries(selected.map((field) => [field.key, field.value]));
+    const activeTab = await getActiveTab();
+    assertUiGeneration(uiToken);
+    const participant = {
+      ...existing,
+      ...additions,
+      ...(state.participant?._connector ? { _connector: state.participant._connector } : {}),
+      _documentSources: [
+        ...(state.participant?._documentSources || []),
+        {
+          name: result.file.name,
+          fields: selected.map((field) => field.key),
+          quality: result.quality,
+          provenance: selected.map((field) => ({
+            key: field.key,
+            confidence: field.confidence,
+            ocrConfidence: field.ocrConfidence,
+            source: field.source,
+          })),
+        },
+      ],
+    };
+    await commitParticipant(participant);
+    assertUiGeneration(uiToken);
+    state.documentResult = null;
+    state.activeTab = activeTab;
+    state.view = 'programs';
+    await persist();
+  }
+
+  async function submitProgramChoice({ form, uiToken }) {
+    const values = new FormData(form).getAll('program');
+    if (!values.length) throw new Error('Choose at least one application or the current form.');
+    await prepareAgentRuntime();
+    assertUiGeneration(uiToken);
+    const applicationsToRun = [];
+    if (values.includes('current')) {
+      const activeTab = await getActiveTab();
+      assertUiGeneration(uiToken);
+      state.activeTab = activeTab;
+      applicationsToRun.push(await scanTab(state.activeTab, { uiToken }));
+    }
+    applicationsToRun.push(...await openSelectedPrograms(values));
+    const showDashboard = uiToken === uiGeneration;
+    if (showDashboard) state.view = 'dashboard';
+    await persist({
+      applicationIds: applicationsToRun.map((application) => application.id),
+      includeCurrentAppId: true,
+    });
+    if (showDashboard) render();
+    void enqueueApplicationBatch(applicationsToRun.map((application) => application.id)).catch((error) => {
+      state.error = error.message;
+      if (state.view === 'dashboard') render();
+    });
+    return SKIP_FINAL_RENDER;
+  }
+
+  const INTAKE_CLICK_ACTIONS = [
+    ['home', returnHome],
+    ['choose-id', showScreen('record')],
+    ['choose-json', showScreen('json')],
+    ['choose-document', openDocumentUpload],
+    ['back-choice', showScreen('choice')],
+    ['back-document', openDocumentUpload],
+    ['back-programs', showScreen('programs')],
+    ['reload-source', showScreen('choice')],
+    ['use-sample', useSampleRecord],
+    ['change-client', changeClient],
+    ['start-over', startOver],
+  ];
+  const INTAKE_SUBMIT_ACTIONS = [
+    ['record-form', submitRecordId],
+    ['json-form', submitClientJson],
+    ['document-form', submitClientDocument],
+    ['document-review-form', submitDocumentReview],
+    ['program-form', submitProgramChoice],
+  ];
+
+  // Data-source connector actions: provider choice, settings, field mapping, and confirming a retrieved record.
+
+  function configureConnector() {
+    state.connectorDraft = null;
+    state.connectorSchema = [];
+    state.pendingConnectorRecord = null;
+    state.view = managedConnector() ? 'connector' : 'providers';
+  }
+
+  function selectConnectorProvider({ button }) {
+    const provider = connectorEngine.providerDefinition(button.dataset.provider);
+    if (!provider) throw new Error('Choose a supported data source.');
+    state.connectorDraft = {
+      provider: provider.id,
+      organizationName: '',
+      backendUrl: '',
+      connectionId: '',
+      sourceId: '',
+      maxAgeDays: 30,
+      mappings: {},
+    };
+    state.connectorSchema = [];
+    state.view = 'connector';
+  }
+
+  /** Fills the connector form with the local mock connector's settings; the caseworker still reviews and submits it. */
+  function fillLocalConnectorSettings() {
+    const providerSelect = document.getElementById('connector-provider');
+    providerSelect.value = 'apricot360';
+    providerSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    document.getElementById('connector-org').value = 'Riverside Community Services';
+    document.getElementById('connector-url').value = 'http://127.0.0.1:4789';
+    document.getElementById('connection-id').value = 'nava-demo';
+    document.getElementById('connector-source-id').value = '99';
+    return SKIP_FINAL_RENDER;
+  }
+
+  async function resetConnector({ uiToken }) {
+    setBusy('Disconnecting the data source…');
+    await withCoordinatorMutation(async () => {
+      const response = await sendRuntime({ type: 'RESET_CONNECTOR', sessionEpoch: state.sessionEpoch });
+      await reconcileConnectorMutation(response, uiToken, 'choice');
+    });
+  }
+
+  function backToRecordId() {
+    state.pendingConnectorRecord = null;
+    state.view = 'record';
+  }
+
+  async function confirmConnectorRecord({ uiToken }) {
+    if (!state.pendingConnectorRecord) throw new Error('Retrieve and review a connector record first.');
+    const participant = state.pendingConnectorRecord;
+    const activeTab = await getActiveTab();
+    assertUiGeneration(uiToken);
+    await commitParticipant(participant);
+    assertUiGeneration(uiToken);
+    state.pendingConnectorRecord = null;
+    state.activeTab = activeTab;
+    state.view = 'programs';
+    await persist();
+  }
+
+  /** The submitted connector settings. Resubmitting the saved source keeps its reviewed mappings under the next mapping version. */
+  function connectorConfigFromForm(data) {
+    const submittedIdentity = {
+      provider: String(data.get('provider') || '').trim(),
+      backendUrl: String(data.get('backendUrl') || '').trim(),
+      connectionId: String(data.get('connectionId') || '').trim(),
+      sourceId: String(data.get('sourceId') || '').trim(),
+    };
+    const sameMappedSource = managedConnector()
+      && ['provider', 'backendUrl', 'connectionId', 'sourceId']
+        .every((key) => String(state.connector[key] || '').trim() === submittedIdentity[key]);
+    return {
+      ...submittedIdentity,
+      organizationName: String(data.get('organizationName') || '').trim(),
+      maxAgeDays: Number(data.get('maxAgeDays')),
+      mappings: sameMappedSource ? state.connector.mappings : {},
+      mappingVersion: sameMappedSource ? Number(state.connector.mappingVersion || 1) + 1 : 1,
+    };
+  }
+
+  async function submitConnectorSettings({ form, uiToken }) {
+    const config = connectorConfigFromForm(new FormData(form));
+    setBusy('Testing the connector and loading labeled fields…');
+    const response = await sendRuntime({ type: 'DISCOVER_CONNECTOR', config });
+    assertUiGeneration(uiToken);
+    if (!response?.ok) throw new Error(response?.error || 'The connector could not be verified.');
+    state.connectorDraft = { ...response.config, mappings: response.suggestions || {} };
+    state.connectorSchema = response.schema || [];
+    state.view = 'connector-mapping';
+  }
+
+  async function submitConnectorMapping({ form, uiToken }) {
+    const data = new FormData(form);
+    const mappings = {};
+    connectorEngine.CANONICAL_FIELDS.forEach((field) => {
+      const source = String(data.get(`map-${field.key}`) || '').trim();
+      if (source) mappings[field.key] = source;
+    });
+    const config = { ...state.connectorDraft, mappings };
+    setBusy('Saving the reviewed field mapping…');
+    await withCoordinatorMutation(async () => {
+      const response = await sendRuntime({
+        type: 'SAVE_CONNECTOR',
+        sessionEpoch: state.sessionEpoch,
+        config,
+        schema: state.connectorSchema,
+      });
+      await reconcileConnectorMutation(response, uiToken);
+    });
+  }
+
+  const CONNECTOR_CLICK_ACTIONS = [
+    ['configure-connector', configureConnector],
+    ['back-providers', showScreen('providers')],
+    ['select-provider', selectConnectorProvider],
+    ['back-connector', showScreen('connector')],
+    ['local-connector-settings', fillLocalConnectorSettings],
+    ['reset-connector', resetConnector],
+    ['back-record-id', backToRecordId],
+    ['confirm-connector-record', confirmConnectorRecord],
+  ];
+  const CONNECTOR_SUBMIT_ACTIONS = [
+    ['connector-form', submitConnectorSettings],
+    ['connector-mapping-form', submitConnectorMapping],
+  ];
+
+  // Application actions: the dashboard, each application card, handoffs, and answers to open questions.
+
+  /** Card buttons name their application in data-app. It must still exist, and it becomes the current application. */
+  function cardApplication(button) {
+    const id = decoded(button.dataset.app);
+    const application = state.apps.find((item) => item.id === id);
+    if (!application) throw new Error('That application is no longer available.');
+    state.currentAppId = id;
+    return application;
+  }
+
+  function forCardApplication(handler) {
+    return (context) => handler(cardApplication(context.button), context);
+  }
+
+  /** A caseworker-started run: a new run token bound to this screen, holding the application's write lease throughout. */
+  function withLeasedUiRun(application, step) {
+    return withNewApplicationRun(
+      application,
+      (runToken) => withApplicationLease(application, () => step(runToken)),
+      { uiBound: true },
+    );
+  }
+
+  function answerCardQuestions(application, { action }) {
+    application.autoRun = action === 'answer-run';
+    state.view = 'questions';
+  }
+
+  async function fillCardApplication(application) {
+    await withLeasedUiRun(application, (runToken) => fillApplication(application, [], [], { runToken }));
+  }
+
+  async function runCardApplicationInDashboard(application) {
+    state.view = 'dashboard';
+    render();
+    await withLeasedUiRun(application, (runToken) => runThroughApplication(application, [], [], { background: true, runToken }));
+  }
+
+  async function scanCardApplication(application, { uiToken }) {
+    const tab = previewMode ? { id: application.tabId, url: application.url } : await chrome.tabs.get(application.tabId);
+    assertUiGeneration(uiToken);
+    await scanTab(tab, { applicationId: application.id, uiToken });
+  }
+
+  async function resumeCardApplication(application, { action }) {
+    await withLeasedUiRun(application, (runToken) => resumeApplication(application, action === 'resume-current', { runToken }));
+  }
+
+  async function resumeCardAfterHumanCheckpoint(application) {
+    await withLeasedUiRun(application, (runToken) => resumeHumanCheckpoint(application, { runToken }));
+  }
+
+  async function openCardHandoff(application) {
+    await revokeApplicationRun(application);
+    setCheckpoint(application, 'voluntary_pause', 'Paused while caseworker chooses a handoff', 'paused');
+    state.handoffApplicationId = application.id;
+    state.view = 'handoff';
+    await persist({ applicationIds: [application.id] });
+  }
+
+  async function pauseCardApplication(application) {
+    await revokeApplicationRun(application);
+    setCheckpoint(application, 'voluntary_pause', 'Paused by caseworker', 'paused');
+    state.handoffApplicationId = null;
+    state.view = 'dashboard';
+    await persist({ applicationIds: [application.id] });
+  }
+
+  async function acceptCardHandoff(application) {
+    const acceptedAt = new Date().toISOString();
+    application.handoff = { ...application.handoff, acceptedAt };
+    application.owner = { ...application.owner, state: 'active', assignedAt: application.owner?.assignedAt || acceptedAt };
+    application.status = 'paused';
+    application.checkpoint = checkpoint('voluntary_pause', 'Handoff accepted; verify page before resuming');
+    application.updatedAt = acceptedAt;
+    recordAudit('handoff_accepted', application, { actor: application.owner?.assignedTo, toStatus: 'paused' });
+    await persist({ applicationIds: [application.id] });
+  }
+
+  async function goToCardTab(application) {
+    await goToApplication(application);
+  }
+
+  const APPLICATION_CARD_ACTIONS = [
+    ['answer', answerCardQuestions],
+    ['answer-run', answerCardQuestions],
+    ['fill', fillCardApplication],
+    ['run', runCardApplicationInDashboard],
+    ['review', showScreen('review')],
+    ['rescan', scanCardApplication],
+    ['go-tab', goToCardTab],
+    ['scan-application', scanCardApplication],
+    ['resume', resumeCardApplication],
+    ['resume-current', resumeCardApplication],
+    ['resume-human-checkpoint', resumeCardAfterHumanCheckpoint],
+    ['open-handoff', openCardHandoff],
+    ['pause', pauseCardApplication],
+    ['accept-handoff', acceptCardHandoff],
+  ];
+
+  function backToDashboard() {
+    state.handoffApplicationId = null;
+    state.view = 'dashboard';
+  }
+
+  async function addApplication({ uiToken }) {
+    const activeTab = await getActiveTab();
+    assertUiGeneration(uiToken);
+    state.activeTab = activeTab;
+    state.view = 'programs';
+  }
+
+  async function exportAudit({ uiToken }) {
+    await exportAuditLog(uiToken);
+    return SKIP_FINAL_RENDER;
+  }
+
+  async function analyzeCurrentTab({ uiToken }) {
+    const activeTab = await getActiveTab();
+    assertUiGeneration(uiToken);
+    state.activeTab = activeTab;
+    await scanTab(state.activeTab, { uiToken });
+  }
+
+  async function submitHandoff({ form, uiToken }) {
+    const application = state.apps.find((item) => item.id === state.handoffApplicationId);
+    if (!application) throw new Error('That application is no longer available.');
+    const data = new FormData(form);
+    const assignedTo = String(data.get('assignedTo') || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    const reason = String(data.get('reason') || 'other');
+    if (assignedTo.length < 2) throw new Error('Enter the caseworker or team receiving this handoff.');
+    const createdAt = new Date().toISOString();
+    application.owner = { assignedTo, state: 'pending', assignedAt: createdAt };
+    application.handoff = { to: assignedTo, reason, createdAt, acceptedAt: null };
+    application.status = 'handoff_pending';
+    application.checkpoint = checkpoint('handoff', 'Assigned handoff awaiting acceptance');
+    application.autoRun = false;
+    application.updatedAt = createdAt;
+    recordAudit('handoff_created', application, { actor: assignedTo, checkpointKind: 'handoff', toStatus: 'handoff_pending' });
+    state.handoffApplicationId = null;
+    state.view = 'dashboard';
+    await persist({ applicationIds: [application.id] });
+    assertUiGeneration(uiToken);
+  }
+
+  /** A multi-select answer fans out to an explicit yes or no for every checkbox member; null leaves the question open. */
+  function multiChoiceAssignments(gap, selected) {
+    const noneSelected = selected.includes('__none__');
+    const chosen = new Set(selected.filter((value) => value !== '__none__'));
+    if (!selected.length || (noneSelected && chosen.size)) return null;
+    return (gap.members || []).map((member) => ({
+      fieldKey: member.fieldKey,
+      label: member.label,
+      purpose: member.purpose,
+      value: noneSelected || !chosen.has(member.fieldKey) ? 'no' : 'yes',
+      source: 'user',
+      detail: 'Your answer in this browser session',
+      sensitive: Boolean(member.sensitive),
+    }));
+  }
+
+  /** A typed answer becomes one assignment; a blank answer (null) leaves the question open. */
+  function typedAnswerAssignments(gap, answer) {
+    if (!answer) return null;
+    return [{
+      fieldKey: gap.fieldKey,
+      label: gap.label,
+      purpose: gap.purpose,
+      value: answer,
+      source: 'user',
+      detail: 'Your answer in this browser session',
+      sensitive: gap.sensitive,
+    }];
+  }
+
+  /** Reads the questions form (answer-<gap index> fields) into user assignments and the gaps still unanswered. */
+  function answersFromQuestionsForm(gaps, data) {
+    const userAssignments = [];
+    const unresolved = [];
+    gaps.forEach((gap, index) => {
+      const assignments = gap.inputType === 'multi_choice'
+        ? multiChoiceAssignments(gap, data.getAll(`answer-${index}`).map((value) => String(value)))
+        : typedAnswerAssignments(gap, String(data.get(`answer-${index}`) || '').trim());
+      if (assignments) userAssignments.push(...assignments);
+      else unresolved.push(gap);
+    });
+    return { userAssignments, unresolved };
+  }
+
+  async function submitQuestionAnswers({ form }) {
+    const application = state.apps.find((item) => item.id === state.currentAppId);
+    if (!application) throw new Error('That application is no longer available.');
+    const { userAssignments, unresolved } = answersFromQuestionsForm(application.analysis?.gaps || [], new FormData(form));
+    if (application.autoRun) {
+      state.view = 'dashboard';
+      render();
+      await withLeasedUiRun(
+        application,
+        (runToken) => runThroughApplication(application, userAssignments, unresolved, { background: true, runToken }),
+      );
+    }
+    else {
+      await withLeasedUiRun(
+        application,
+        (runToken) => fillApplication(application, userAssignments, unresolved, { runToken }),
+      );
+    }
+  }
+
+  const APPLICATION_CLICK_ACTIONS = [
+    ...APPLICATION_CARD_ACTIONS.map(([action, handler]) => [action, forCardApplication(handler)]),
+    ['back-dashboard', backToDashboard],
+    ['add-application', addApplication],
+    ['export-audit', exportAudit],
+    ['analyze-current', analyzeCurrentTab],
+  ];
+  const APPLICATION_SUBMIT_ACTIONS = [
+    ['handoff-form', submitHandoff],
+    ['questions-form', submitQuestionAnswers],
+  ];
+
+  // Own-property tables: a Map never resolves prototype keys such as 'toString'. Unknown actions and forms only re-render.
+  const CLICK_ACTIONS = new Map([
+    ...AGENT_CLICK_ACTIONS,
+    ...RECERTIFICATION_CLICK_ACTIONS,
+    ...INTAKE_CLICK_ACTIONS,
+    ...CONNECTOR_CLICK_ACTIONS,
+    ...APPLICATION_CLICK_ACTIONS,
+  ]);
+  const SUBMIT_ACTIONS = new Map([
+    ...AGENT_SUBMIT_ACTIONS,
+    ...RECERTIFICATION_SUBMIT_ACTIONS,
+    ...INTAKE_SUBMIT_ACTIONS,
+    ...CONNECTOR_SUBMIT_ACTIONS,
+    ...APPLICATION_SUBMIT_ACTIONS,
+  ]);
 
   document.addEventListener('click', (event) => {
     const button = event.target.closest('[data-action]');

@@ -76,7 +76,7 @@ test('CAPTCHA checkpoints expose a human-complete-and-resume path', () => {
   const card = section('function applicationCard', 'function renderDashboard');
   const resume = section('async function resumeHumanCheckpoint', 'async function goToApplication');
   const pending = section('function pendingHumanCheck', 'const FINAL_STOP_KINDS');
-  const clickHandler = section('async function onClick', 'async function onSubmit');
+  const clickHandler = section('const APPLICATION_CARD_ACTIONS', 'function backToDashboard');
 
   assert.match(card, /resume-human-checkpoint/);
   assert.match(card, /I completed the \$\{challenge\} — resume/);
@@ -86,7 +86,11 @@ test('CAPTCHA checkpoints expose a human-complete-and-resume path', () => {
   assert.match(resume, /Complete the CAPTCHA in the application tab/);
   assert.match(resume, /await runThroughApplication\(rescanned/);
   assert.doesNotMatch(resume, /click\(|solve|bypass/i);
-  assert.match(clickHandler, /action === 'resume-human-checkpoint'/);
+  assert.match(clickHandler, /\['resume-human-checkpoint', resumeCardAfterHumanCheckpoint\]/);
+  assert.match(
+    section('async function resumeCardAfterHumanCheckpoint', 'async function openCardHandoff'),
+    /resumeHumanCheckpoint\(application, \{ runToken \}\)/,
+  );
 });
 
 test('automatic runs fill known assignments before pausing for unanswered fields', () => {
@@ -145,12 +149,14 @@ test('a directly analyzed known site inherits its full approved workflow path', 
 test('manual autonomous runs keep the application dashboard and per-card progress visible', () => {
   const progress = section('function setApplicationProgress', 'function renderError');
   const card = section('function applicationCard', 'function renderDashboard');
-  const click = section('async function onClick', 'async function onSubmit');
-  const submit = section('async function onSubmit', "document.addEventListener('click'");
+  const click = section('async function runCardApplicationInDashboard', 'async function scanCardApplication');
+  const submit = section('async function submitQuestionAnswers', 'const APPLICATION_CLICK_ACTIONS');
   assert.match(progress, /application\.runProgress = message/);
   assert.match(card, /running \? application\.runProgress/);
-  assert.match(click, /action === 'run'[\s\S]*state\.view = 'dashboard'[\s\S]*background: true/);
+  assert.match(section('const APPLICATION_CARD_ACTIONS', 'function backToDashboard'), /\['run', runCardApplicationInDashboard\]/);
+  assert.match(click, /state\.view = 'dashboard'[\s\S]*background: true/);
   assert.match(submit, /if \(application\.autoRun\)[\s\S]*state\.view = 'dashboard'[\s\S]*background: true/);
+  assert.match(section('const APPLICATION_SUBMIT_ACTIONS', 'const CLICK_ACTIONS'), /\['questions-form', submitQuestionAnswers\]/);
 });
 
 test('zero-write scans retain observed evidence and conditional rescans merge it safely', () => {
