@@ -442,3 +442,188 @@ test('WIC uses the full alternate mailing address only when it differs from home
   assert.equal(analysis.assignments[0].purpose, 'alternateMailingAddress');
   assert.equal(analysis.assignments[0].value, '99 Second Avenue, Unit 4, Riverside, CA, 92501');
 });
+
+function ihss(field) {
+  return adapters.fieldPolicy(IHSS_HOST, IHSS_PATH, field);
+}
+
+function choicePolicy(groupKey, purpose, question, required, optionValue) {
+  return { groupKey, purpose, question, required, type: 'radio', exclusive: true, optionValue };
+}
+
+test('IHSS household rules: first-row entity ids and every repeated-row id form', () => {
+  assert.deepEqual(ihss({ id: 'relationshipDrpDwn' }), { purpose: 'ihssHouseholdRelationship', required: true });
+  assert.deepEqual(ihss({ id: 'nameHouseholdTxt' }), { purpose: 'ihssHouseholdMemberName', required: true });
+  assert.deepEqual(ihss({ id: 'birthDateHouseholdTxt' }), { purpose: 'ihssHouseholdMemberDateOfBirth', required: true });
+  assert.deepEqual(ihss({ id: 'ssnHouseholdTxt' }), { purpose: 'ihssHouseholdMemberSsn', required: true, sensitive: true });
+
+  for (const id of ['relationshipDrpDwn2', 'nameHouseholdTxt-3', 'birthDateHouseholdTxt_4', 'ssnHouseholdTxt:12']) {
+    assert.deepEqual(ihss({ id }), { unmapped: true, required: true }, `${id} is an additional household row`);
+  }
+  for (const id of ['ssnHouseholdTxtA', 'xnameHouseholdTxt2', 'nameHouseholdTxt-']) {
+    assert.equal(ihss({ id }), null, `${id} is not a household id`);
+  }
+});
+
+test('IHSS conditional-entity rules turn every representative, veteran, facility, past-service, and other-service id into a gap', () => {
+  const requiredGapIds = [
+    'repFirstNameTxt', 'repLastNameTxt', 'repPhoneTxt', 'ticketId2Txt', 'relToApplicantDrpDwn',
+    'hppDrpDwn', 'otherHPPTxt', 'caDrpDwn', 'otherCATxt', 'otherRelTypeTxt',
+    'veteranNameTxt', 'veteranClaimNumberTxt',
+    'nameOfFacilityTxt', 'facilityStreetTxt', 'facilityCityTxt', 'facilityStateTxt', 'facilityZipCodeTxt', 'expectedDateOfDischargeTxt',
+    'pastIHSSDateTxt', 'pastIHSSCountyTxt', 'monthlyHoursTxt', 'nameUsedTxt',
+    'otherServiceRequestedTxt',
+  ];
+  for (const id of requiredGapIds) {
+    assert.deepEqual(ihss({ id, value: 'ignored' }), { unmapped: true, required: true }, id);
+  }
+  assert.deepEqual(ihss({ id: 'repEmailTxt' }), { unmapped: true, required: false });
+  for (const id of ['repFirstNameTxt2', 'xveteranNameTxt', 'otherServiceRequested', 'repEmailTxt2']) {
+    assert.equal(ihss({ id }), null, `${id} must match exactly`);
+  }
+
+  assert.deepEqual(ihss({ id: 'chkBxApplicantAgreeYes', value: 'on' }), {
+    ...choicePolicy('ihss:applicant-agrees', '', 'Does the applicant agree to apply for IHSS services?', true, 'Yes'),
+    unmapped: true,
+  });
+  assert.deepEqual(ihss({ id: 'chkBxVeteranRelNo', value: 'on' }), {
+    ...choicePolicy('ihss:veteran-relative', '', 'Is the applicant a relative of a veteran?', true, 'No'),
+    unmapped: true,
+  });
+});
+
+test('IHSS exact applicant ids map to applicant purposes only', () => {
+  const expected = {
+    firstNameTxt: { purpose: 'firstName', required: true },
+    lastNameTxt: { purpose: 'lastName', required: true },
+    streetTxt: { purpose: 'addressLine1', required: true },
+    cityTxt: { purpose: 'city', required: true },
+    stateTxt: { purpose: 'state', required: true },
+    zipCodeTxt: { purpose: 'postalCode', required: true },
+    ssnTxt: { purpose: 'ssn', required: true },
+    birthDateTxt: { purpose: 'dateOfBirth', required: true },
+    telephoneTxt: { purpose: 'phone', required: true },
+    emailTxt: { purpose: 'email' },
+    mailStreetTxt: { purpose: 'mailingAddressLine1', required: true },
+    mailCityTxt: { purpose: 'mailingCity', required: true },
+    mailStateTxt: { purpose: 'mailingState', required: true },
+    mailZipCodeTxt: { purpose: 'mailingPostalCode', required: true },
+    genderIdentityDrpDwn: { purpose: 'genderIdentity' },
+    sexualOrientationDrpDwn: { purpose: 'sexualOrientation' },
+    healthHistoryTxt: { purpose: 'ihssHealthHistory', required: true },
+    ethnicDrpDwn: { purpose: 'ethnicity', required: true },
+    languagePrepareToReadDrpDwn: { purpose: 'primaryLanguage', required: true, allowRepeatedPurpose: true },
+    languagePrepareToSpeakDrpDwn: { purpose: 'primaryLanguage', required: true, allowRepeatedPurpose: true },
+  };
+  for (const [id, policy] of Object.entries(expected)) assert.deepEqual(ihss({ id }), policy, id);
+  for (const id of ['firstNameTxt2', 'xssnTxt', 'SSNTXT', 'birthDate']) assert.equal(ihss({ id }), null, id);
+});
+
+test('IHSS exclusive choice groups carry their question, requiredness, and id-suffix option value', () => {
+  const groups = [
+    ['chkBxApplyYourself', 'Yes', 'No', 'ihss:applying-for-self', 'ihssApplyingForSelf', 'Are you applying to receive IHSS for yourself?', true],
+    ['chkBxSex', 'Male', 'Female', 'ihss:sex', 'gender', 'Sex', true],
+    ['chkBxAdoptedChild', 'Yes', 'No', 'ihss:adopted-child', 'ihssAdoptedMinorChild', 'Is the application for a minor adopted child?', true],
+    ['chkBxMailAddress', 'Yes', 'No', 'ihss:mailing-same', 'mailingSame', 'Is the mailing address the same as above?', true],
+    ['chkBxSexOrig', 'Male', 'Female', 'ihss:birth-sex', 'birthSex', 'What sex was listed on the original birth certificate?', false],
+    ['chkBxVeteran', 'Yes', 'No', 'ihss:veteran', 'veteran', 'Are you a veteran?', false],
+    ['chkBxSSI', 'Yes', 'No', 'ihss:ssi', 'receivesSsi', 'Do you receive SSI/SSP benefits?', false],
+    ['chkBxAssistance', 'Yes', 'No', 'ihss:home-assistance', 'homeAssistanceAvailable', 'Do you have anyone available to provide assistance at home?', false],
+    ['chkBxLiveAlone', 'Yes', 'No', 'ihss:lives-alone', 'livesAlone', 'Do you live alone?', false],
+    ['chkBxRcvIHSSServices', 'Yes', 'No', 'ihss:household-receives-services', 'ihssHouseholdReceivesServices', 'Is anyone in your home currently receiving IHSS services?', false],
+    ['chkBxPastIHSS', 'Yes', 'No', 'ihss:past-services', 'pastIhss', 'Have you received IHSS in the past?', false],
+    ['chkBxBlind', 'Yes', 'No', 'ihss:blind', 'blind', 'Applicant is blind', true],
+    ['chkBxVis', 'Yes', 'No', 'ihss:visually-impaired', 'visuallyImpaired', 'Applicant is visually impaired', true],
+    ['chkBxVisImpaired', 'Yes', 'No', 'ihss:visually-impaired', 'visuallyImpaired', 'Applicant is visually impaired', true],
+  ];
+  for (const [stem, first, second, groupKey, purpose, question, required] of groups) {
+    for (const option of [first, second]) {
+      assert.deepEqual(
+        ihss({ id: `${stem}${option}`, value: 'on' }),
+        choicePolicy(groupKey, purpose, question, required, option),
+        `${stem}${option}`,
+      );
+    }
+    assert.equal(ihss({ id: `${stem}Maybe`, value: 'on' }), null, `${stem} accepts only its two suffixes`);
+    assert.equal(ihss({ id: `${stem}${first}2`, value: 'on' }), null, `${stem} ids are anchored`);
+  }
+
+  assert.deepEqual(
+    ihss({ id: 'chkBxLFacility', className: 'form-check  chkBxLivingArrangement', value: 'Facility' }),
+    choicePolicy('ihss:living-arrangement', 'livingArrangement', 'Check your type of living arrangement', true, 'Facility'),
+  );
+  assert.equal(ihss({ id: 'chkBxLOther', className: 'chkBxLivingArrangementX', value: 'Other' }), null);
+});
+
+test('IHSS rule precedence is unchanged around the class-scoped living-arrangement rule', () => {
+  const livingArrangement = { className: 'chkBxLivingArrangement', value: 'Independent Living' };
+  assert.equal(ihss({ id: 'chkBxRcvIHSSServicesYes', ...livingArrangement }).groupKey, 'ihss:household-receives-services');
+  assert.equal(ihss({ id: 'firstNameTxt', ...livingArrangement }).purpose, 'firstName');
+  assert.equal(ihss({ id: 'ssnHouseholdTxt', ...livingArrangement }).purpose, 'ihssHouseholdMemberSsn');
+  assert.deepEqual(ihss({ id: 'repFirstNameTxt', ...livingArrangement }), { unmapped: true, required: true });
+  assert.equal(ihss({ id: 'chkBxPastIHSSYes', ...livingArrangement }).groupKey, 'ihss:living-arrangement');
+  assert.equal(ihss({ id: 'chkBxBlindNo', ...livingArrangement }).groupKey, 'ihss:living-arrangement');
+  assert.equal(ihss({ id: 'chkBxHealthHistory', ...livingArrangement }).groupKey, 'ihss:living-arrangement');
+});
+
+test('IHSS checkbox-value maps give each shared-id checkbox its own independent purpose', () => {
+  const independent = (purpose) => ({ purpose, required: true, groupKey: '', exclusive: false });
+  const expected = [
+    ['chkBxHealthHistory', '95', 'ihssDailyLivingLimitations'],
+    ['chkBxHealthHistory', '96', 'ihssHospiceCare'],
+    ['chkBxHealthHistory', '97', 'ihssTerminalIllness'],
+    ['chkBxHealthHistory', '98', 'ihssOrganTransplant'],
+    ['chkBxHealthHistory', '100', 'ihssSupplementalOxygen'],
+    ['chkBxHealthHistory', '101', 'ihssCancerTreatment'],
+    ['chkBxIHSSService', '80', 'ihssDomesticServices'],
+    ['chkBxIHSSService', '81', 'ihssPersonalCare'],
+    ['chkBxIHSSService', '82', 'ihssTransportation'],
+    ['chkBxIHSSService', '83', 'ihssParamedicalCare'],
+    ['chkBxOther', '84', 'ihssOtherServices'],
+  ];
+  for (const [id, value, purpose] of expected) assert.deepEqual(ihss({ id, value }), independent(purpose), `${id}=${value}`);
+  assert.deepEqual(ihss({ id: 'chkBxOther', value: 84 }), independent('ihssOtherServices'), 'numeric DOM values are compared as strings');
+  for (const [id, value] of [['chkBxHealthHistory', '99'], ['chkBxHealthHistory', '80'], ['chkBxIHSSService', '95'], ['chkBxOther', '83'], ['chkBxOther', '']]) {
+    assert.equal(ihss({ id, value }), null, `${id}=${value} is not a listed answer`);
+  }
+});
+
+test('IHSS rules match only their own keys and return a fresh policy on every call', () => {
+  for (const name of ['constructor', 'toString', 'hasOwnProperty', '__proto__', 'valueOf']) {
+    assert.equal(ihss({ id: name }), null, `id ${name} is not an IHSS field`);
+    assert.equal(ihss({ id: 'chkBxHealthHistory', value: name }), null, `value ${name} is not a health-history answer`);
+    assert.equal(ihss({ id: 'chkBxOther', value: name }), null, `value ${name} is not an other-service answer`);
+  }
+  assert.equal(ihss({}), null);
+  assert.equal(ihss({ id: null, value: undefined, className: null }), null);
+
+  const first = ihss({ id: 'ssnHouseholdTxt' });
+  first.purpose = 'ssn';
+  first.sensitive = false;
+  assert.deepEqual(ihss({ id: 'ssnHouseholdTxt' }), { purpose: 'ihssHouseholdMemberSsn', required: true, sensitive: true });
+  const gap = ihss({ id: 'repFirstNameTxt' });
+  gap.unmapped = false;
+  assert.deepEqual(ihss({ id: 'repLastNameTxt' }), { unmapped: true, required: true });
+  const choice = ihss({ id: 'chkBxSexMale' });
+  choice.optionValue = 'Female';
+  assert.equal(ihss({ id: 'chkBxSexMale' }).optionValue, 'Male');
+});
+
+test('IHSS rule order keeps household and conditional entities ahead of applicant ids', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'shared', 'site-adapters.js'), 'utf8');
+  const rules = source.slice(source.indexOf('const IHSS_RULES = '), source.indexOf('function ihssPolicy'));
+  const order = [
+    'exactIdRule(IHSS_HOUSEHOLD_FIELDS)',
+    'idPatternRule(IHSS_REPEATED_HOUSEHOLD_ID',
+    'idSetRule(IHSS_UNMAPPED_REQUIRED_IDS',
+    'exactIdRule(IHSS_UNMAPPED_OPTIONAL_FIELDS)',
+    'IHSS_UNMAPPED_CHOICES.map',
+    'exactIdRule(IHSS_APPLICANT_FIELDS)',
+    'IHSS_APPLICANT_CHOICES.map',
+    "checkboxValueRule('chkBxHealthHistory'",
+    "checkboxValueRule('chkBxIHSSService'",
+    "checkboxValueRule('chkBxOther'",
+  ].map((marker) => rules.indexOf(marker));
+  assert.ok(order.every((index) => index >= 0), 'every IHSS rule should be listed in IHSS_RULES');
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), 'IHSS rules must stay in PII-scoping order');
+});
