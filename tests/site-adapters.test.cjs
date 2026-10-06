@@ -6,6 +6,7 @@ const vm = require('node:vm');
 
 const adapters = require('../shared/site-adapters.js');
 const engine = require('../shared/form-engine.js');
+const demoConnectorData = require('../shared/demo-connector-data.js');
 
 const IHSS_HOST = 'riversideihss.org';
 const IHSS_PATH = '/IntakeApp';
@@ -17,18 +18,10 @@ function withPolicy(hostname, pathname, field) {
   return policy ? { ...field, ...policy } : { ...field };
 }
 
+/** A bundled fictional client record, as the service worker's demo connector serves it from the shared demo data. */
 function demoRecord(recordId = '339619') {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'background.js'), 'utf8');
-  const marker = 'const DEMO_RECORDS = [';
-  const start = source.indexOf(marker);
-  const endMarker = '\n];\n\nfunction demoConnectorStatus';
-  const end = source.indexOf(endMarker, start);
-  assert.notEqual(start, -1, 'background demo records should be declared');
-  assert.notEqual(end, -1, 'background demo records should remain a pure array literal');
-  const literal = source.slice(start + 'const DEMO_RECORDS = '.length, end + 2);
-  const context = {};
-  vm.runInNewContext(`records = ${literal}`, context);
-  return structuredClone(context.records.find((record) => record.record_id === recordId));
+  assert.ok(Array.isArray(demoConnectorData.CLIENT_RECORDS), 'shared demo client records should be declared');
+  return structuredClone(demoConnectorData.CLIENT_RECORDS.find((record) => record.record_id === recordId));
 }
 
 function sidepanelDemoRecord(recordId = '339619') {
