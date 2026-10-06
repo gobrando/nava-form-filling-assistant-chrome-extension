@@ -8,6 +8,30 @@
   const workQueueEngine = globalThis.NavaWorkQueueEngine;
   const programCatalog = globalThis.NavaProgramCatalog;
   const recertificationEngine = globalThis.NavaRecertificationEngine;
+  const demoConnectorData = globalThis.NavaDemoConnectorData;
+  const panelFormat = globalThis.NavaPanelFormat;
+  const applicationPolicy = globalThis.NavaApplicationPolicy;
+  const {
+    escapeHtml,
+    decoded,
+    mergeVerifiedProvenance,
+    provenanceForScan,
+    hostLabel,
+    mergeAgenticMetadata,
+  } = panelFormat;
+  const {
+    urlOrigin,
+    urlPath,
+    commandLocation,
+    assertSameDocumentLocation,
+    checkpoint,
+    checkpointFromScan,
+    automatedPageLimit,
+  } = applicationPolicy;
+  const { attachApplicationPolicy, assertApprovedApplicationLocation } = applicationPolicy.create({
+    programs: programCatalog.PROGRAMS,
+    hostLabel,
+  });
   const previewMode = new URLSearchParams(location.search).get('preview') === '1'
     || !globalThis.chrome?.runtime?.id;
   const demoMode = new URLSearchParams(location.search).get('demo') === '1';
@@ -42,11 +66,8 @@
     recertificationSource: '',
   };
 
-  const MAX_AUTOMATED_PAGES = 60;
-  const DEFAULT_AUTOMATED_PAGES = 12;
   const MAX_SAME_PAGE_FILL_PASSES = 3;
   const MAX_PARALLEL_APPLICATIONS = 3;
-  const PAGE_AGENT_VERSION = 6;
   const TAB_READY_TIMEOUT_MS = 60_000;
   const NAVIGATION_TIMEOUT_MS = 60_000;
   const APPLICATION_LEASE_MS = 2 * 60 * 1000;
@@ -150,130 +171,71 @@
     },
   };
 
-  const PREVIEW_CONNECTOR_SCHEMA = [
-    { id: 101, label: 'First Name', type: 'text', reference_tag: 'firstName' },
-    { id: 102, label: 'Middle Name', type: 'text', reference_tag: 'middleName' },
-    { id: 103, label: 'Last Name', type: 'text', reference_tag: 'lastName' },
-    { id: 104, label: 'Date of Birth', type: 'date', reference_tag: 'dateOfBirth' },
-    { id: 105, label: 'Primary Email', type: 'email', reference_tag: 'email' },
-    { id: 106, label: 'Cell Phone', type: 'phone', reference_tag: 'phone' },
-    { id: 107, label: 'Residential Address', type: 'text', reference_tag: 'addressLine1' },
-    { id: 108, label: 'Apartment or Unit', type: 'text', reference_tag: 'addressLine2' },
-    { id: 109, label: 'Residential City', type: 'text', reference_tag: 'city' },
-    { id: 110, label: 'Residential State', type: 'text', reference_tag: 'state' },
-    { id: 111, label: 'Residential County', type: 'text', reference_tag: 'county' },
-    { id: 112, label: 'ZIP Code', type: 'text', reference_tag: 'postalCode' },
-    { id: 113, label: 'Preferred Language', type: 'select', reference_tag: 'primaryLanguage' },
-    { id: 114, label: 'Gender', type: 'select', reference_tag: 'gender' },
-    { id: 115, label: 'Ethnicity', type: 'select', reference_tag: 'ethnicity' },
-    { id: 116, label: 'Marital Status', type: 'select', reference_tag: 'maritalStatus' },
-    { id: 117, label: 'Special Needs', type: 'boolean', reference_tag: 'specialNeeds' },
-    { id: 118, label: 'Farm Worker', type: 'boolean', reference_tag: 'farmWorker' },
-    { id: 119, label: 'Preferred Contact Method', type: 'select', reference_tag: 'preferredContact' },
-    { id: 120, label: 'Housing Status', type: 'select', reference_tag: 'housingStatus' },
-    { id: 121, label: 'Household Size', type: 'number', reference_tag: 'householdSize' },
-    { id: 122, label: 'Citizenship Status', type: 'select', reference_tag: 'immigrationStatus' },
-    { id: 123, label: 'Monthly Household Income', type: 'currency', reference_tag: 'income' },
-    { id: 124, label: 'Pays for Childcare', type: 'boolean', reference_tag: 'childcare' },
-    { id: 125, label: 'Receives Unemployment Benefits', type: 'boolean', reference_tag: 'unemployment' },
-    { id: 126, label: 'Pregnancy Status', type: 'boolean', reference_tag: 'pregnant' },
-    { id: 127, label: 'Social Security Number', type: 'sensitive', reference_tag: 'ssn' },
-    { id: 128, label: 'Residential Country', type: 'text', reference_tag: 'country' },
-  ];
-
+  const PREVIEW_CONNECTOR_SCHEMA = demoConnectorData.SCHEMA;
   const PREVIEW_RAW_RECORD = {
     data: [{
-      id: 339619,
-      attributes: {
-        form_id: 99,
-        mod_time: new Date().toISOString(),
-        field_101: 'Celeste',
-        field_102: 'NAVA',
-        field_103: 'Thomas II',
-        field_104: '2000-01-02',
-        field_105: 'testnava@email.com',
-        field_106: '777-777-7777',
-        field_107: '5556 Test Blvd',
-        field_108: 'Apt 556',
-        field_109: 'WILDOMAR',
-        field_110: 'California',
-        field_111: 'Riverside',
-        field_112: '92595',
-        field_113: 'English',
-        field_114: 'Female',
-        field_115: 'Hispanic/Latino',
-        field_116: 'Single',
-        field_117: false,
-        field_118: false,
-        field_119: 'Email',
-        field_120: 'Stable housing',
-        field_121: '3',
-        field_122: 'U.S. citizen',
-        field_123: '1850',
-        field_124: true,
-        field_125: false,
-        field_126: false,
-        field_127: '123-45-6789',
-        field_128: 'United States',
-      },
+      id: demoConnectorData.RECORD_ID,
+      attributes: demoConnectorData.recordAttributes(new Date().toISOString()),
     }],
   };
 
-  function escapeHtml(value) {
-    return String(value ?? '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  }
+  const { requestAssistantState, probeTabDocument, ensurePageAgent, sendToTab } = globalThis.NavaExtensionMessaging.create({
+    previewMode,
+    state,
+    sendRuntime,
+    previewTabMessage,
+    onStaleCommand(application) {
+      cancelApplicationRun(application);
+      scheduleCoordinatorSync(application.id);
+    },
+    coordinatorStaleError,
+    assertApprovedApplicationLocation,
+    assertSameDocumentLocation,
+    urlOrigin,
+    urlPath,
+    urlSearch: applicationPolicy.urlSearch,
+    urlHash: applicationPolicy.urlHash,
+  });
 
-  function encoded(value) {
-    return encodeURIComponent(String(value));
-  }
-
-  function decoded(value) {
-    return decodeURIComponent(String(value));
-  }
-
-  function sameValue(left, right) {
-    return engine.normalize(left) === engine.normalize(right);
-  }
-
-  function displayValue(key, value) {
-    if (['ssn', 'ein'].includes(key)) {
-      const digits = String(value ?? '').replace(/\D/g, '');
-      return digits.length >= 4 ? `••••${digits.slice(-4)}` : '••••';
-    }
-    return String(value ?? '');
-  }
-
-  function mergeVerifiedProvenance(...collections) {
-    const byField = new Map();
-    collections.flat().filter(Boolean).forEach((item) => {
-      if (!item?.fieldKey) return;
-      const normalized = { ...item };
-      if (normalized.sensitive) {
-        const digits = String(normalized.value ?? '').replace(/\D/g, '');
-        normalized.value = digits.length >= 4 ? `••••${digits.slice(-4)}` : '••••';
-      }
-      delete normalized.sensitive;
-      byField.set(normalized.fieldKey, normalized);
-    });
-    return [...byField.values()];
-  }
-
-  function provenanceForScan(previousProvenance, observed, preservePageProgress) {
-    return mergeVerifiedProvenance(
-      preservePageProgress ? (previousProvenance || []) : [],
-      observed || [],
-    );
-  }
-
-  function formatTimestamp(value) {
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? 'Unavailable' : date.toLocaleString();
-  }
+  // Screen templates get explicit dependencies; the connector and intake screens reach each other lazily.
+  const viewBase = { state, appRoot, format: panelFormat, renderError };
+  const connectorViews = globalThis.NavaConnectorViews.create({
+    ...viewBase,
+    previewMode,
+    connectorEngine,
+    managedConnector,
+    renderRecordId: () => intakeViews.renderRecordId(),
+  });
+  const intakeViews = globalThis.NavaIntakeViews.create({
+    ...viewBase,
+    previewMode,
+    engine,
+    agentPlanner,
+    programCatalog,
+    clientSummary,
+    managedConnector,
+    renderConnectorStatus: connectorViews.renderConnectorStatus,
+    connectorTitle: connectorViews.connectorTitle,
+    connectorProvider: connectorViews.connectorProvider,
+    connectorSourceId: connectorViews.connectorSourceId,
+  });
+  const recertificationViews = globalThis.NavaRecertificationViews.create({
+    ...viewBase,
+    recertificationEngine,
+    recertificationById,
+  });
+  const applicationViews = globalThis.NavaApplicationViews.create({
+    ...viewBase,
+    isRunning: (applicationId) => activeRunTokens.has(applicationId),
+    renderAgentRuntime: intakeViews.renderAgentRuntime,
+    firstName,
+  });
+  const reviewViews = globalThis.NavaReviewViews.create({ ...viewBase, renderDashboard: applicationViews.renderDashboard });
+  const { renderProviderCatalog, renderConnectorSetup, renderConnectorMapping, renderConnectorRecordReview } = connectorViews;
+  const { renderChoice, renderRecordId, renderJsonImport, renderDocumentUpload, renderDocumentReview, renderPrograms } = intakeViews;
+  const { renderRecertifications, renderRecertificationDetail } = recertificationViews;
+  const { renderDashboard, renderHandoff } = applicationViews;
+  const { renderQuestions, renderReview } = reviewViews;
 
   function clientSummary() {
     return engine.canonicalizeParticipant(state.participant || {});
@@ -287,45 +249,6 @@
     return state.connector?.mode === 'managed';
   }
 
-  function connectorTitle() {
-    return managedConnector() ? state.connector.organizationName : 'Nava fictional test data';
-  }
-
-  function connectorProvider(config = state.connector) {
-    return connectorEngine.providerDefinition(config?.provider) || connectorEngine.providerDefinition('apricot360');
-  }
-
-  function connectorSourceId(config = state.connector) {
-    return String(config?.sourceId ?? config?.formId ?? '');
-  }
-
-  function providerInitials(name) {
-    return (String(name).match(/[A-Za-z0-9]+/g) || [])
-      .slice(0, 2)
-      .map((word) => word[0])
-      .join('')
-      .toUpperCase();
-  }
-
-  function renderConnectorStatus() {
-    const managed = managedConnector();
-    const mapped = Object.keys(state.connector?.mappings || {}).length;
-    return `
-      <button class="connector-status ${managed ? 'connected' : ''}" type="button" data-action="configure-connector">
-        <span class="connector-status-icon" aria-hidden="true">${managed ? '✓' : 'DB'}</span>
-        <span><strong>${managed ? escapeHtml(connectorTitle()) : 'Connect an organization database'}</strong><small>${managed ? `${escapeHtml(connectorProvider().name)} · ${mapped} mapped fields · read-only` : 'Browse Apricot, Salesforce, HMIS, and other catalog sources'}</small></span>
-        <span class="connector-status-action">${managed ? 'Manage' : 'Choose'} <span aria-hidden="true">›</span></span>
-      </button>`;
-  }
-
-  function hostLabel(url) {
-    try {
-      return new URL(url).hostname.replace(/^www\./, '');
-    } catch {
-      return 'Current tab';
-    }
-  }
-
   async function getActiveTab() {
     if (previewMode) {
       return { id: 7001, title: 'Benefits application', url: `https://benefitscal.com/ApplyForBenefits/step-${state.previewPage}` };
@@ -337,116 +260,6 @@
   async function sendRuntime(message) {
     if (previewMode) return previewRuntime(message);
     return chrome.runtime.sendMessage(message);
-  }
-
-  async function requestAssistantState(
-    send = sendRuntime,
-    wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
-  ) {
-    const delays = [0, 150, 500];
-    let lastError = '';
-    for (const delay of delays) {
-      if (delay) await wait(delay);
-      try {
-        const response = await send({ type: 'GET_ASSISTANT_STATE' });
-        if (response?.ok) return response;
-        lastError = response?.error || '';
-      } catch (error) {
-        lastError = error?.message || String(error || '');
-      }
-    }
-    if (lastError && !/extension context invalidated|receiving end does not exist|message port closed|could not establish connection/i.test(lastError)) {
-      throw new Error(lastError);
-    }
-    throw new Error('The extension was reloaded safely. Close and reopen the side panel to reconnect. Saved application checkpoints remain available, but client data must be reloaded before filling resumes.');
-  }
-
-  async function probeTabDocument(tabId) {
-    const [probe] = await chrome.scripting.executeScript({
-      target: { tabId, frameIds: [0] },
-      func: () => ({ url: location.href, origin: location.origin, path: location.pathname }),
-    });
-    if (!probe?.documentId || !probe?.result?.url) {
-      throw new Error('The application page changed before the assistant could bind to it. Try again after it finishes loading.');
-    }
-    return probe;
-  }
-
-  function assertSameDocumentLocation(expectedUrl, observedUrl) {
-    if (commandLocation(expectedUrl) !== commandLocation(observedUrl)) {
-      throw new Error('The browser tab navigated before the assistant could safely read or write it. Review the current page and try again.');
-    }
-  }
-
-  async function ensurePageAgent(tab, documentId = null) {
-    if (previewMode) return;
-    if (!tab?.id || !/^https?:/i.test(tab.url || '')) {
-      throw new Error('Open a regular website with a form, then try again. Chrome system pages cannot be filled.');
-    }
-    const messageOptions = documentId ? { documentId } : undefined;
-    let pong = null;
-    try {
-      pong = await chrome.tabs.sendMessage(tab.id, { type: 'NAVA_PING' }, messageOptions);
-    } catch {
-      pong = null;
-    }
-    if (pong?.ok && pong.agentVersion === PAGE_AGENT_VERSION && pong.adaptersReady) return;
-    try {
-      await chrome.scripting.executeScript({
-        target: documentId ? { tabId: tab.id, documentIds: [documentId] } : { tabId: tab.id },
-        files: ['shared/form-engine.js', 'shared/site-adapters.js', 'content/form-agent.js'],
-      });
-      const verified = await chrome.tabs.sendMessage(tab.id, { type: 'NAVA_PING' }, messageOptions);
-      if (verified?.ok && verified.agentVersion === PAGE_AGENT_VERSION && verified.adaptersReady) return;
-    } catch {
-      // The actionable error below covers stale and missing page agents.
-    }
-    throw new Error('This application tab still has an older form-filling agent. Refresh this tab once after reloading the extension, then scan it again. No form values were changed.');
-  }
-
-  async function sendToTab(tab, message, { application = null, requireLease = false } = {}) {
-    if (previewMode) return previewTabMessage(message);
-    const probe = await probeTabDocument(tab.id);
-    assertSameDocumentLocation(tab.url, probe.result.url);
-    if (application) assertApprovedApplicationLocation(application, probe.result.url);
-    const boundTab = { ...tab, url: probe.result.url };
-    await ensurePageAgent(boundTab, probe.documentId);
-    const routePolicy = application ? {
-      origins: application.allowedOrigins?.length ? application.allowedOrigins : [urlOrigin(application.url)],
-      pathPrefixes: application.allowedPathPrefixes || [],
-      expectedPath: urlPath(probe.result.url),
-      expectedSearch: urlSearch(probe.result.url),
-      expectedHash: urlHash(probe.result.url),
-    } : {
-      origins: [urlOrigin(probe.result.url)],
-      exactPaths: [urlPath(probe.result.url)],
-      expectedPath: urlPath(probe.result.url),
-      expectedSearch: urlSearch(probe.result.url),
-      expectedHash: urlHash(probe.result.url),
-    };
-    const command = { ...message, routePolicy };
-    if (!application) {
-      return chrome.tabs.sendMessage(tab.id, command, { documentId: probe.documentId });
-    }
-    const response = await sendRuntime({
-      type: 'EXECUTE_APPLICATION_COMMAND',
-      tabId: tab.id,
-      documentId: probe.documentId,
-      command,
-      sessionEpoch: state.sessionEpoch,
-      participantSessionId: state.participantSessionId,
-      applicationId: application.id,
-      applicationGeneration: Number(application.controlGeneration || 0),
-      applicationRevision: Number(application.controlRevision || 0),
-      holder: state.workerId,
-      requireLease,
-    });
-    if (!response?.ok && response?.stale) {
-      cancelApplicationRun(application);
-      scheduleCoordinatorSync(application.id);
-      throw coordinatorStaleError(response.error);
-    }
-    return response;
   }
 
   function runCancelledError() {
@@ -1164,55 +977,6 @@
     assertUiGeneration(uiToken);
   }
 
-  function renderAgentRuntime() {
-    if (previewMode) {
-      return '<div class="notice"><span aria-hidden="true">AI</span><span><strong>Fixture preview.</strong> Install the extension to run the on-device multi-agent planner.</span></div>';
-    }
-    const ready = state.agentRuntime.status === 'ready';
-    const unavailable = state.agentRuntime.status === 'unavailable';
-    const info = agentPlanner?.runtimeInfo?.() || { kind: 'chrome-local', title: 'Chrome on-device AI', detail: '' };
-    const selectedProvider = state.agentProvider.kind === 'local-cli' ? state.agentProvider.provider : 'chrome-local';
-    const companion = state.agentProvider.kind === 'local-cli';
-    const title = ready ? `${info.title} ready` : unavailable ? `${info.title} unavailable` : 'Agentic AI required';
-    const detail = ready
-      ? (state.agentRuntime.shared
-        ? 'Field mapping and missing-field decisions run on the shared Nava API. Jev handles the confident ones when the API has a TypeSafe key. Filling still happens in this tab, and client values stay out of the planning prompt.'
-        : `${info.detail} The field mapper, gap analyst, and independent reviewer remain separate model calls.`)
-      : unavailable
-        ? (state.agentRuntime.message || (companion
-          ? 'Start the localhost companion and sign the selected CLI in with its subscription account.'
-          : 'This device cannot start Chrome built-in AI. Use Chrome 138 or newer on a supported desktop and enable built-in AI.'))
-        : `${companion ? 'Connect the paired localhost companion' : 'Start Chrome’s on-device model'} before a live form run. Client values are never included in model prompts.`;
-    return `
-      <div class="notice ${unavailable ? 'error' : ''}" style="margin-bottom:16px">
-        <span aria-hidden="true">AI</span>
-        <span><strong>${escapeHtml(title)}.</strong> ${escapeHtml(detail)}</span>
-      </div>
-      ${ready ? '' : '<button class="secondary-button" style="margin-bottom:12px" type="button" data-action="enable-agent">Enable agentic AI</button>'}
-      <details class="model-runtime-settings" style="margin-bottom:16px">
-        <summary>Model runtime</summary>
-        <form id="model-provider-form" class="form-stack compact-form">
-          <label for="model-provider">Brain
-            <select id="model-provider" name="modelProvider">
-              <option value="chrome-local" ${selectedProvider === 'chrome-local' ? 'selected' : ''}>Chrome on-device Gemini Nano</option>
-              <option value="codex" ${selectedProvider === 'codex' ? 'selected' : ''}>Codex subscription via local CLI</option>
-              <option value="claude" ${selectedProvider === 'claude' ? 'selected' : ''}>Claude subscription via local CLI</option>
-            </select>
-          </label>
-          <div id="model-companion-fields" class="form-stack compact-form" ${companion ? '' : 'hidden'}>
-            <label for="model-endpoint">Local companion
-              <input id="model-endpoint" name="modelEndpoint" type="text" value="${escapeHtml(state.agentProvider.endpoint || 'http://127.0.0.1:4174')}" autocomplete="off" spellcheck="false">
-            </label>
-            <label for="model-token">Pairing token
-              <input id="model-token" name="modelToken" type="password" value="${escapeHtml(state.agentProvider.token || '')}" autocomplete="off">
-            </label>
-            <p class="field-hint">Run <code>npm run model:bridge</code> in this repository, then paste its token. Provider credentials never enter Chrome.</p>
-          </div>
-          <button class="small-button secondary" type="submit">Use this model runtime</button>
-        </form>
-      </details>`;
-  }
-
   function renderError() {
     return state.error
       ? `<div class="notice error" role="alert"><span aria-hidden="true">!</span><span>${escapeHtml(state.error)}</span></div>`
@@ -1258,888 +1022,10 @@
     state.view = 'recertifications';
   }
 
-  function recertificationCard(item) {
-    const open = item.openRequirements.length;
-    const readiness = item.readyToPrepare
-      ? 'Authorized and ready for AI preparation'
-      : open
-        ? `${open} information area${open === 1 ? '' : 's'} need follow-up`
-        : item.consent.status === 'declined'
-          ? 'Client declined AI preparation'
-          : 'Ready to ask for client authorization';
-    return `
-      <article class="recert-card ${escapeHtml(item.urgency.key)}">
-        <div class="recert-card-top">
-          <div><strong>${escapeHtml(item.displayName)}</strong><p class="card-note">${escapeHtml(item.programName)} · due ${escapeHtml(recertificationEngine.dueDateLabel(item.dueDate))}</p></div>
-          <span class="urgency-chip ${escapeHtml(item.urgency.key)}">${escapeHtml(item.urgency.label)}</span>
-        </div>
-        <p class="card-note"><strong>${escapeHtml(readiness)}.</strong> Client outreach: ${escapeHtml(item.outreach.status.replaceAll('_', ' '))}.</p>
-        <div class="card-actions"><button class="secondary-button" type="button" data-action="review-recertification" data-recert="${encoded(item.id)}">Review and follow up</button></div>
-      </article>`;
-  }
-
-  function renderRecertifications() {
-    const summary = recertificationEngine.summarize(state.recertifications);
-    appRoot.innerHTML = `
-      <section>
-        <button class="back-button" type="button" data-action="home"><span aria-hidden="true">←</span> Home</button>
-        <div class="intro">
-          <p class="eyebrow">Recertification status</p>
-          <h1>Upcoming renewals</h1>
-          <p class="lede">Track every due date, collect missing updates before the deadline, and record the client’s choice about AI-assisted preparation.</p>
-        </div>
-        ${renderError()}
-        <div class="notice"><span aria-hidden="true">i</span><span><strong>${escapeHtml(state.recertificationSource || 'Connected caseload')}.</strong> The dashboard alerts the caseworker. Client messages remain drafts until an authorized worker sends them through an approved channel and marks outreach complete.</span></div>
-        <div class="queue-summary recert-summary" aria-label="Recertification summary">
-          <span><strong>${summary.total}</strong> clients</span>
-          <span><strong>${summary.dueWithin45Days}</strong> due soon</span>
-          <span><strong>${summary.needsData}</strong> need data</span>
-          <span><strong>${summary.ready}</strong> AI-ready</span>
-        </div>
-        <div class="stack">${state.recertifications.length ? state.recertifications.map(recertificationCard).join('') : '<div class="notice"><span>✓</span><span>No upcoming recertifications were returned by the connected source.</span></div>'}</div>
-        <p class="field-hint">Due dates must come from the authorized source system. The extension does not estimate renewal dates from program enrollment or benefit history.</p>
-      </section>`;
-  }
-
-  function renderRecertificationDetail() {
-    const item = recertificationById();
-    if (!item) {
-      state.view = 'recertifications';
-      return renderRecertifications();
-    }
-    const notification = recertificationEngine.notificationPlan(item);
-    appRoot.innerHTML = `
-      <section>
-        <button class="back-button" type="button" data-action="back-recertifications"><span aria-hidden="true">←</span> Recertifications</button>
-        <div class="intro">
-          <p class="eyebrow">${escapeHtml(item.programName)} · ${escapeHtml(item.urgency.label)}</p>
-          <h1>${escapeHtml(item.displayName)}</h1>
-          <p class="lede">Due ${escapeHtml(recertificationEngine.dueDateLabel(item.dueDate))}. Verify each information area, complete outreach, and record the client’s explicit choice.</p>
-        </div>
-        ${renderError()}
-        <div class="notification-plan">
-          <article><span class="section-label">CASEWORKER ALERT</span><strong>${escapeHtml(notification.caseworker.title)}</strong><p>${escapeHtml(notification.caseworker.body)}</p></article>
-          <article><span class="section-label">CLIENT MESSAGE DRAFT</span><strong>${escapeHtml(notification.client.title)}</strong><p>${escapeHtml(notification.client.body)}</p><p class="field-hint">Preferred channel: ${escapeHtml(item.outreach.channel)} · ${escapeHtml(item.outreach.status.replaceAll('_', ' '))}</p></article>
-        </div>
-        <div class="card-actions outreach-actions">
-          ${item.outreach.status === 'not_started' ? '<button class="secondary-button" type="button" data-action="draft-recertification-outreach">Create outreach task</button>' : ''}
-          ${item.outreach.status === 'drafted' ? '<button class="secondary-button" type="button" data-action="complete-recertification-outreach">Mark client contacted</button>' : ''}
-          ${item.outreach.status === 'completed' ? '<span class="automation-badge">✓ Client outreach recorded</span>' : ''}
-        </div>
-        <form id="recertification-intake-form" class="stack recert-intake">
-          <div>
-            <p class="section-label">PROACTIVE DATA CHECK</p>
-            <p class="card-note">Ask the client these questions before starting the application. Notes and answers stay in this browser session.</p>
-          </div>
-          ${item.requirements.map((requirement) => `
-            <fieldset class="recert-requirement ${['missing', 'stale'].includes(requirement.status) ? 'open' : ''}">
-              <legend>${escapeHtml(requirement.label)}</legend>
-              <p>${escapeHtml(requirement.question)}</p>
-              <label>Status
-                <select name="requirement-${escapeHtml(requirement.key)}" required>
-                  <option value="missing" ${requirement.status === 'missing' ? 'selected' : ''}>Still needs follow-up</option>
-                  <option value="confirmed" ${requirement.status === 'confirmed' ? 'selected' : ''}>Client confirmed current</option>
-                  <option value="current" ${requirement.status === 'current' ? 'selected' : ''}>Current source data verified</option>
-                  <option value="stale" ${requirement.status === 'stale' ? 'selected' : ''}>Source data may be stale</option>
-                </select>
-              </label>
-              <label>Update or caseworker note
-                <textarea name="note-${escapeHtml(requirement.key)}" rows="2" maxlength="240" placeholder="Record the client-provided update or what is still needed.">${escapeHtml(requirement.note)}</textarea>
-              </label>
-            </fieldset>`).join('')}
-          <fieldset class="recert-consent">
-            <legend>Client authorization</legend>
-            <p>Would you like the AI assistant to prepare your ${escapeHtml(item.programName)} recertification through the review page?</p>
-            <label><input type="radio" name="consent" value="authorized" ${item.consent.status === 'authorized' ? 'checked' : ''}> Yes, prepare it for review</label>
-            <label><input type="radio" name="consent" value="declined" ${item.consent.status === 'declined' ? 'checked' : ''}> No, do not use AI for this recertification</label>
-            <label><input type="radio" name="consent" value="not_asked" ${['not_asked', 'invited'].includes(item.consent.status) ? 'checked' : ''}> Not answered yet</label>
-            <p class="field-hint">Authorization covers preparation and form filling only. The assistant never signs, certifies, or submits.</p>
-          </fieldset>
-          <button class="primary-button" type="submit">Save recertification status</button>
-        </form>
-        ${item.readyToPrepare ? `
-          <div class="ready-recertification">
-            <p><strong>Ready to prepare.</strong> The client authorized AI assistance and every required information area is current or confirmed.</p>
-            <button class="primary-button" type="button" data-action="prepare-recertification">Prepare with AI</button>
-          </div>` : `
-          <div class="notice warning"><span aria-hidden="true">!</span><span>The AI run stays locked until all information areas are current or confirmed and the client explicitly authorizes preparation.</span></div>`}
-      </section>`;
-  }
-
-  function renderChoice() {
-    appRoot.innerHTML = `
-      <section>
-        <div class="intro">
-          <p class="eyebrow">Start a form</p>
-          <h1>Let's find your client</h1>
-          <p class="lede">Choose how you want to bring the client's information into this browser session.</p>
-        </div>
-        ${renderError()}
-        ${renderAgentRuntime()}
-        <button class="recertification-entry" type="button" data-action="open-recertifications">
-          <span class="choice-icon" aria-hidden="true">↻</span>
-          <span class="choice-copy"><strong>Recertification status</strong><small>See upcoming renewals across the caseload, gather updates, and request client authorization.</small></span>
-          <span class="chevron" aria-hidden="true">›</span>
-        </button>
-        ${renderConnectorStatus()}
-        <div class="stack">
-          <button class="choice-button" type="button" data-action="choose-id">
-            <span class="choice-icon" aria-hidden="true">ID</span>
-            <span class="choice-copy"><strong>I have their client record ID</strong><small>Use the connected organization data source.</small></span>
-            <span class="chevron" aria-hidden="true">›</span>
-          </button>
-          <button class="choice-button" type="button" data-action="choose-json">
-            <span class="choice-icon" aria-hidden="true">{ }</span>
-            <span class="choice-copy"><strong>I don't have their record ID</strong><small>Paste the client information as JSON.</small></span>
-            <span class="chevron" aria-hidden="true">›</span>
-          </button>
-          <button class="choice-button" type="button" data-action="choose-document">
-            <span class="choice-icon" aria-hidden="true">DOC</span>
-            <span class="choice-copy"><strong>Upload a client or business document</strong><small>Review labeled details from scans, images, PDF, Word, text, CSV, or JSON.</small></span>
-            <span class="chevron" aria-hidden="true">›</span>
-          </button>
-        </div>
-        <div class="notice" style="margin-top:16px"><span aria-hidden="true">i</span><span>${managedConnector() ? 'Record lookup uses the organization’s read-only connector. Credentials remain in the Nava connector service, never in Chrome.' : 'No production database is connected. All bundled records are fictional.'}</span></div>
-        ${renderPlannerSettings()}
-      </section>`;
-  }
-
-  function renderPlannerSettings() {
-    if (previewMode) return '';
-    const configured = Boolean(state.plannerBase);
-    return `
-      <form id="planner-form" class="stack" style="margin-top:16px">
-        <div class="field">
-          <label for="nava-api-base">Shared planner API</label>
-          <input id="nava-api-base" name="navaApiBase" type="url" inputmode="url" autocomplete="off" placeholder="https://api.example.com" value="${escapeHtml(state.plannerBase || '')}">
-          <p class="field-hint">${configured ? 'A tenant key is already saved on this device. Paste a new one only to replace it.' : 'Paste the API address and a tenant key so planning uses the same engine as the Nava API. The key stays in this browser.'}</p>
-        </div>
-        <div class="field">
-          <label for="nava-api-token">Tenant API key</label>
-          <input id="nava-api-token" name="navaApiToken" type="password" autocomplete="off" placeholder="${configured ? 'Saved' : 'nava_…'}">
-        </div>
-        <button class="secondary-button" type="button" data-action="save-planner">Use the shared planner</button>
-      </form>`;
-  }
-
-  function renderProviderCatalog() {
-    appRoot.innerHTML = `
-      <section>
-        <button class="back-button" type="button" data-action="home"><span aria-hidden="true">←</span> Home</button>
-        <div class="intro">
-          <p class="eyebrow">Data source</p>
-          <h1>Choose your database</h1>
-          <p class="lede">Select the system your organization uses. The extension connects only through a Nava-managed, read-only service; provider credentials never enter Chrome.</p>
-        </div>
-        ${renderError()}
-        <div class="provider-grid">
-          ${connectorEngine.PROVIDER_CATALOG.map((provider) => {
-            const available = provider.readiness === 'demo-tested';
-            return `
-            <button class="provider-card" type="button" data-action="select-provider" data-provider="${escapeHtml(provider.id)}" aria-describedby="provider-readiness-${escapeHtml(provider.id)}">
-              <span class="provider-icon" aria-hidden="true">${escapeHtml(providerInitials(provider.name))}</span>
-              <span class="provider-copy"><strong>${escapeHtml(provider.name)}</strong><small>${escapeHtml(provider.category)}</small></span>
-              <span id="provider-readiness-${escapeHtml(provider.id)}" class="readiness-chip ${available ? 'demo-tested' : 'adapter-required'}">${available ? 'Fictional demo available' : 'Provisioned Nava adapter required'}</span>
-              <span class="chevron" aria-hidden="true">›</span>
-            </button>`;
-          }).join('')}
-        </div>
-        <div class="notice warning" style="margin-top:18px"><span aria-hidden="true">!</span><span>Only the fictional Apricot-shaped adapter runs in this repository. The other providers require an authorized Nava connector service before real records can be retrieved.</span></div>
-      </section>`;
-  }
-
-  function renderRecordId() {
-    const provider = connectorProvider();
-    appRoot.innerHTML = `
-      <section>
-        <button class="back-button" type="button" data-action="back-choice"><span aria-hidden="true">←</span> Back</button>
-        <div class="intro">
-          <p class="eyebrow">Client record</p>
-          <h1>Let's find your client</h1>
-          <p class="lede">Enter the client record ID. We'll pull the record through ${escapeHtml(connectorTitle())}.</p>
-        </div>
-        ${renderError()}
-        <form id="record-form" class="stack">
-          <div class="field">
-            <label for="record-id">${managedConnector() ? escapeHtml(provider.recordLabel) : 'Fictional demo record ID'}</label>
-            <input id="record-id" name="recordId" type="text" autocomplete="off" placeholder="Enter ID" required>
-            <p class="field-hint">${managedConnector() ? `Read-only ${escapeHtml(provider.name)} connector · source ${escapeHtml(connectorSourceId())} · ${Object.keys(state.connector.mappings || {}).length} mapped fields` : 'Prototype demo IDs: 339619, 338618, and 339637.'}</p>
-          </div>
-          <div class="form-actions">
-            <button class="primary-button" type="submit">Continue</button>
-            <button class="secondary-button" type="button" data-action="choose-json">Paste client JSON instead</button>
-            <button class="link-button" type="button" data-action="configure-connector">Manage data source</button>
-          </div>
-        </form>
-      </section>`;
-  }
-
-  function connectorDraft() {
-    if (state.connectorDraft) return state.connectorDraft;
-    if (managedConnector()) return { ...state.connector, mappings: { ...(state.connector.mappings || {}) } };
-    return {
-      provider: 'apricot360',
-      organizationName: '',
-      backendUrl: '',
-      connectionId: '',
-      sourceId: '',
-      maxAgeDays: 30,
-      mappings: {},
-    };
-  }
-
   function canonicalHomeView() {
     if (state.apps.length) return 'dashboard';
     if (state.participant) return 'programs';
     return 'choice';
-  }
-
-  function renderConnectorSetup() {
-    const draft = connectorDraft();
-    const provider = connectorProvider(draft);
-    appRoot.innerHTML = `
-      <section>
-        <button class="back-button" type="button" data-action="back-providers"><span aria-hidden="true">←</span> Databases</button>
-        <div class="intro">
-          <p class="eyebrow">Data source</p>
-          <h1>Connect a client data source</h1>
-          <p class="lede">Choose a provider, connect through a Nava-managed service, and load labeled fields. Provider credentials remain on the service.</p>
-        </div>
-        ${renderError()}
-        <div class="notice"><span aria-hidden="true">⌁</span><span>The extension accepts an opaque connection ID, never a provider secret, access token, password, or API key. Listed providers still require a Nava service adapter and organization authorization.</span></div>
-        <form id="connector-form" class="stack connector-form">
-          <div class="field">
-            <label for="connector-provider">Database provider</label>
-            <select id="connector-provider" name="provider" required>
-              ${connectorEngine.PROVIDER_CATALOG.map((item) => `<option value="${escapeHtml(item.id)}" ${draft.provider === item.id ? 'selected' : ''}>${escapeHtml(item.name)} — ${item.readiness === 'demo-tested' ? 'fictional demo' : 'provisioned adapter required'}</option>`).join('')}
-            </select>
-            <p class="field-hint">Apricot has a tested fictional adapter. Every provider requires a separately deployed, authorized Nava connector before real records can be used.</p>
-          </div>
-          <div class="field">
-            <label for="connector-org">Organization name</label>
-            <input id="connector-org" name="organizationName" type="text" value="${escapeHtml(draft.organizationName)}" placeholder="Riverside Community Services" required>
-          </div>
-          <div class="field">
-            <label for="connector-url">Nava connector service URL</label>
-            <input id="connector-url" name="backendUrl" type="text" inputmode="url" value="${escapeHtml(draft.backendUrl)}" placeholder="https://connectors.example.org" required>
-            <p class="field-hint">HTTPS is required, except for localhost development.</p>
-          </div>
-          <div class="field">
-            <label for="connection-id">Connection ID</label>
-            <input id="connection-id" name="connectionId" type="text" value="${escapeHtml(draft.connectionId)}" placeholder="riverside-apricot" autocomplete="off" required>
-          </div>
-          <div class="grid-fields">
-            <div class="field">
-              <label for="connector-source-id">Form / resource key</label>
-              <input id="connector-source-id" name="sourceId" type="text" value="${escapeHtml(connectorSourceId(draft))}" placeholder="${escapeHtml(provider.sourceLabel)}" required>
-            </div>
-            <div class="field">
-              <label for="connector-age">Stale after</label>
-              <select id="connector-age" name="maxAgeDays">
-                ${[1, 7, 30, 90].map((days) => `<option value="${days}" ${Number(draft.maxAgeDays) === days ? 'selected' : ''}>${days} day${days === 1 ? '' : 's'}</option>`).join('')}
-              </select>
-            </div>
-          </div>
-          <div class="form-actions">
-            <button class="primary-button" type="submit">Test connection and load fields</button>
-            ${previewMode ? '<button class="secondary-button" type="button" data-action="local-connector-settings">Use local demo settings</button>' : ''}
-            ${managedConnector() ? '<button class="link-button danger-link" type="button" data-action="reset-connector">Disconnect and use demo data</button>' : ''}
-          </div>
-        </form>
-      </section>`;
-  }
-
-  function renderConnectorMapping() {
-    const draft = connectorDraft();
-    const schema = connectorEngine.normalizeSchemaFields(state.connectorSchema);
-    if (!schema.length) {
-      state.view = 'connector';
-      return renderConnectorSetup();
-    }
-    const categories = [...new Set(connectorEngine.CANONICAL_FIELDS.map((field) => field.category))];
-    appRoot.innerHTML = `
-      <section>
-        <button class="back-button" type="button" data-action="back-connector"><span aria-hidden="true">←</span> Connection</button>
-        <div class="intro">
-          <p class="eyebrow">Schema mapping</p>
-          <h1>Confirm what each field means</h1>
-          <p class="lede">Suggestions use source labels and reference tags. Review every mapping—opaque or numeric source IDs never determine meaning.</p>
-        </div>
-        ${renderError()}
-        <div class="connector-summary">
-          <span class="connector-status-icon" aria-hidden="true">✓</span>
-          <span><strong>${escapeHtml(draft.organizationName)}</strong><small>${escapeHtml(connectorProvider(draft).name)} · ${schema.length} labeled source fields loaded · source ${escapeHtml(connectorSourceId(draft))}</small></span>
-        </div>
-        <form id="connector-mapping-form">
-          ${categories.map((category) => `
-            <p class="section-label">${escapeHtml(category)}</p>
-            <div class="mapping-list">
-              ${connectorEngine.CANONICAL_FIELDS.filter((field) => field.category === category).map((canonical) => `
-                <label class="mapping-row">
-                  <span><strong>${escapeHtml(canonical.label)}</strong>${canonical.sensitive ? '<small>Sensitive · masked in review</small>' : '<small>Canonical destination</small>'}</span>
-                  <select name="map-${escapeHtml(canonical.key)}" aria-label="Source field for ${escapeHtml(canonical.label)}">
-                    <option value="">Not mapped</option>
-                    ${schema.map((field) => `<option value="${escapeHtml(field.id)}" ${draft.mappings?.[canonical.key] === field.id ? 'selected' : ''}>${escapeHtml(field.label)} — ${escapeHtml(field.id)}</option>`).join('')}
-                  </select>
-                </label>`).join('')}
-            </div>`).join('')}
-          <div class="notice warning" style="margin-top:18px"><span aria-hidden="true">!</span><span>Saving authorizes read-only lookup through this reviewed mapping. It does not grant the extension permission to edit the source system.</span></div>
-          <div class="form-actions">
-            <button class="primary-button" type="submit">Save read-only connection</button>
-          </div>
-        </form>
-      </section>`;
-  }
-
-  function renderConnectorRecordReview() {
-    const record = state.pendingConnectorRecord;
-    if (!record?._connector) {
-      state.view = 'record';
-      return renderRecordId();
-    }
-    const meta = record._connector;
-    const fields = connectorEngine.CANONICAL_FIELDS.filter((field) =>
-      record[field.key] !== undefined && record[field.key] !== null && record[field.key] !== '');
-    const name = [record.firstName, record.middleName, record.lastName].filter(Boolean).join(' ') || `Record ${record.record_id}`;
-    const freshnessText = meta.freshness === 'unknown'
-      ? 'Source update time unavailable'
-      : meta.stale
-        ? `Source updated ${formatTimestamp(meta.sourceModifiedAt)} · may be stale`
-        : `Source updated ${formatTimestamp(meta.sourceModifiedAt)}`;
-    appRoot.innerHTML = `
-      <section>
-        <button class="back-button" type="button" data-action="back-record-id"><span aria-hidden="true">←</span> Back</button>
-        <div class="intro">
-          <p class="eyebrow">Review imported record</p>
-          <h1>Confirm this client</h1>
-          <p class="lede">Review every mapped value before it enters this browser session and becomes available to application forms.</p>
-        </div>
-        ${renderError()}
-        <div class="connector-summary">
-          <span class="connector-status-icon" aria-hidden="true">✓</span>
-          <span><strong>${escapeHtml(name)}</strong><small>Record ${escapeHtml(record.record_id)} · ${escapeHtml(meta.organizationName)}</small></span>
-        </div>
-        <div class="record-preview-list">
-          ${fields.map((field) => {
-            const source = meta.provenance?.[field.key];
-            return `
-              <div class="record-preview-row">
-                <span><strong>${escapeHtml(field.label)}</strong><small>${escapeHtml(source?.sourceLabel || 'Mapped source field')} · ${escapeHtml(source?.sourceFieldId || '')}</small></span>
-                <span class="record-preview-value ${field.sensitive ? 'sensitive' : ''}">${escapeHtml(displayValue(field.key, record[field.key]))}</span>
-              </div>`;
-          }).join('')}
-        </div>
-        <div class="notice ${meta.stale ? 'warning' : ''}" style="margin-top:18px"><span aria-hidden="true">${meta.stale ? '!' : 'i'}</span><span>${escapeHtml(freshnessText)}. Retrieved ${escapeHtml(formatTimestamp(meta.retrievedAt))}.</span></div>
-        <div class="form-actions">
-          <button class="primary-button" type="button" data-action="confirm-connector-record">Use this reviewed record</button>
-          <button class="secondary-button" type="button" data-action="back-record-id">Use a different record</button>
-        </div>
-      </section>`;
-  }
-
-  function renderJsonImport() {
-    appRoot.innerHTML = `
-      <section>
-        <button class="back-button" type="button" data-action="back-choice"><span aria-hidden="true">←</span> Back</button>
-        <div class="intro">
-          <p class="eyebrow">Client data</p>
-          <h1>Paste the client record</h1>
-          <p class="lede">Use labeled JSON fields. The assistant will never guess a missing value.</p>
-        </div>
-        ${renderError()}
-        <form id="json-form" class="stack">
-          <div class="field">
-            <label for="client-json">Client information</label>
-            <textarea id="client-json" name="clientJson" spellcheck="false" placeholder='{"firstName":"Maria","lastName":"Santos"}' required></textarea>
-          </div>
-          <button class="link-button" type="button" data-action="use-sample">Use a fictional sample record</button>
-          <div class="form-actions">
-            <button class="primary-button" type="submit">Continue</button>
-          </div>
-        </form>
-      </section>`;
-  }
-
-  function renderDocumentUpload() {
-    const backAction = state.participant ? 'back-programs' : 'back-choice';
-    appRoot.innerHTML = `
-      <section>
-        <button class="back-button" type="button" data-action="${backAction}"><span aria-hidden="true">←</span> Back</button>
-        <div class="intro">
-          <p class="eyebrow">Document intake</p>
-          <h1>Upload a client or business document</h1>
-          <p class="lede">The assistant reads the file locally and proposes only clearly labeled fields. You choose what to add before anything is used.</p>
-        </div>
-        ${renderError()}
-        <form id="document-form" class="stack">
-          <label class="upload-zone" for="client-document">
-            <span class="upload-icon" aria-hidden="true">↑</span>
-            <strong>Choose a document</strong>
-            <span>PDF, PNG, JPEG, WebP, DOCX, TXT, CSV, TSV, or JSON · up to 15 MB</span>
-            <input id="client-document" name="clientDocument" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.docx,.txt,.csv,.tsv,.json,application/pdf,image/png,image/jpeg,image/webp,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/csv,application/json" required>
-          </label>
-          <div class="notice"><span aria-hidden="true">⌁</span><span>The raw file stays on this device and is discarded after parsing. Image-only pages use the bundled English OCR model with strict page, pixel, attempt, and time limits.</span></div>
-          <div class="form-actions">
-            <button class="primary-button" type="submit">Read document</button>
-            ${state.participant ? '' : '<button class="secondary-button" type="button" data-action="choose-json">Paste JSON instead</button>'}
-          </div>
-        </form>
-      </section>`;
-  }
-
-  function renderDocumentReview() {
-    const result = state.documentResult;
-    if (!result) {
-      state.view = 'document';
-      return renderDocumentUpload();
-    }
-    const current = clientSummary().values;
-    const conflictCount = result.fields.filter((field) => {
-      const existing = current[field.key];
-      return existing !== undefined && existing !== null && existing !== '' && !sameValue(existing, field.value);
-    }).length;
-    const lowConfidenceCount = result.fields.filter((field) => field.confidence === 'low').length;
-    const methodLabel = {
-      ocr: 'On-device OCR',
-      mixed: 'Embedded text + OCR',
-      'embedded-text': 'Embedded PDF text',
-      docx: 'Word document text',
-      text: 'Plain text',
-      'delimited-text': 'Delimited text',
-      structured: 'Structured JSON',
-    }[result.quality?.method] || 'Local extraction';
-    appRoot.innerHTML = `
-      <section>
-        <button class="back-button" type="button" data-action="back-document"><span aria-hidden="true">←</span> Back</button>
-        <div class="intro">
-          <p class="eyebrow">Review extracted details</p>
-          <h1>Choose what to add</h1>
-          <p class="lede">Nothing is merged until you confirm it. Sensitive identifiers are masked here and on later review screens.</p>
-        </div>
-        ${renderError()}
-        <div class="file-summary">
-          <span class="file-badge" aria-hidden="true">DOC</span>
-          <span><strong>${escapeHtml(result.file.name)}</strong><small>${escapeHtml(methodLabel)} · ${result.fields.length} proposed ${result.fields.length === 1 ? 'field' : 'fields'}${conflictCount ? ` · ${conflictCount} ${conflictCount === 1 ? 'conflict' : 'conflicts'}` : ''}${lowConfidenceCount ? ` · ${lowConfidenceCount} low confidence` : ''}</small></span>
-        </div>
-        ${result.warnings.map((warning) => `<div class="notice warning document-warning"><span aria-hidden="true">!</span><span>${escapeHtml(warning)}</span></div>`).join('')}
-        ${result.fields.length ? `
-          <form id="document-review-form">
-            <div class="extraction-list">
-              ${result.fields.map((field, index) => {
-                const existing = current[field.key];
-                const hasExisting = existing !== undefined && existing !== null && existing !== '';
-                const conflict = hasExisting && !sameValue(existing, field.value);
-                return `
-                  <label class="extraction-card ${conflict ? 'conflict' : ''} ${field.confidence === 'low' ? 'low-confidence' : ''}">
-                    <input type="checkbox" name="fieldIndex" value="${index}" ${conflict || field.confidence === 'low' || field.reviewRequired ? '' : 'checked'}>
-                    <span class="extraction-copy">
-                      <span class="extraction-heading"><strong>${escapeHtml(field.label)}</strong><span class="confidence-chip ${escapeHtml(field.confidence)}">${escapeHtml(field.confidence)}</span></span>
-                      <span class="extracted-value">${escapeHtml(field.displayValue)}</span>
-                      <small>${escapeHtml(field.evidence)}</small>
-                      ${field.source?.method === 'ocr' ? `<span class="ocr-provenance">Page ${escapeHtml(field.source.pageNumber)}${field.source.region ? ` · region ${escapeHtml(Math.round(field.source.region.x0))},${escapeHtml(Math.round(field.source.region.y0))}–${escapeHtml(Math.round(field.source.region.x1))},${escapeHtml(Math.round(field.source.region.y1))}` : ''}${field.source.canvas?.rotation ? ` · corrected ${escapeHtml(field.source.canvas.rotation)}° rotation` : ''}</span>` : ''}
-                      ${field.reviewRequired ? '<span class="conflict-note"><strong>OCR review required:</strong> verify this value in the source before selecting it.</span>' : field.confidence === 'low' ? '<span class="conflict-note"><strong>Low confidence:</strong> verify this value in the source before selecting it.</span>' : ''}
-                      ${conflict ? `<span class="conflict-note"><strong>Different from current:</strong> ${escapeHtml(displayValue(field.key, existing))}. Select to replace it.</span>` : ''}
-                    </span>
-                  </label>`;
-              }).join('')}
-            </div>
-            <div class="form-actions">
-              <button class="primary-button" type="submit">Use selected details</button>
-              <button class="secondary-button" type="button" data-action="back-document">Choose another file</button>
-            </div>
-          </form>` : `
-          <div class="form-actions">
-            <button class="primary-button" type="button" data-action="back-document">Choose another file</button>
-            <button class="secondary-button" type="button" data-action="choose-json">Paste JSON instead</button>
-          </div>`}
-      </section>`;
-  }
-
-  function renderPrograms() {
-    const client = clientSummary();
-    const connectorMeta = state.participant?._connector;
-    const tabUrl = state.activeTab?.url || '';
-    const currentAllowed = /^https?:/i.test(tabUrl);
-    appRoot.innerHTML = `
-      <section>
-        <button class="back-button" type="button" data-action="${state.apps.length ? 'back-dashboard' : 'change-client'}"><span aria-hidden="true">←</span> ${state.apps.length ? 'Back' : 'Change client'}</button>
-        <div class="intro">
-          <p class="eyebrow">Applications</p>
-          <h1>What should I help with?</h1>
-          <p class="lede">Choose this tab or open one of the known application sites. Each application stays in its own tab.</p>
-        </div>
-        ${renderError()}
-        ${renderAgentRuntime()}
-        <div class="client-chip">
-          <div><strong>${escapeHtml(client.name)}</strong><span>${client.recordId ? `Record ${escapeHtml(client.recordId)}` : state.participant?._documentSources?.length ? 'Document import' : 'Pasted client record'}${connectorMeta ? ` · ${escapeHtml(connectorMeta.organizationName)}` : ''}</span>${connectorMeta ? `<span class="source-freshness ${connectorMeta.stale ? 'stale' : ''}">${connectorMeta.freshness === 'unknown' ? 'Source freshness unavailable' : connectorMeta.stale ? 'Source record may be stale' : `Retrieved ${escapeHtml(formatTimestamp(connectorMeta.retrievedAt))}`}</span>` : ''}</div>
-          <div class="client-actions">
-            <button class="link-button" type="button" data-action="choose-document">Add document</button>
-            <button class="link-button" type="button" data-action="change-client">Change</button>
-          </div>
-        </div>
-        <form id="program-form">
-          <p class="section-label">This browser tab</p>
-          <div class="program-list">
-            <label class="program-option">
-              <input type="checkbox" name="program" value="current" ${currentAllowed ? '' : 'disabled'}>
-              <span><strong>Analyze this form</strong><small>${escapeHtml(currentAllowed ? hostLabel(tabUrl) : 'Open a website first')}</small></span>
-            </label>
-          </div>
-          <p class="section-label">Known application sites</p>
-          <div class="program-list">
-            ${programCatalog.PROGRAMS.map((program) => `
-              <label class="program-option">
-                <input type="checkbox" name="program" value="${escapeHtml(program.id)}">
-                <span><strong>${escapeHtml(program.name)}</strong><small>${escapeHtml(program.provider)}${program.workflowId === 'benefitscal' ? ' · combined BenefitsCal application' : ''}</small></span>
-              </label>`).join('')}
-          </div>
-          <div class="notice" style="margin-top:14px"><span aria-hidden="true">i</span><span>CalFresh, Medi-Cal, and CalWORKs share one BenefitsCal application. Selecting more than one opens one tab and carries all selected program names in the same workflow.</span></div>
-          <div class="form-actions">
-            <button class="primary-button" type="submit">Continue</button>
-          </div>
-        </form>
-      </section>`;
-  }
-
-  function progressFor(application) {
-    if (application.status === 'ready_for_review') return 100;
-    if (application.status === 'needs_attention') return 55;
-    if (application.status === 'ready_to_fill') return 35;
-    if (['paused', 'handoff_pending'].includes(application.status)) return 20;
-    return 8;
-  }
-
-  function statusLabel(application) {
-    if (activeRunTokens.has(application.id)) return 'Running automatically';
-    if (application.status === 'ready_for_review') return 'Ready for review';
-    if (application.status === 'needs_attention') return 'Needs your attention';
-    if (application.status === 'ready_to_fill') return 'Ready to fill';
-    if (application.status === 'no_form') return 'No form found';
-    if (application.status === 'paused') return 'Paused safely';
-    if (application.status === 'handoff_pending') return 'Handoff waiting';
-    if (application.status === 'source_expired') return 'Reload source data';
-    if (application.status === 'not_started' && application.autoRun) return 'Starting automatically';
-    return 'Not started';
-  }
-
-  function mergeAgenticMetadata(previous, current) {
-    if (!previous) return { ...current, planCount: 1 };
-    const before = previous.usage || {};
-    const after = current.usage || {};
-    const contextKnown = before.contextUsageUnits !== null
-      && before.contextUsageUnits !== undefined
-      && after.contextUsageUnits !== null
-      && after.contextUsageUnits !== undefined;
-    return {
-      ...current,
-      planCount: Number(previous.planCount || 1) + 1,
-      usage: {
-        prompts: Number(before.prompts || 0) + Number(after.prompts || 0),
-        inputCharacters: Number(before.inputCharacters || 0) + Number(after.inputCharacters || 0),
-        outputCharacters: Number(before.outputCharacters || 0) + Number(after.outputCharacters || 0),
-        contextUsageUnits: contextKnown
-          ? Number(before.contextUsageUnits || 0) + Number(after.contextUsageUnits || 0)
-          : null,
-        durationMs: Number(before.durationMs || 0) + Number(after.durationMs || 0),
-        inputTokens: before.inputTokens === null || before.inputTokens === undefined || after.inputTokens === null || after.inputTokens === undefined
-          ? null
-          : Number(before.inputTokens || 0) + Number(after.inputTokens || 0),
-        outputTokens: before.outputTokens === null || before.outputTokens === undefined || after.outputTokens === null || after.outputTokens === undefined
-          ? null
-          : Number(before.outputTokens || 0) + Number(after.outputTokens || 0),
-        apiCostUsd: Number(before.apiCostUsd || 0) + Number(after.apiCostUsd || 0),
-        providerReportedCostUsd: before.providerReportedCostUsd === null || before.providerReportedCostUsd === undefined || after.providerReportedCostUsd === null || after.providerReportedCostUsd === undefined
-          ? null
-          : Number(before.providerReportedCostUsd || 0) + Number(after.providerReportedCostUsd || 0),
-      },
-    };
-  }
-
-  function agentUsageSummary(agentic) {
-    const usage = agentic?.usage;
-    if (!usage) return '';
-    const prompts = Number(usage.prompts || 0);
-    const seconds = Number(usage.durationMs || 0) / 1000;
-    const cost = Number(usage.apiCostUsd || 0);
-    const context = usage.contextUsageUnits === null || usage.contextUsageUnits === undefined
-      ? ''
-      : ` · ${Number(usage.contextUsageUnits).toLocaleString()} context units`;
-    const tokens = usage.inputTokens === null || usage.inputTokens === undefined
-      ? ''
-      : ` · ${Number(usage.inputTokens).toLocaleString()} in / ${Number(usage.outputTokens || 0).toLocaleString()} out tokens`;
-    const subscription = agentic?.billing === 'subscription-allowance-no-direct-api-key';
-    return `${prompts} model prompt${prompts === 1 ? '' : 's'}${context}${tokens} · ${seconds.toFixed(1)}s model time · $${cost.toFixed(2)} direct API-key cost${subscription ? ' · subscription allowance used' : ''}`;
-  }
-
-  function applicationCard(application) {
-    const running = activeRunTokens.has(application.id);
-    const review = application.status === 'ready_for_review';
-    const attention = ['needs_attention', 'no_form', 'paused', 'handoff_pending', 'source_expired'].includes(application.status);
-    const gaps = application.analysis?.gaps?.length || 0;
-    const blocked = application.blocked?.length || 0;
-    const completedPages = application.completedPages?.length || 0;
-    const note = (running ? application.runProgress : '')
-      || application.error
-      || application.runStopReason
-      || (blocked ? `${blocked} fields need direct help` : '')
-      || (gaps ? `${gaps} answers are needed before this page is complete` : '')
-      || (review ? (application.runStopReason || 'All writes were read back and verified') : 'Ready to fill the values found in the client record');
-    let actions = '';
-    if (running) {
-      actions = '<span class="automation-badge">Scanning, filling, and continuing in this application tab…</span>';
-    } else if (application.status === 'source_expired') {
-      actions = '<button class="small-button" type="button" data-action="reload-source">Reload client data</button>';
-    } else if (application.status === 'handoff_pending') {
-      actions = `<button class="small-button" type="button" data-action="accept-handoff" data-app="${encoded(application.id)}">Accept handoff</button>`;
-    } else if (application.programSelectionRequired) {
-      actions = '<button class="small-button" type="button" data-action="add-application">Choose programs in a new BenefitsCal application</button>';
-    } else if (['captcha', 'otp'].includes(application.checkpoint?.kind) && application.tabId) {
-      const challenge = application.checkpoint.kind === 'captcha' ? 'CAPTCHA' : 'one-time code';
-      actions = `<button class="small-button" type="button" data-action="resume-human-checkpoint" data-app="${encoded(application.id)}">I completed the ${challenge} — resume</button>`;
-    } else if (application.status === 'paused') {
-      actions = `<button class="small-button" type="button" data-action="${application.tabId ? 'resume' : 'resume-current'}" data-app="${encoded(application.id)}">${application.tabId ? 'Verify and resume' : 'Reconnect current tab'}</button>`;
-    } else if (application.status === 'not_started' && application.autoRun) {
-      actions = '<span class="automation-badge">Opening, scanning, and continuing in this tab…</span>';
-    } else if (application.status === 'not_started' && application.tabId) {
-      actions = `<button class="small-button" type="button" data-action="scan-application" data-app="${encoded(application.id)}">Scan application</button>`;
-    } else if (attention && gaps) {
-      actions = `<button class="small-button" type="button" data-action="answer-run" data-app="${encoded(application.id)}">Answer and continue</button>
-        <button class="small-button secondary" type="button" data-action="answer" data-app="${encoded(application.id)}">This page only</button>`;
-    } else if (application.status === 'ready_to_fill') {
-      actions = `<button class="small-button" type="button" data-action="run" data-app="${encoded(application.id)}">Fill through application</button>
-        <button class="small-button secondary" type="button" data-action="fill" data-app="${encoded(application.id)}">This page only</button>`;
-    } else if (review) {
-      actions = `<button class="small-button secondary" type="button" data-action="review" data-app="${encoded(application.id)}">Review details</button>`;
-    } else if (application.tabId) {
-      actions = `<button class="small-button" type="button" data-action="scan-application" data-app="${encoded(application.id)}">Scan this application</button>`;
-    } else {
-      actions = `<button class="small-button" type="button" data-action="resume-current" data-app="${encoded(application.id)}">Reconnect current tab</button>`;
-    }
-    if (!['source_expired', 'handoff_pending', 'ready_for_review'].includes(application.status)) {
-      actions += `<button class="small-button secondary" type="button" data-action="open-handoff" data-app="${encoded(application.id)}">Pause or hand off</button>`;
-    }
-    if (application.tabId) actions += `<button class="small-button secondary" type="button" data-action="go-tab" data-app="${encoded(application.id)}">Go to application</button>`;
-
-    return `
-      <article class="application-card ${attention ? 'attention' : ''} ${review ? 'review' : ''}">
-        <div class="card-row">
-          <div class="card-heading">
-            <span class="status-icon" aria-hidden="true">${review ? '✓' : attention ? '!' : '•'}</span>
-            <div><strong>${escapeHtml(application.name)}</strong><p class="card-note">${escapeHtml(hostLabel(application.url))}</p></div>
-          </div>
-          <div aria-label="${progressFor(application)} percent complete" class="progress-track"><div class="progress-fill" style="width:${progressFor(application)}%"></div></div>
-        </div>
-        <p class="card-note"><strong>${escapeHtml(statusLabel(application))}.</strong> ${escapeHtml(note)}</p>
-        ${application.owner ? `<p class="ownership-line"><span class="owner-chip ${application.owner.state}">${application.owner.state === 'pending' ? 'Assigned to' : 'Owned by'} ${escapeHtml(application.owner.assignedTo)}</span></p>` : ''}
-        ${application.checkpoint ? `<p class="checkpoint-line"><strong>Checkpoint:</strong> ${escapeHtml(application.checkpoint.label)}</p>` : ''}
-        ${application.agentic ? `<p class="automation-badge">AI-reviewed plan · ${Number(application.agentic.approvedMappings || 0)} mapping${Number(application.agentic.approvedMappings || 0) === 1 ? '' : 's'} · ${application.agentic.provider === 'codex' ? 'Codex' : application.agentic.provider === 'claude' ? 'Claude' : 'Gemini Nano'} mapper + gap analyst + reviewer</p>` : ''}
-        ${application.agentic?.usage ? `<p class="card-note">${escapeHtml(agentUsageSummary(application.agentic))}</p>` : ''}
-        ${completedPages ? `<p class="automation-badge">✓ ${completedPages} page${completedPages === 1 ? '' : 's'} completed automatically</p>` : ''}
-        <div class="card-actions">${actions}</div>
-      </article>`;
-  }
-
-  function renderDashboard() {
-    const groups = [
-      ['NEEDS YOUR ATTENTION', state.apps.filter((item) => ['needs_attention', 'no_form', 'paused', 'handoff_pending', 'source_expired'].includes(item.status))],
-      ['IN PROGRESS', state.apps.filter((item) => ['not_started', 'ready_to_fill'].includes(item.status))],
-      ['READY FOR REVIEW', state.apps.filter((item) => item.status === 'ready_for_review')],
-    ];
-    appRoot.innerHTML = `
-      <section>
-        <div class="intro">
-          <p class="eyebrow">Application dashboard</p>
-          <h1>${state.participant ? `${escapeHtml(firstName())}'s applications` : 'Resumable work queue'}</h1>
-          <p class="lede">${state.participant ? 'The assistant can resume verified pages and continue across approved application steps. It always stops before certification, signature, or submission.' : 'Application progress survived, but client values expired with the browser session. Reload the source record before any application can resume.'}</p>
-        </div>
-        ${renderError()}
-        ${renderAgentRuntime()}
-        <div class="queue-summary" aria-label="Work queue summary">
-          <span><strong>${state.apps.length}</strong> applications</span>
-          <span><strong>${state.apps.filter((item) => ['needs_attention', 'paused', 'handoff_pending', 'source_expired'].includes(item.status)).length}</strong> checkpoints</span>
-          <span><strong>${state.apps.filter((item) => item.status === 'ready_for_review').length}</strong> ready</span>
-        </div>
-        ${groups.map(([label, apps]) => apps.length ? `
-          <p class="section-label">${label}</p>
-          <div class="stack">${apps.map(applicationCard).join('')}</div>` : '').join('')}
-        ${state.apps.length ? '' : '<div class="notice"><span>i</span><span>No application has been added yet.</span></div>'}
-        <div class="form-actions">
-          <button class="secondary-button" type="button" data-action="open-recertifications">Recertification status</button>
-          <button class="secondary-button" type="button" data-action="${state.participant ? 'add-application' : 'reload-source'}">${state.participant ? 'Add another application' : 'Reload client data'}</button>
-          <button class="secondary-button" type="button" data-action="export-audit">Export activity log</button>
-          <button class="link-button" type="button" data-action="start-over">End this session</button>
-        </div>
-      </section>`;
-  }
-
-  function renderHandoff() {
-    const application = state.apps.find((item) => item.id === state.handoffApplicationId);
-    if (!application) {
-      state.view = 'dashboard';
-      return renderDashboard();
-    }
-    appRoot.innerHTML = `
-      <section>
-        <button class="back-button" type="button" data-action="back-dashboard"><span aria-hidden="true">←</span> Back</button>
-        <div class="intro">
-          <p class="eyebrow">${escapeHtml(application.name)}</p>
-          <h1>Pause or hand off</h1>
-          <p class="lede">Save an explicit checkpoint so another caseworker or team can understand what needs attention before resuming.</p>
-        </div>
-        ${renderError()}
-        <div class="notice"><span aria-hidden="true">i</span><span>The durable queue stores workflow metadata only. Do not put client names, identifiers, or answers in the assignee field.</span></div>
-        <form id="handoff-form">
-          <div class="form-stack">
-            <label>Caseworker or team
-              <input name="assignedTo" type="text" maxlength="80" autocomplete="off" placeholder="Example: Intake team" required>
-            </label>
-            <label>Reason for handoff
-              <select name="reason">
-                <option value="client_question">Client question needed</option>
-                <option value="direct_entry">Direct form entry needed</option>
-                <option value="captcha_or_otp">CAPTCHA or one-time code</option>
-                <option value="certification_or_signature">Certification or signature</option>
-                <option value="supervisor_review">Supervisor review</option>
-                <option value="other">Other checkpoint</option>
-              </select>
-            </label>
-          </div>
-          <div class="form-actions">
-            <button class="primary-button" type="submit">Create handoff</button>
-            <button class="secondary-button" type="button" data-action="pause" data-app="${encoded(application.id)}">Pause for later</button>
-          </div>
-        </form>
-      </section>`;
-  }
-
-  function choiceOptions(gap) {
-    const options = (gap.options || []).map((option) => ({
-      value: option.value ?? option.optionLabel ?? option.label,
-      label: option.optionLabel ?? option.label ?? option.value,
-    })).filter((option) => option.value !== undefined && option.value !== '');
-    if (!options.length && gap.kind === 'decision') {
-      return [{ value: 'yes', label: 'Yes' }, { value: 'no', label: 'No' }];
-    }
-    return options;
-  }
-
-  function renderQuestions() {
-    const application = state.apps.find((item) => item.id === state.currentAppId);
-    if (!application) {
-      state.view = 'dashboard';
-      return renderDashboard();
-    }
-    appRoot.innerHTML = `
-      <section>
-        <button class="back-button" type="button" data-action="back-dashboard"><span aria-hidden="true">←</span> Back</button>
-        <div class="intro">
-          <p class="eyebrow">${escapeHtml(application.name)}</p>
-          <h1>Answer the missing questions</h1>
-          <p class="lede">Your answers go directly into the application. Leave a field blank if you do not know it—the assistant will not guess.${application.autoRun ? ' After this page is verified, the assistant will continue through approved next steps.' : ''}</p>
-        </div>
-        ${application.playbook ? `<div class="notice"><span aria-hidden="true">i</span><span>${escapeHtml(application.playbook.note)}</span></div>` : ''}
-        <form id="questions-form">
-          <div class="question-list">
-            ${(application.analysis?.gaps || []).map((gap, index) => {
-              const name = `answer-${index}`;
-              const options = choiceOptions(gap);
-              return `
-                <div class="question-card">
-                  <div><p class="question-title">${escapeHtml(gap.question)}</p>${gap.required ? '<p class="field-hint">The form marks this as required.</p>' : ''}</div>
-                  ${gap.inputType === 'multi_choice' && options.length ? `
-                    <div class="choice-grid">
-                      ${options.map((option) => `
-                        <label class="choice-pill">
-                          <input type="checkbox" name="${name}" value="${escapeHtml(option.value)}">
-                          <span>${escapeHtml(option.label)}</span>
-                        </label>`).join('')}
-                      <label class="choice-pill">
-                        <input type="checkbox" name="${name}" value="__none__">
-                        <span>None of these</span>
-                      </label>
-                    </div>` : gap.inputType === 'choice' && options.length ? `
-                    <div class="choice-grid">
-                      ${options.map((option) => `
-                        <label class="choice-pill">
-                          <input type="radio" name="${name}" value="${escapeHtml(option.value)}">
-                          <span>${escapeHtml(option.label)}</span>
-                        </label>`).join('')}
-                    </div>` : `
-                    <input type="text" name="${name}" autocomplete="off" ${gap.sensitive ? 'inputmode="numeric"' : ''} aria-label="${escapeHtml(gap.question)}">`}
-                  <input type="hidden" name="field-${index}" value="${escapeHtml(gap.fieldKey)}">
-                </div>`;
-            }).join('')}
-          </div>
-          <div class="form-actions">
-            <button class="primary-button" type="submit">${application.autoRun ? 'Fill and continue automatically' : 'Fill this page'}</button>
-            <button class="secondary-button" type="button" data-action="client-link">Send these questions to the client</button>
-          </div>
-          ${renderError()}
-          ${application.clientLink ? `<div class="notice"><span aria-hidden="true">i</span><span>Client link, valid until it expires: ${escapeHtml(application.clientLink)}</span></div>` : ''}
-        </form>
-      </section>`;
-  }
-
-  function sourceLabel(source) {
-    return { record: 'Record', changed: 'Changed', user: 'You', page: 'On page', empty: 'Empty' }[source] || source;
-  }
-
-  function renderReview() {
-    const application = state.apps.find((item) => item.id === state.currentAppId);
-    if (!application) {
-      state.view = 'dashboard';
-      return renderDashboard();
-    }
-    const completedPages = application.completedPages || [];
-    const pageSnapshots = [
-      ...completedPages,
-      { title: application.page?.title || application.name, provenance: application.provenance || [], empty: application.empty || [], noFields: application.analysis?.noFields || [] },
-    ];
-    const rows = pageSnapshots.flatMap((page) => [
-      ...(page.provenance || []).map((item) => ({ ...item, pageTitle: page.title })),
-      ...(page.empty || []).map((item) => ({ label: item.label, value: '(empty)', source: 'empty', detail: item.reason || 'No value was provided', pageTitle: page.title })),
-    ]);
-    const verified = pageSnapshots.reduce((sum, page) => sum + (page.provenance?.length || 0), 0);
-    const empty = pageSnapshots.reduce((sum, page) => sum + (page.empty?.length || 0), 0);
-    const noFieldLists = pageSnapshots.map((page) => page.noFields || []);
-    const unusedEntries = (noFieldLists[0] || []).filter((candidate) =>
-      noFieldLists.every((items) => items.some((item) => item.purpose === candidate.purpose)));
-    const unused = unusedEntries.length;
-    const gate = application.submitGate || {};
-    const stopReason = application.runStopReason || application.navigationGate?.reason || gate.blockedReason
-      || 'The assistant will not submit this application. Review the page, complete any affirmation or bot check, and submit it yourself.';
-    appRoot.innerHTML = `
-      <section>
-        <button class="back-button" type="button" data-action="back-dashboard"><span aria-hidden="true">←</span> Back</button>
-        <div class="intro">
-          <p class="eyebrow">${escapeHtml(application.name)}</p>
-          <h1>Review what was filled</h1>
-          <p class="lede">Every changed value below was read back from the form. The assistant stopped before the final action so a caseworker can review and submit.</p>
-        </div>
-        <div class="summary-grid">
-          <div class="summary-card"><strong>${verified}</strong><span>Verified</span></div>
-          <div class="summary-card"><strong>${empty}</strong><span>Empty</span></div>
-          <div class="summary-card"><strong>${pageSnapshots.length}</strong><span>Pages</span></div>
-        </div>
-        ${completedPages.length ? `<ol class="page-progress-list">${pageSnapshots.map((page, index) => `<li><span>Page ${index + 1}</span><strong>${escapeHtml(page.title || 'Application page')}</strong></li>`).join('')}</ol>` : ''}
-        <div class="table-wrap">
-          <table class="review-table">
-            <thead><tr><th style="width:34%">Field</th><th style="width:36%">Value</th><th style="width:30%">Source</th></tr></thead>
-            <tbody>${rows.map((row) => `
-              <tr>
-                <td><span class="review-page">${escapeHtml(row.pageTitle || '')}</span>${escapeHtml(row.label)}</td>
-                <td title="${escapeHtml(row.detail || '')}">${escapeHtml(row.value)}</td>
-                <td><span class="source-chip ${escapeHtml(row.source)}">${escapeHtml(sourceLabel(row.source))}</span></td>
-              </tr>`).join('')}</tbody>
-          </table>
-        </div>
-        ${unused ? `<p class="card-note" style="margin-top:12px">No matching field in this flow: ${unusedEntries.map((item) => escapeHtml(item.label)).join(', ')}.</p>` : ''}
-        <div class="notice warning" style="margin-top:18px"><span aria-hidden="true">!</span><span>${escapeHtml(stopReason)}</span></div>
-        <div class="form-actions">
-          <button class="primary-button" type="button" data-action="go-tab" data-app="${encoded(application.id)}">Go to application</button>
-          <button class="secondary-button" type="button" data-action="rescan" data-app="${encoded(application.id)}">Scan this page again</button>
-        </div>
-      </section>`;
   }
 
   function render() {
@@ -2174,10 +1060,6 @@
     if (state.view === 'dashboard') render();
   }
 
-  function checkpoint(kind, label) {
-    return { kind, label, createdAt: new Date().toISOString() };
-  }
-
   function setCheckpoint(application, kind, label, status = 'paused') {
     application.checkpoint = checkpoint(kind, label);
     application.status = status;
@@ -2185,28 +1067,6 @@
     application.runProgress = '';
     application.updatedAt = new Date().toISOString();
     recordAudit('checkpoint_reached', application, { checkpointKind: kind, toStatus: status });
-  }
-
-  function checkpointFromScan(response, fieldsFound) {
-    if (response.submitGate?.oneTimeCodePresent && !response.submitGate?.oneTimeCodeComplete) return checkpoint('otp', 'One-time code required');
-    if (response.analysis?.gaps?.length) return checkpoint('human_input', 'Caseworker answers required');
-    if (response.submitGate?.botCheckPresent && !response.submitGate?.botCheckComplete) return checkpoint('captcha', 'Human bot check required');
-    if (response.navigationGate?.kind === 'final_review') {
-      const signal = `${response.navigationGate.text || ''} ${response.navigationGate.reason || ''}`;
-      if (/signature|sign\b/i.test(signal)) return checkpoint('signature', 'Signature required');
-      if (/certif|attest|declaration|affirm/i.test(signal)) return checkpoint('certification', 'Certification required');
-      return checkpoint('final_review', 'Final review required');
-    }
-    if (fieldsFound === 0 && response.navigationGate?.kind !== 'next') return checkpoint('navigation_unknown', 'No approved continuation found');
-    if (response.navigationGate?.kind === 'manual') return checkpoint('navigation_unknown', 'Manual page continuation required');
-    return null;
-  }
-
-  function automatedPageLimit(application) {
-    if (application.workflowId === 'benefitscal') return MAX_AUTOMATED_PAGES;
-    if (application.workflowId === 'riverside-ihss') return 20;
-    if (application.workflowId === 'riverside-wic') return 10;
-    return DEFAULT_AUTOMATED_PAGES;
   }
 
   async function acquireApplicationLease(application) {
@@ -2303,45 +1163,6 @@
     await persist();
   }
 
-  function urlOrigin(value) {
-    try { return new URL(value).origin; } catch { return ''; }
-  }
-
-  function urlPath(value) {
-    try { return new URL(value).pathname; } catch { return ''; }
-  }
-
-  function urlSearch(value) {
-    try {
-      const url = new URL(value);
-      const params = new URLSearchParams(url.search);
-      params.sort();
-      const normalized = params.toString();
-      return normalized ? `?${normalized}` : '';
-    } catch {
-      return '';
-    }
-  }
-
-  function urlHash(value) {
-    try { return new URL(value).hash; } catch { return ''; }
-  }
-
-  function commandLocation(value) {
-    try {
-      const url = new URL(value);
-      return `${url.origin}${url.pathname}${urlSearch(url.href)}${url.hash}`;
-    } catch {
-      return '';
-    }
-  }
-
-  function pathMatchesPrefix(path, prefix) {
-    if (!path || !prefix) return false;
-    if (prefix.endsWith('/')) return path.startsWith(prefix);
-    return path === prefix || path.startsWith(`${prefix}/`);
-  }
-
   function participantForApplication(application) {
     if (application?.workflowId !== 'benefitscal') return state.participant;
     if (!Array.isArray(application.programIds) || application.programSelectionRequired) return state.participant;
@@ -2354,39 +1175,6 @@
         calworks: selected.has('calworks'),
       },
     };
-  }
-
-  function attachApplicationPolicy(application) {
-    const currentOrigin = urlOrigin(application.url);
-    const matchingProgram = programCatalog.PROGRAMS.find((program) => (
-      program.workflowId === application.workflowId
-      || program.allowedOrigins?.includes(currentOrigin)
-    ));
-    return {
-      ...application,
-      workflowId: application.workflowId || matchingProgram?.workflowId || '',
-      allowedOrigins: matchingProgram?.allowedOrigins
-        || (application.allowedOrigins?.length ? application.allowedOrigins : (currentOrigin ? [currentOrigin] : [])),
-      allowedPathPrefixes: matchingProgram?.allowedPathPrefixes
-        || (application.allowedPathPrefixes || []).filter((prefix) => prefix !== '/'),
-    };
-  }
-
-  function assertApprovedApplicationLocation(application, observedUrl) {
-    if (!application?.id) return;
-    const observedOrigin = urlOrigin(observedUrl);
-    const observedPath = urlPath(observedUrl);
-    const approvedOrigins = application.allowedOrigins || [];
-    const approvedPathPrefixes = application.allowedPathPrefixes || [];
-    const originalOrigin = urlOrigin(application.url);
-    const originApproved = approvedOrigins.length
-      ? approvedOrigins.includes(observedOrigin)
-      : !originalOrigin || originalOrigin === observedOrigin;
-    const pathApproved = !approvedPathPrefixes.length
-      || approvedPathPrefixes.some((prefix) => pathMatchesPrefix(observedPath, prefix));
-    if (!originApproved || !pathApproved) {
-      throw new Error(`The ${application.name || 'application'} tab left its approved site. The assistant paused without reading or writing ${hostLabel(observedUrl)}.`);
-    }
   }
 
   function gapFromAgent(rawFields, gap) {

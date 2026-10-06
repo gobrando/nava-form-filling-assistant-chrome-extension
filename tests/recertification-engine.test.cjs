@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { sidePanelSource, serviceWorkerSource } = require('./runtime-sources.cjs');
 const engine = require('../shared/recertification-engine.js');
 
 const root = path.resolve(__dirname, '..');
@@ -85,8 +86,8 @@ test('summarizes a caseload by operational state', () => {
 });
 
 test('extension wiring keeps answers session-only and locks preparation behind readiness', () => {
-  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
-  const background = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
+  const panel = sidePanelSource();
+  const background = serviceWorkerSource();
   const html = fs.readFileSync(path.join(root, 'sidepanel/index.html'), 'utf8');
   const saveStart = panel.indexOf('async function saveRecertificationWorkspace');
   const saveEnd = panel.indexOf('async function loadRecertifications', saveStart);

@@ -1,11 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
+const { sidePanelSource } = require('./runtime-sources.cjs');
 
-const root = path.resolve(__dirname, '..');
-const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
+const panel = sidePanelSource();
 
 function section(start, end) {
   const startIndex = panel.indexOf(start);
