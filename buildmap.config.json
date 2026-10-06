@@ -1,0 +1,49 @@
+{
+  "accept": [
+    {
+      "id": "unfinished:docs:README.md",
+      "reason": "All 8 flagged sentences are evidence-boundary disclosures about validation outside this repo, checked as accurate on 2026-10-06: (1) the BenefitsCal path-policy fix still needs an installed-extension rerun; evaluation/model-benchmark/runs.json ends with the 2026-09-25 navigation run and records no rerun. (2) This is not the deployed Eve/Vertex service and is not evidence of production accuracy. (3) The two-panel installed-Chrome lease validation has no recorded result. (4) A Plaid-like provider network needs provider partnerships. (5) OCR still needs pilot data. (6) The runner loop is still hosted in sidepanel/sidepanel.js (runQueuedApplication), so a durable service-worker or server job is still required. (7) By design, CAPTCHA, affirmation, certification and final submission always require a person. (8) A real organization still needs the Nava-controlled service, authentication and a security review. Softening any of these would overstate readiness to caseworkers and partners.",
+      "owner": "BuildMap cleanup loop — review before merging"
+    },
+    {
+      "id": "unfinished:docs:docs/ROADMAP.md",
+      "reason": "Accurate planning statements about work outside this codebase or not yet performed. (1) Notification delivery, scheduled evaluation and durable authorization records need an authenticated organization service. (2) The production backend and per-provider adapters need partnerships; only the fictional Apricot-shaped loopback adapter exists. (3) A Plaid-like provider network does not exist yet. (4) The installed-browser interruption and two-panel concurrency exercises have not been run: docs/TEST_REPORT.md records the 2026-09-15 queue walkthrough as a regular-page preview, not the installed extension. These close when that work happens, not through code cleanup.",
+      "owner": "BuildMap cleanup loop — review before merging"
+    },
+    {
+      "id": "unfinished:docs:docs/PRODUCTION_READINESS.md",
+      "reason": "Required safety disclosure, checked as accurate against the repo. There is no production Apricot tenant. No real PII has been used; benchmarks use only fictional record 339619. No live BenefitsCal application has been completed end to end through review. The runner loop is hosted in sidepanel/sidepanel.js, so the side panel must stay open. The doc also states the build is not yet suitable for unattended use with real applicants. Removing any of this would misrepresent production readiness.",
+      "owner": "BuildMap cleanup loop — review before merging"
+    },
+    {
+      "id": "unfinished:docs:docs/CONNECTOR_COVERAGE.md",
+      "reason": "Accurate product boundary. The only adapter is the fictional Apricot-shaped loopback adapter (connector-service/mock-server.mjs). A Plaid-like network needs organization authentication, provider partnerships, secret custody and live adapters. The second match describes customer organizations that do not yet have a managed adapter and use reviewed document intake instead; it is not unfinished work in this repo.",
+      "owner": "BuildMap cleanup loop — review before merging"
+    },
+    {
+      "id": "unfinished:docs:docs/IMPLEMENTATION_NOTES.md",
+      "reason": "Accurate constraints. Production OCR needs representative pilot data plus malware, accessibility and privacy/security review, which is organizational validation rather than code. The runner loop is still hosted in the side panel (sidepanel/sidepanel.js runQueuedApplication, up to MAX_PARALLEL_APPLICATIONS workers) until a durable service-worker or server job exists, which is a future product capability rather than cleanup.",
+      "owner": "BuildMap cleanup loop — review before merging"
+    },
+    {
+      "id": "unfinished:docs:docs/TEST_REPORT.md",
+      "reason": "The test report must not claim validation that has not been run. The two-panel installed-browser concurrency exercise and the parallel background-tab validation are manual installed-Chrome exercises, and the repo records no results for them. The deterministic coordinator tests that do exist are already described in the same paragraphs.",
+      "owner": "BuildMap cleanup loop — review before merging"
+    },
+    {
+      "id": "unfinished:docs:docs/WORK_QUEUE_SECURITY_AND_RECOVERY.md",
+      "reason": "The two-panel installed-browser lease exercise still needs manual validation, and the repo records no result for it. The other match, '- handoff not yet accepted;', names a tested recovery case in the 'Tested recovery cases' list. It is not open work; the analyzer flagged it by mistake.",
+      "owner": "BuildMap cleanup loop — review before merging"
+    },
+    {
+      "id": "hidden-coupling:content/form-agent.js|shared/work-queue-engine.js",
+      "reason": "This is historical co-change from broad feature commits: 5 of the 7 commits to work-queue-engine.js also touched the content agent (f85d444, c17e605, 454c4de, 582cb47, cb2d25c). This round's work-queue refactor, c9c3a7a, changed it alone. The two files share no code and run in different contexts: content script versus service worker and side panel. Their only shared literals are 'final_review' and 'verified', and the side panel maps them explicitly (sidepanel/application-policy.js and the navigationGate handling in sidepanel.js) rather than either file depending on the other. There is no dependency to make explicit, and git history cannot be rewritten.",
+      "owner": "BuildMap cleanup loop — review before merging"
+    },
+    {
+      "id": "hidden-coupling:background.js|shared/form-engine.js",
+      "reason": "This is historical co-change only: 4 of the 6 commits to form-engine.js were repo-wide feature commits that also touched the service worker (ecfd5d9 initial prototype, 0e331e0, c17e605, f98641e). This round's form-engine refactor, 6c849cf, changed it alone. background.js never imports, injects or duplicates form-engine logic; its imports are connector-engine, work-queue-engine, program-catalog and recertification-engine. The only shared literals are 'calfresh' and 'calworks'. In background.js they are demo program ids, which shared/program-catalog.js owns; in form-engine.js they are phrases for matching page labels. There is no hidden rule to extract, and history cannot be rewritten.",
+      "owner": "BuildMap cleanup loop — review before merging"
+    }
+  ]
+}
