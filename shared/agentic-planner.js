@@ -327,7 +327,8 @@ schema-constrained data.`,
     };
   }
 
-  // Each on-device prompt runs in a fresh clone of the role's session, so roles never share context.
+  // Each on-device prompt runs in a fresh clone of the role's own session, so no prompt inherits
+  // context from an earlier one; the clone is always destroyed.
   async function promptOnDeviceRole(role, prompt, responseConstraint) {
     const session = await sessions[role].clone();
     const startedAt = Date.now();
@@ -373,7 +374,8 @@ schema-constrained data.`,
     return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
   }
 
-  // The bounded, value-free description of one page control that a model is allowed to see.
+  // The bounded description of one page control that a model may see: it records whether the control
+  // is filled, never its value (participant values in its text are redacted later by redactSourceValues).
   // A singleton group keeps its own writable field key; a real group is keyed by the group.
   function inventoryEntry(field, singletonGroup) {
     return {
