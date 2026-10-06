@@ -1,14 +1,17 @@
+// Document field extraction: label rules, text, OCR and JSON field extraction with masking and evidence, the OCR review policy, and parseDocument (validate, read, extract, assemble).
 (function installDocumentParser(root) {
   'use strict';
 
   const engine = root.NavaFormEngine;
+  const readers = root.NavaDocumentReaders;
+  const clean = readers.cleanText;
   const MAX_FILE_BYTES = 15 * 1024 * 1024;
-  const MAX_PDF_PAGES = 60;
-  const MAX_TEXT_CHARS = 750000;
+  const MAX_TEXT_CHARS = readers.MAX_TEXT_CHARS;
   const MIN_OCR_FIELD_CONFIDENCE = 70;
   const STRONG_OCR_FIELD_CONFIDENCE = 88;
   const SENSITIVE_KEYS = new Set(['ssn', 'ein']);
   const NAME_KEYS = new Set(['firstName', 'middleName', 'lastName', 'fullName']);
+  const CONFIDENCE_RANK = { low: 1, medium: 2, high: 3 };
 
   const LABEL_RULES = [
     [/^(first|given) name$|^(primer nombre|nombre)$/, 'firstName'],
@@ -48,14 +51,6 @@
     [/^(formation date|date of formation|incorporation date)$/, 'incorporationDate'],
     [/^(state of formation|state of incorporation|formation state)$/, 'stateOfFormation'],
   ];
-
-  function clean(value) {
-    return String(value ?? '')
-      .replace(/\u0000/g, '')
-      .replace(/[\t ]+/g, ' ')
-      .replace(/^\s*[-–—:|]+\s*|\s*[-–—:|]+\s*$/g, '')
-      .trim();
-  }
 
   function mask(value, key) {
     if (!SENSITIVE_KEYS.has(key)) return String(value);
@@ -98,17 +93,15 @@
     };
   }
 
-  function extractFieldsFromText(rawText) {
-    const text = String(rawText || '').slice(0, MAX_TEXT_CHARS).replace(/\r/g, '');
-    const lines = text.split('\n').map(clean).filter(Boolean);
+  /** Collects candidate fields, keeping one valid, masked value per key at its highest confidence. */
+  function fieldCollector() {
     const fields = new Map();
 
     function add(key, value, confidence, evidence) {
       const cleaned = clean(value);
       if (!key || !validValue(key, cleaned)) return;
       const current = fields.get(key);
-      const rank = { low: 1, medium: 2, high: 3 };
-      if (current && rank[current.confidence] >= rank[confidence]) return;
+      if (current && CONFIDENCE_RANK[current.confidence] >= CONFIDENCE_RANK[confidence]) return;
       fields.set(key, {
         key,
         label: engine.LABELS[key] || key,
@@ -120,6 +113,11 @@
       });
     }
 
+    return { fields, add };
+  }
+
+  /** "Label: value" lines, and a label line followed by its value line. */
+  function addLabeledLines(lines, add) {
     lines.forEach((line, index) => {
       const pair = line.match(/^(.{2,64}?)(?:\s*[:#]\s*|\s{2,})(.{1,240})$/);
       if (pair) {
@@ -132,28 +130,39 @@
         add(standaloneKey, lines[index + 1], 'medium', `${line}: ${lines[index + 1]}`);
       }
     });
+  }
 
-    const emailMatches = [...text.matchAll(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi)];
-    if (emailMatches[0] && !fields.has('businessEmail')) add('email', emailMatches[0][0], 'medium', emailMatches[0][0]);
-
+  /** The first phone number outside a fax line; business or company lines file it as the business phone. */
+  function addFirstPhone(lines, add) {
     for (const line of lines) {
       if (!/fax/i.test(line)) {
         const phone = line.match(/(?:phone|telephone|mobile|cell)?\s*[:#-]?\s*(\+?1?[\s.-]?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4})\b/i);
         if (phone) {
           add(/business|company/i.test(line) ? 'businessPhone' : 'phone', phone[1], /phone|telephone|mobile|cell/i.test(line) ? 'high' : 'medium', line);
-          break;
+          return;
         }
       }
     }
+  }
+
+  /** The first email and phone number in the text, and SSN or EIN digits only where their label precedes them. */
+  function addContactAndIdentifiers(text, lines, fields, add) {
+    const emailMatches = [...text.matchAll(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi)];
+    if (emailMatches[0] && !fields.has('businessEmail')) add('email', emailMatches[0][0], 'medium', emailMatches[0][0]);
+
+    addFirstPhone(lines, add);
 
     const labeledSsn = text.match(/(?:social security(?: number)?|\bssn\b)\s*[:#-]?\s*(\d{3}[- ]?\d{2}[- ]?\d{4})/i);
     if (labeledSsn) add('ssn', labeledSsn[1], 'high', labeledSsn[0]);
     const labeledEin = text.match(/(?:employer identification(?: number)?|federal (?:employer )?(?:tax )?id|\bein\b)\s*[:#-]?\s*(\d{2}[- ]?\d{7})/i);
     if (labeledEin) add('ein', labeledEin[1], 'high', labeledEin[0]);
+  }
 
+  /** A "City, ST 12345" line and a numbered street line, filed as business address fields for a business-only record. */
+  function addAddressLines(lines, fields, add) {
+    const business = fields.has('businessName') && !fields.has('fullName');
     const cityStateZip = lines.map((line) => ({ line, match: line.match(/^([A-Za-z .'-]{2,60}),?\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)$/) })).find((item) => item.match);
     if (cityStateZip) {
-      const business = fields.has('businessName') && !fields.has('fullName');
       add(business ? 'businessCity' : 'city', cityStateZip.match[1], 'medium', cityStateZip.line);
       add(business ? 'businessState' : 'state', cityStateZip.match[2], 'medium', cityStateZip.line);
       add(business ? 'businessPostalCode' : 'postalCode', cityStateZip.match[3], 'medium', cityStateZip.line);
@@ -161,16 +170,29 @@
 
     const streetLine = lines.find((line) => /^\d{1,8}\s+[A-Za-z0-9 .'-]+\s(?:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|court|ct|way|parkway|pkwy)\b/i.test(line));
     if (streetLine) {
-      add(fields.has('businessName') && !fields.has('fullName') ? 'businessAddressLine1' : 'addressLine1', streetLine, 'medium', streetLine);
+      add(business ? 'businessAddressLine1' : 'addressLine1', streetLine, 'medium', streetLine);
     }
+  }
 
-    if (fields.has('fullName')) {
-      const parts = splitPersonName(fields.get('fullName').value);
-      if (parts.firstName) add('firstName', parts.firstName, 'medium', `Split from labeled name: ${fields.get('fullName').value}`);
-      if (parts.middleName) add('middleName', parts.middleName, 'medium', `Split from labeled name: ${fields.get('fullName').value}`);
-      if (parts.lastName) add('lastName', parts.lastName, 'medium', `Split from labeled name: ${fields.get('fullName').value}`);
-    }
+  /** First, middle and last name split from a labeled full name. */
+  function addSplitName(fields, add) {
+    if (!fields.has('fullName')) return;
+    const fullName = fields.get('fullName').value;
+    const parts = splitPersonName(fullName);
+    const evidence = `Split from labeled name: ${fullName}`;
+    if (parts.firstName) add('firstName', parts.firstName, 'medium', evidence);
+    if (parts.middleName) add('middleName', parts.middleName, 'medium', evidence);
+    if (parts.lastName) add('lastName', parts.lastName, 'medium', evidence);
+  }
 
+  function extractFieldsFromText(rawText) {
+    const text = String(rawText || '').slice(0, MAX_TEXT_CHARS).replace(/\r/g, '');
+    const lines = text.split('\n').map(clean).filter(Boolean);
+    const { fields, add } = fieldCollector();
+    addLabeledLines(lines, add);
+    addContactAndIdentifiers(text, lines, fields, add);
+    addAddressLines(lines, fields, add);
+    addSplitName(fields, add);
     return [...fields.values()];
   }
 
@@ -187,34 +209,46 @@
       .sort((left, right) => right.score - left.score || (Number(right.line.confidence) || 0) - (Number(left.line.confidence) || 0))[0]?.line || null;
   }
 
+  /** OCR confidence a field needs before it is proposed: stricter for email and sensitive identifiers. */
+  function requiredOcrConfidence(key) {
+    if (['email', 'businessEmail'].includes(key)) return 94;
+    return SENSITIVE_KEYS.has(key) ? 90 : MIN_OCR_FIELD_CONFIDENCE;
+  }
+
+  /**
+   * An OCR field proposal with page-region provenance, or null when it is withheld for low confidence or a
+   * suspicious name glyph. OCR values never rank above medium and always start unchecked (reviewRequired).
+   */
+  function ocrProposal(field, page) {
+    const line = findOcrLine(field, page);
+    const confidence = Math.max(0, Math.min(100, Number(line?.confidence ?? page.confidence) || 0));
+    const suspiciousNameGlyph = NAME_KEYS.has(field.key) && /[|{}[\]~]/.test(line?.text || '');
+    if (confidence < requiredOcrConfidence(field.key) || suspiciousNameGlyph) return null;
+    return {
+      ...field,
+      confidence: confidence >= STRONG_OCR_FIELD_CONFIDENCE && field.confidence === 'high' ? 'medium' : 'low',
+      evidence: `Page ${page.pageNumber} · OCR ${Math.round(confidence)}% · ${field.evidence}`,
+      ocrConfidence: Math.round(confidence),
+      reviewRequired: true,
+      source: {
+        method: 'ocr',
+        pageNumber: page.pageNumber,
+        region: line?.bbox || null,
+        canvas: { width: page.width, height: page.height, rotation: page.rotation || 0 },
+      },
+    };
+  }
+
   function extractFieldsFromOcrPages(pages) {
     const selected = new Map();
     let withheld = 0;
     (pages || []).forEach((page) => {
       extractFieldsFromText(page.text).forEach((field) => {
-        const line = findOcrLine(field, page);
-        const confidence = Math.max(0, Math.min(100, Number(line?.confidence ?? page.confidence) || 0));
-        const requiredConfidence = ['email', 'businessEmail'].includes(field.key) ? 94
-          : SENSITIVE_KEYS.has(field.key) ? 90
-            : MIN_OCR_FIELD_CONFIDENCE;
-        const suspiciousNameGlyph = NAME_KEYS.has(field.key) && /[|{}[\]~]/.test(line?.text || '');
-        if (confidence < requiredConfidence || suspiciousNameGlyph) {
+        const proposal = ocrProposal(field, page);
+        if (!proposal) {
           withheld += 1;
           return;
         }
-        const proposal = {
-          ...field,
-          confidence: confidence >= STRONG_OCR_FIELD_CONFIDENCE && field.confidence === 'high' ? 'medium' : 'low',
-          evidence: `Page ${page.pageNumber} · OCR ${Math.round(confidence)}% · ${field.evidence}`,
-          ocrConfidence: Math.round(confidence),
-          reviewRequired: true,
-          source: {
-            method: 'ocr',
-            pageNumber: page.pageNumber,
-            region: line?.bbox || null,
-            canvas: { width: page.width, height: page.height, rotation: page.rotation || 0 },
-          },
-        };
         const current = selected.get(field.key);
         if (!current || proposal.ocrConfidence > current.ocrConfidence) selected.set(field.key, proposal);
       });
@@ -223,12 +257,11 @@
   }
 
   function mergeFields(primary, secondary) {
-    const rank = { low: 1, medium: 2, high: 3 };
     const merged = new Map(primary.map((field) => [field.key, field]));
     secondary.forEach((field) => {
       const current = merged.get(field.key);
-      if (!current || rank[field.confidence] > rank[current.confidence]
-        || (rank[field.confidence] === rank[current.confidence] && (field.ocrConfidence || 0) > (current.ocrConfidence || 0))) {
+      if (!current || CONFIDENCE_RANK[field.confidence] > CONFIDENCE_RANK[current.confidence]
+        || (CONFIDENCE_RANK[field.confidence] === CONFIDENCE_RANK[current.confidence] && (field.ocrConfidence || 0) > (current.ocrConfidence || 0))) {
         merged.set(field.key, field);
       }
     });
@@ -251,196 +284,53 @@
       }));
   }
 
-  function parseDelimitedRows(text, delimiter) {
-    const rows = [];
-    let row = [];
-    let value = '';
-    let quoted = false;
-    for (let index = 0; index < text.length; index += 1) {
-      const character = text[index];
-      if (character === '"') {
-        if (quoted && text[index + 1] === '"') {
-          value += '"';
-          index += 1;
-        } else {
-          quoted = !quoted;
-        }
-      } else if (character === delimiter && !quoted) {
-        row.push(clean(value));
-        value = '';
-      } else if ((character === '\n' || character === '\r') && !quoted) {
-        if (character === '\r' && text[index + 1] === '\n') index += 1;
-        row.push(clean(value));
-        if (row.some(Boolean)) rows.push(row);
-        row = [];
-        value = '';
-      } else {
-        value += character;
-      }
-    }
-    row.push(clean(value));
-    if (row.some(Boolean)) rows.push(row);
-    return rows;
-  }
-
+  /** CSV/TSV rows as "Label: value" lines, matched with this parser's label rules. */
   function delimitedToLabeledText(text, delimiter) {
-    const rows = parseDelimitedRows(String(text || ''), delimiter);
-    if (!rows.length) return '';
-    const header = rows[0];
-    const knownHeaders = header.filter((label) => keyForLabel(label)).length;
-    const secondRowHasLabels = rows[1]?.some((label) => keyForLabel(label));
-    if (rows.length > 1 && knownHeaders >= Math.ceil(header.length / 2) && !secondRowHasLabels && header.length === rows[1].length) {
-      return header.map((label, index) => `${label}: ${rows[1][index] || ''}`).join('\n');
+    return readers.delimitedToLabeledText(text, delimiter, keyForLabel);
+  }
+
+  /** Fields from the text a reader returned, merged with reviewed OCR proposals, and the extraction warnings. */
+  function extractReadFields(read) {
+    const warnings = [...read.warnings];
+    let fields = extractFieldsFromText(read.text);
+    let ocrMetrics = null;
+    if (read.ocrPages.length) {
+      const pageCount = read.ocrPages.length;
+      const ocrExtraction = extractFieldsFromOcrPages(read.ocrPages);
+      fields = mergeFields(fields, ocrExtraction.fields);
+      ocrMetrics = { ...(read.ocrMetrics || {}), fieldsWithheld: ocrExtraction.withheld };
+      warnings.push(`On-device OCR reviewed ${pageCount} ${pageCount === 1 ? 'page' : 'pages'}. Verify every proposed value against the source document.`);
+      if (ocrExtraction.withheld) warnings.push(`${ocrExtraction.withheld} low-confidence OCR ${ocrExtraction.withheld === 1 ? 'candidate was' : 'candidates were'} withheld.`);
+    } else if (!read.text.trim()) {
+      warnings.push('No readable text was found. The OCR engine could not recover usable text from this document.');
     }
-    return rows
-      .filter((row) => row.length >= 2 && keyForLabel(row[0]))
-      .map((row) => `${row[0]}: ${row.slice(1).join(delimiter === '\t' ? ' ' : ', ')}`)
-      .join('\n');
+    return { fields, warnings, textLength: read.text.length, ocrMetrics };
   }
 
-  function assetUrl(relativePath) {
-    if (root.chrome?.runtime?.id) return root.chrome.runtime.getURL(relativePath.replace(/^\.\.\//, ''));
-    return new URL(relativePath, location.href).href;
+  function documentResult(file, read, extraction) {
+    const warnings = [...extraction.warnings];
+    if (!extraction.fields.length) warnings.push('No clearly labeled demographic, identity, contact, address, or business fields were found.');
+    return {
+      file: { name: file.name, type: file.type || read.extension, size: file.size },
+      fields: extraction.fields,
+      warnings,
+      textLength: extraction.textLength,
+      quality: {
+        method: read.method,
+        ocr: extraction.ocrMetrics,
+      },
+    };
   }
 
-  async function extractPdfText(arrayBuffer, onProgress) {
-    const pdfjs = await import(assetUrl('../vendor/pdf.min.mjs'));
-    pdfjs.GlobalWorkerOptions.workerSrc = assetUrl('../vendor/pdf.worker.min.mjs');
-    const task = pdfjs.getDocument({
-      data: new Uint8Array(arrayBuffer),
-      isEvalSupported: false,
-      useWorkerFetch: false,
-    });
-    try {
-      const pdf = await task.promise;
-      const pageCount = Math.min(pdf.numPages, MAX_PDF_PAGES);
-      const pages = [];
-      const ocrSources = [];
-      for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
-        const page = await pdf.getPage(pageNumber);
-        const content = await page.getTextContent();
-        let pageText = '';
-        content.items.forEach((item) => {
-          pageText += item.str || '';
-          pageText += item.hasEOL ? '\n' : ' ';
-        });
-        const cleaned = pageText.trim();
-        pages.push(cleaned);
-        if (cleaned.replace(/\s/g, '').length < 24) {
-          ocrSources.push({
-            pageNumber,
-            render: async () => root.NavaOcrEngine.pdfPageSource(await pdf.getPage(pageNumber)),
-          });
-        }
-      }
-      const ocr = ocrSources.length
-        ? await root.NavaOcrEngine.recognizeSources(ocrSources, { onProgress })
-        : { pages: [], warnings: [], metrics: null };
-      return {
-        text: pages.join('\n\n'),
-        ocrPages: ocr.pages,
-        ocrMetrics: ocr.metrics,
-        warnings: [
-          ...(pdf.numPages > MAX_PDF_PAGES ? [`Only the first ${MAX_PDF_PAGES} PDF pages were read.`] : []),
-          ...ocr.warnings,
-        ],
-      };
-    } finally {
-      await task.destroy();
-    }
-  }
-
-  function xmlText(xmlText) {
-    const documentXml = new DOMParser().parseFromString(xmlText, 'application/xml');
-    if (documentXml.querySelector('parsererror')) throw new Error('The Word document XML could not be read.');
-    const paragraphs = [...documentXml.getElementsByTagNameNS('*', 'p')];
-    return paragraphs.map((paragraph) =>
-      [...paragraph.getElementsByTagNameNS('*', 't')].map((node) => node.textContent || '').join(''),
-    ).filter(Boolean).join('\n');
-  }
-
-  async function extractDocxText(arrayBuffer) {
-    if (!root.fflate?.unzipSync) throw new Error('The local DOCX parser did not load.');
-    const archive = root.fflate.unzipSync(new Uint8Array(arrayBuffer));
-    const names = Object.keys(archive).filter((name) =>
-      name === 'word/document.xml' || /^word\/(header|footer)\d+\.xml$/.test(name),
-    );
-    if (!names.includes('word/document.xml')) throw new Error('This file does not contain a readable Word document.');
-    const decoder = new TextDecoder('utf-8');
-    return names.map((name) => xmlText(decoder.decode(archive[name]))).join('\n');
-  }
-
+  /** Validates the file, reads it on this device, extracts reviewable fields, and assembles the review result. */
   async function parseDocument(file, { onProgress = () => {} } = {}) {
     if (!file) throw new Error('Choose a document first.');
     if (file.size > MAX_FILE_BYTES) throw new Error('Choose a document smaller than 15 MB.');
-    const extension = file.name.split('.').pop().toLowerCase();
-    const warnings = [];
-    let fields = [];
-    let textLength = 0;
-    let extractionMethod = 'structured';
-    let ocrMetrics = null;
-
-    if (extension === 'json' || file.type === 'application/json') {
-      let object;
-      try {
-        object = JSON.parse(await file.text());
-      } catch {
-        throw new Error('The JSON file is not valid. Check its commas and quotation marks.');
-      }
-      if (!object || Array.isArray(object) || typeof object !== 'object') throw new Error('The JSON file must contain one client or business record.');
-      fields = extractFieldsFromObject(object);
-    } else {
-      let extracted;
-      if (extension === 'pdf' || file.type === 'application/pdf') {
-        if (!root.NavaOcrEngine) throw new Error('The bundled on-device OCR engine did not load.');
-        extracted = await extractPdfText(await file.arrayBuffer(), onProgress);
-        warnings.push(...extracted.warnings);
-        extractionMethod = extracted.ocrPages.length ? (extracted.text.trim() ? 'mixed' : 'ocr') : 'embedded-text';
-      } else if (extension === 'docx' || file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
-        extracted = { text: await extractDocxText(await file.arrayBuffer()), warnings: [] };
-        extractionMethod = 'docx';
-      } else if (['txt', 'csv', 'tsv'].includes(extension) || file.type.startsWith('text/')) {
-        const rawText = await file.text();
-        const delimiter = extension === 'tsv' ? '\t' : extension === 'csv' ? ',' : null;
-        extracted = { text: delimiter ? delimitedToLabeledText(rawText, delimiter) : rawText, warnings: [] };
-        extractionMethod = delimiter ? 'delimited-text' : 'text';
-      } else if (['png', 'jpg', 'jpeg', 'webp'].includes(extension) || ['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-        if (!root.NavaOcrEngine) throw new Error('The bundled on-device OCR engine did not load.');
-        const ocr = await root.NavaOcrEngine.recognizeSources([{
-          pageNumber: 1,
-          render: () => root.NavaOcrEngine.imageFileSource(file),
-        }], { onProgress });
-        extracted = { text: '', ocrPages: ocr.pages, ocrMetrics: ocr.metrics, warnings: ocr.warnings };
-        warnings.push(...ocr.warnings);
-        extractionMethod = 'ocr';
-      } else {
-        throw new Error('Use a PDF, PNG, JPEG, WebP, DOCX, TXT, CSV, TSV, or JSON file. HEIC, password-protected files, and legacy Word files are not supported.');
-      }
-      const text = String(extracted.text || '').slice(0, MAX_TEXT_CHARS);
-      textLength = text.length;
-      fields = extractFieldsFromText(text);
-      if (extracted.ocrPages?.length) {
-        const ocrExtraction = extractFieldsFromOcrPages(extracted.ocrPages);
-        fields = mergeFields(fields, ocrExtraction.fields);
-        ocrMetrics = { ...(extracted.ocrMetrics || {}), fieldsWithheld: ocrExtraction.withheld };
-        warnings.push(`On-device OCR reviewed ${extracted.ocrPages.length} ${extracted.ocrPages.length === 1 ? 'page' : 'pages'}. Verify every proposed value against the source document.`);
-        if (ocrExtraction.withheld) warnings.push(`${ocrExtraction.withheld} low-confidence OCR ${ocrExtraction.withheld === 1 ? 'candidate was' : 'candidates were'} withheld.`);
-      } else if (!text.trim()) {
-        warnings.push('No readable text was found. The OCR engine could not recover usable text from this document.');
-      }
-    }
-
-    if (!fields.length) warnings.push('No clearly labeled demographic, identity, contact, address, or business fields were found.');
-    return {
-      file: { name: file.name, type: file.type || extension, size: file.size },
-      fields,
-      warnings,
-      textLength,
-      quality: {
-        method: extractionMethod,
-        ocr: ocrMetrics,
-      },
-    };
+    const read = await readers.readDocument(file, { onProgress, keyForLabel });
+    const extraction = read.record
+      ? { fields: extractFieldsFromObject(read.record), warnings: [], textLength: 0, ocrMetrics: null }
+      : extractReadFields(read);
+    return documentResult(file, read, extraction);
   }
 
   const api = {
