@@ -91,86 +91,10 @@
   const automaticRunQueue = [];
   const queuedAutomaticApplicationIds = new Set();
 
-  const DEMO_RECORDS = {
-    '339619': {
-      record_id: '339619',
-      participant: {
-        name: { first: 'Celeste', middle: 'NAVA', last: 'Thomas', suffix: 'II' },
-        date_of_birth: '2000-01-02',
-        ethnicity: 'Hispanic/Latino',
-        gender: 'Female',
-        primary_language: 'English',
-        special_needs: false,
-        marital_status: 'Single parent household',
-        farm_worker: false,
-        pregnant: false,
-        housing_status: 'Stable housing',
-        ssn: '123-45-6789',
-      },
-      contact_information: {
-        preferred_method: 'Email',
-        phones: { cell: '777-777-7777' },
-        email: 'testnava@email.com',
-      },
-      address: {
-        residential: { street: '5556 Test Blvd', unit: 'Apt 556', city: 'WILDOMAR', state: 'California', county: 'Riverside', zip: '92595', country: 'United States' },
-        mailing: { street: '5556 Test Blvd', unit: 'Apt 556', city: 'WILDOMAR', state: 'California', county: 'Riverside', zip: '92595', country: 'United States' },
-      },
-      householdSize: '3',
-      immigrationStatus: 'U.S. citizen',
-      income: '1850',
-      childcare: true,
-      unemployment: false,
-      programData: {
-        ihss: {
-          applyingForSelf: true,
-          adoptedMinorChild: false,
-          genderIdentity: 'Decline to state',
-          birthSex: 'Female',
-          sexualOrientation: 'Decline to state',
-          veteran: false,
-          receivesSsi: false,
-          homeAssistanceAvailable: false,
-          livesAlone: false,
-          householdReceivesServices: false,
-          householdMembers: [{
-            relationship: 'Child',
-            name: 'Jordan Testchild',
-            dateOfBirth: '2018-06-15',
-            ssn: '987-65-4321',
-          }],
-          livingArrangement: 'Independent Living',
-          blind: false,
-          visuallyImpaired: false,
-          healthHistory: 'Needs help with bathing, dressing, meal preparation, and transportation.',
-          dailyLivingLimitations: true,
-          hospiceCare: false,
-          terminalIllness: false,
-          organTransplant: false,
-          supplementalOxygen: false,
-          cancerTreatment: false,
-          domesticServices: true,
-          personalCare: true,
-          transportation: true,
-          paramedicalCare: false,
-          otherServices: false,
-          pastIhss: false,
-        },
-        wic: {
-          canReceiveTexts: true,
-          mediCalCoverage: 'No',
-          postpartum: false,
-          breastfeedingInfant: false,
-          formulaInfant: false,
-          childUnderFive: true,
-          appointmentInPerson: true,
-          appointmentPhone: false,
-          appointmentVideo: false,
-          clinic: 'Temecula WIC',
-        },
-      },
-    },
-  };
+  const DEMO_RECORDS = Object.fromEntries(demoConnectorData.CLIENT_RECORDS
+    .filter((record) => record.record_id === String(demoConnectorData.RECORD_ID))
+    .map((record) => [record.record_id, record]));
+
 
   const PREVIEW_CONNECTOR_SCHEMA = demoConnectorData.SCHEMA;
   const PREVIEW_RAW_RECORD = {
