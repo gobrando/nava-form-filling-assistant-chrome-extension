@@ -106,3 +106,25 @@ test('automated runs stop at a per-workflow page limit', () => {
   assert.equal(policyRules.automatedPageLimit({ workflowId: 'riverside-wic' }), 10);
   assert.equal(policyRules.automatedPageLimit({ workflowId: '' }), 12);
 });
+
+test('a pending one-time code outranks a pending CAPTCHA, and completed checks are not pending', () => {
+  assert.equal(policyRules.pendingHumanCheck({ oneTimeCodePresent: true, oneTimeCodeComplete: false, botCheckPresent: true }), 'otp');
+  assert.equal(policyRules.pendingHumanCheck({ oneTimeCodePresent: true, oneTimeCodeComplete: true, botCheckPresent: true }), 'captcha');
+  assert.equal(policyRules.pendingHumanCheck({ botCheckPresent: true, botCheckComplete: true }), '');
+  assert.equal(policyRules.pendingHumanCheck(undefined), '');
+});
+
+test('run stops classify otp, captcha, signature, certification, final review, then unknown navigation', () => {
+  const stop = (application, signal = '') => policyRules.stopCheckpoint(application, signal, 'Final label');
+  const otp = { submitGate: { oneTimeCodePresent: true, botCheckPresent: true }, navigationGate: { kind: 'final_review' } };
+  assert.deepEqual(stop(otp, 'Sign here'), { kind: 'otp', final: false, label: 'Caseworker action required', status: 'needs_attention' });
+  assert.equal(stop({ submitGate: { botCheckPresent: true }, navigationGate: { kind: 'final_review' } }, 'Sign').kind, 'captcha');
+  assert.deepEqual(stop({ navigationGate: { kind: 'manual' } }, 'Sign and submit'), { kind: 'signature', final: true, label: 'Final label', status: 'ready_for_review' });
+  assert.equal(stop({ navigationGate: { kind: 'manual' } }, 'Signature required').kind, 'signature');
+  assert.equal(stop({ navigationGate: { kind: 'manual' } }, 'Signing in').kind, 'navigation_unknown', 'sign must end a word');
+  assert.equal(stop({ navigationGate: { kind: 'next' } }, 'I attest this is true').kind, 'certification');
+  assert.equal(stop({ navigationGate: { kind: 'next' } }, 'Read the declaration').kind, 'certification');
+  assert.deepEqual(stop({ navigationGate: { kind: 'final_review' } }, 'Review your answers'), { kind: 'final_review', final: true, label: 'Final label', status: 'ready_for_review' });
+  assert.deepEqual(stop({ navigationGate: null }, ''), { kind: 'navigation_unknown', final: false, label: 'Caseworker action required', status: 'needs_attention' });
+  assert.equal(stop({}, ' ').kind, 'navigation_unknown');
+});

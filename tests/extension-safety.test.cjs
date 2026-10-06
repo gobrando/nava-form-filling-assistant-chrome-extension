@@ -6,6 +6,22 @@ const { sidePanelSource, serviceWorkerSource, pageAgentSource } = require('./run
 
 const root = path.resolve(__dirname, '..');
 
+/** The text from `start` to the next `end` after it; both markers must exist. */
+function between(source, start, end) {
+  const startIndex = source.indexOf(start);
+  const endIndex = source.indexOf(end, startIndex + start.length);
+  assert.notEqual(startIndex, -1, `missing start: ${start}`);
+  assert.notEqual(endIndex, -1, `missing end: ${end}`);
+  return source.slice(startIndex, endIndex);
+}
+
+/** The document parser and the readers it extracts from, as one source. */
+function documentIntakeSource() {
+  return ['sidepanel/document-parser.js', 'sidepanel/document-readers.js']
+    .map((file) => fs.readFileSync(path.join(root, file), 'utf8'))
+    .join('\n');
+}
+
 test('manifest is valid MV3 and loads the side panel', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
   assert.equal(manifest.manifest_version, 3);
@@ -92,12 +108,23 @@ test('multi-application runs are tab-bound, automatic, and origin-checked', () =
   assert.match(panel, /enqueueApplicationBatch\(applicationsToRun\.map/);
   assert.match(panel, /MAX_PARALLEL_APPLICATIONS = 3/);
   assert.match(panel, /assertApprovedApplicationLocation\(application, tab\.url\)/);
-  const scanTabSource = panel.slice(panel.indexOf('async function scanTab'), panel.indexOf('async function openSelectedPrograms'));
+  const scanTabSource = between(panel, 'async function scanTab', 'function resolveScanTarget');
+  const scanSteps = ['resolveScanTarget(tab', 'requestPageScan(tab', 'checkScanResponse(tab', 'planScannedPage(response', 'storeScannedApplication(']
+    .map((call) => scanTabSource.indexOf(call));
   assert.ok(
-    scanTabSource.indexOf('assertApprovedApplicationLocation(requestedApplication, tab.url)')
-      < scanTabSource.indexOf("type: 'NAVA_SCAN'"),
+    scanSteps.every((index, step) => index >= 0 && (step === 0 || index > scanSteps[step - 1])),
+    'scanTab must resolve and approve its target, then send NAVA_SCAN, then check, plan, and store the scan',
+  );
+  const resolveStep = between(panel, 'function resolveScanTarget', 'function detachChangedTabApplication');
+  const sendStep = between(panel, 'function requestPageScan', 'function checkScanResponse');
+  assert.ok(
+    resolveStep.indexOf('assertApprovedApplicationLocation(requestedApplication, tab.url)') >= 0
+      && resolveStep.indexOf('assertApprovedApplicationLocation(requestedApplication, tab.url)')
+        < resolveStep.indexOf('assertApplicationRun(requestedApplication, runToken)'),
     'known application origin and path must be approved before client data is sent to the tab',
   );
+  assert.doesNotMatch(resolveStep, /sendToTab|NAVA_SCAN/);
+  assert.match(sendStep, /type: 'NAVA_SCAN'/);
   assert.match(panel, /activeRunTokens/);
   assert.match(panel, /async function beginApplicationRun[\s\S]*while \(activeRunTokens\.has\(application\.id\)\)[\s\S]*await existing\.settled/);
   assert.match(panel, /runToken = await beginApplicationRun\(application\)/);
@@ -150,7 +177,7 @@ test('extension contains no remote scripts or inline executable script', () => {
 
 test('document intake uses only bundled parsers and never persists the raw file', () => {
   const html = fs.readFileSync(path.join(root, 'sidepanel/index.html'), 'utf8');
-  const parser = fs.readFileSync(path.join(root, 'sidepanel/document-parser.js'), 'utf8');
+  const parser = documentIntakeSource();
   const panel = sidePanelSource();
 
   assert.match(html, /vendor\/fflate\.min\.js/);
@@ -165,7 +192,7 @@ test('document intake uses only bundled parsers and never persists the raw file'
 test('OCR uses only bundled assets, enforces resource limits, and requires field review', () => {
   const html = fs.readFileSync(path.join(root, 'sidepanel/index.html'), 'utf8');
   const ocr = fs.readFileSync(path.join(root, 'sidepanel/ocr-engine.js'), 'utf8');
-  const parser = fs.readFileSync(path.join(root, 'sidepanel/document-parser.js'), 'utf8');
+  const parser = documentIntakeSource();
   const panel = sidePanelSource();
 
   assert.match(html, /ocr-engine\.js/);

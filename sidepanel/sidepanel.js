@@ -11,6 +11,7 @@
   const demoConnectorData = globalThis.NavaDemoConnectorData;
   const panelFormat = globalThis.NavaPanelFormat;
   const applicationPolicy = globalThis.NavaApplicationPolicy;
+  const scanAnalysis = globalThis.NavaScanAnalysis;
   const {
     escapeHtml,
     decoded,
@@ -179,6 +180,30 @@
     }],
   };
 
+  // Simulated responses for the extension-free preview; it reads the fictional records declared above.
+  const {
+    previewRuntime,
+    previewTabMessage,
+    loadPreviewQueueFixture,
+    loadPreviewDocumentFixture,
+  } = globalThis.NavaPreviewRuntime.create({
+    state,
+    previewMode,
+    demoMode,
+    search: location.search,
+    engine,
+    connectorEngine,
+    programCatalog,
+    workQueueEngine,
+    DEMO_RECORDS,
+    PREVIEW_CONNECTOR_SCHEMA,
+    PREVIEW_RAW_RECORD,
+    managedConnector,
+    checkpoint,
+    assertUiGeneration,
+    parseDocument: (file) => globalThis.NavaDocumentParser.parseDocument(file),
+  });
+
   const { requestAssistantState, probeTabDocument, ensurePageAgent, sendToTab } = globalThis.NavaExtensionMessaging.create({
     previewMode,
     state,
@@ -236,6 +261,76 @@
   const { renderRecertifications, renderRecertificationDetail } = recertificationViews;
   const { renderDashboard, renderHandoff } = applicationViews;
   const { renderQuestions, renderReview } = reviewViews;
+
+  // The write path: the page scan, then the multi-page runner over it, each with explicit dependencies.
+  const { scanTab } = globalThis.NavaPageScan.create({
+    state,
+    previewMode,
+    engine,
+    agentPlanner,
+    scanAnalysis,
+    scanRecord: scanAnalysis.create({
+      signatureHash: workQueueEngine.signatureHash,
+      hostLabel,
+      provenanceForScan,
+      urlOrigin,
+      urlPath,
+      commandLocation,
+    }),
+    sendToTab,
+    assertApprovedApplicationLocation,
+    attachApplicationPolicy,
+    urlPath,
+    commandLocation,
+    checkpointFromScan,
+    assertApplicationRun,
+    cancelApplicationRun,
+    assertUiGeneration,
+    setCheckpoint,
+    recordAudit,
+    persist,
+    newWorkflowId,
+    setBusy,
+    setApplicationProgress,
+    agentProgressMessage,
+    prepareAgentRuntime,
+    mergeVerifiedProvenance,
+    mergeAgenticMetadata,
+  });
+  const {
+    runThroughApplication,
+    fillApplication,
+    goToApplication,
+    resumeApplication,
+    resumeHumanCheckpoint,
+  } = globalThis.NavaApplicationRunner.create({
+    state,
+    previewMode,
+    workQueueEngine,
+    scanAnalysis,
+    MAX_SAME_PAGE_FILL_PASSES,
+    NAVIGATION_TIMEOUT_MS,
+    sendToTab,
+    scanTab,
+    getActiveTab,
+    assertApprovedApplicationLocation,
+    assertSameDocumentLocation,
+    urlOrigin,
+    urlPath,
+    commandLocation,
+    automatedPageLimit,
+    stopCheckpoint: applicationPolicy.stopCheckpoint,
+    pendingHumanCheck: applicationPolicy.pendingHumanCheck,
+    assertApplicationRun,
+    runCancelledError,
+    renewApplicationLease,
+    setCheckpoint,
+    recordAudit,
+    persist,
+    setBusy,
+    setApplicationProgress,
+    mergeVerifiedProvenance,
+  });
 
   function clientSummary() {
     return engine.canonicalizeParticipant(state.participant || {});
@@ -1163,218 +1258,6 @@
     await persist();
   }
 
-  function participantForApplication(application) {
-    if (application?.workflowId !== 'benefitscal') return state.participant;
-    if (!Array.isArray(application.programIds) || application.programSelectionRequired) return state.participant;
-    const selected = new Set(application.programIds);
-    return {
-      ...state.participant,
-      applicationSelection: {
-        calfresh: selected.has('calfresh'),
-        medical: selected.has('medical'),
-        calworks: selected.has('calworks'),
-      },
-    };
-  }
-
-  function gapFromAgent(rawFields, gap) {
-    const members = (rawFields || []).filter((field) =>
-      field.fieldKey === gap.fieldKey || field.groupKey === gap.fieldKey);
-    const field = members[0] || {};
-    const groupOptions = members.length > 1
-      ? members.map((member) => ({
-        value: member.optionValue ?? member.value ?? member.optionLabel ?? member.label,
-        label: member.optionLabel ?? member.label ?? member.optionValue ?? member.value,
-      }))
-      : (field.options || []).map((option) => ({
-        value: option.value ?? option.optionValue ?? option.label,
-        label: option.label ?? option.optionLabel ?? option.value,
-      }));
-    const choice = groupOptions.length > 0 || ['radio', 'checkbox', 'select-one'].includes(field.type);
-    const label = field.question || field.label || 'Required form question';
-    return {
-      fieldKey: gap.fieldKey,
-      label,
-      purpose: '',
-      question: gap.question || (String(label).endsWith('?') ? label : `What should I enter for ${String(label).toLowerCase()}?`),
-      kind: choice ? 'decision' : 'required',
-      required: Boolean(field.required),
-      inputType: choice ? 'choice' : 'text',
-      options: groupOptions,
-      sensitive: Boolean(field.sensitive),
-      agentReason: gap.reason || '',
-    };
-  }
-
-  function analysisFromAgentPlan(response, participant, plan) {
-    const analysis = engine.buildAnalysis(response.fields || [], participant, {
-      purposeOverrides: plan.purposeOverrides,
-      requirePurposeOverrides: true,
-    });
-    const suggestedGaps = new Map((plan.gaps || []).map((gap) => [gap.fieldKey, gap]));
-    const gaps = analysis.gaps.map((gap) => {
-      const coveredKeys = [gap.fieldKey, ...(gap.members || []).map((member) => member.fieldKey)];
-      const suggestion = coveredKeys.map((fieldKey) => suggestedGaps.get(fieldKey)).find(Boolean);
-      if (!suggestion) return gap;
-      coveredKeys.forEach((fieldKey) => suggestedGaps.delete(fieldKey));
-      return {
-        ...gap,
-        question: gap.inputType === 'multi_choice' ? gap.question : (suggestion.question || gap.question),
-        agentReason: suggestion.reason || '',
-      };
-    });
-    suggestedGaps.forEach((gap) => gaps.push(gapFromAgent(response.fields || [], gap)));
-    return {
-      ...analysis,
-      gaps,
-      counts: { ...analysis.counts, missing: gaps.length },
-    };
-  }
-
-  async function scanTab(tab, {
-    quiet = false,
-    applicationId = null,
-    runToken = null,
-    uiToken = null,
-    expectedCommandLocation = '',
-    preservePageProgress = false,
-  } = {}) {
-    if (uiToken !== null) assertUiGeneration(uiToken);
-    if (!quiet) setBusy('Checking this form and its required fields…');
-    const requestedApplication = applicationId ? state.apps.find((item) => item.id === applicationId) : null;
-    const tabApplication = state.apps.find((item) => item.tabId === tab.id);
-    let previous = requestedApplication || tabApplication || {};
-    if (requestedApplication) {
-      assertApprovedApplicationLocation(requestedApplication, tab.url);
-      assertApplicationRun(requestedApplication, runToken);
-    } else if (tabApplication) {
-      try {
-        assertApprovedApplicationLocation(tabApplication, tab.url);
-        if (urlPath(tabApplication.url) !== urlPath(tab.url)) throw new Error('This tab now shows a different application page.');
-      } catch {
-        cancelApplicationRun(tabApplication);
-        tabApplication.tabId = null;
-        tabApplication.runStopReason = 'The tab navigated to a different page. The saved workflow was detached before any client data was read or written.';
-        setCheckpoint(tabApplication, 'page_changed', 'Application tab changed', 'paused');
-        previous = {};
-      }
-    }
-    const participant = participantForApplication(previous);
-    const response = await sendToTab(
-      tab,
-      { type: 'NAVA_SCAN', participant },
-      { application: requestedApplication || (previous.id ? previous : null), requireLease: Boolean(runToken) },
-    );
-    if (uiToken !== null) assertUiGeneration(uiToken);
-    if (!response?.ok) throw new Error(response?.error || 'The form could not be read.');
-    assertApplicationRun(requestedApplication || previous, runToken);
-    const observedUrl = response.page?.url || tab.url;
-    if (expectedCommandLocation && commandLocation(observedUrl) !== expectedCommandLocation) {
-      throw new Error('The application navigated while the assistant was checking for conditional fields. It paused without advancing again.');
-    }
-    if (requestedApplication) {
-      assertApprovedApplicationLocation(requestedApplication, observedUrl);
-    }
-    const id = previous.id || newWorkflowId();
-    let plannedAnalysis = response.analysis;
-    let agentic = previous.agentic || null;
-    let latestAgentUsage = null;
-    if (!previewMode) {
-      if (!Array.isArray(response.fields)) throw new Error('The page agent did not provide a safe field inventory for AI planning. Reload the extension before continuing.');
-      const progressApplication = requestedApplication || (previous.id ? previous : null);
-      await prepareAgentRuntime({ application: progressApplication });
-      const plan = await agentPlanner.plan({
-        engine,
-        page: response.page,
-        rawFields: response.fields,
-        participant,
-        onProgress(update) {
-          const message = agentProgressMessage(update);
-          if (progressApplication) setApplicationProgress(progressApplication, message);
-          else setBusy(message);
-        },
-      });
-      plannedAnalysis = analysisFromAgentPlan(response, participant, plan);
-      agentic = mergeAgenticMetadata(previous.agentic, plan.metadata);
-      latestAgentUsage = plan.metadata.usage || null;
-    }
-    const safeAnalysis = {
-      ...plannedAnalysis,
-      observed: mergeVerifiedProvenance(plannedAnalysis?.observed || []),
-    };
-    const fieldsFound = safeAnalysis.counts?.fields || 0;
-    const canContinue = response.navigationGate?.kind === 'next';
-    const nextCheckpoint = checkpointFromScan({ ...response, analysis: safeAnalysis }, fieldsFound);
-    const application = attachApplicationPolicy({
-      ...previous,
-      id,
-      tabId: tab.id,
-      name: previous.requestedName || previous.name || response.playbook?.name || response.page?.title || hostLabel(tab.url),
-      queueLabel: previous.requestedName || previous.queueLabel || response.playbook?.name || hostLabel(observedUrl),
-      url: observedUrl,
-      page: response.page,
-      pageTools: response.tools || previous.pageTools || [],
-      status: fieldsFound === 0 && !canContinue
-        ? 'no_form'
-        : safeAnalysis.gaps.length
-          ? 'needs_attention'
-          : 'ready_to_fill',
-      analysis: safeAnalysis,
-      agentic,
-      playbook: response.playbook,
-      submitGate: response.submitGate,
-      navigationGate: response.navigationGate,
-      error: fieldsFound === 0 && !canContinue ? 'No visible application fields or safe continuation controls were found on this page.' : '',
-      provenance: provenanceForScan(previous.provenance, safeAnalysis.observed, preservePageProgress),
-      blocked: preservePageProgress ? (previous.blocked || []) : [],
-      empty: preservePageProgress ? (previous.empty || []) : [],
-      checkpoint: nextCheckpoint,
-      completedPages: previous.completedPages || [],
-      autoRun: Boolean(previous.autoRun),
-      visitedSignatures: previous.visitedSignatures || [],
-      allowedOrigins: previous.allowedOrigins?.length ? previous.allowedOrigins : [urlOrigin(observedUrl)].filter(Boolean),
-      allowedPathPrefixes: previous.allowedPathPrefixes?.length ? previous.allowedPathPrefixes : [urlPath(observedUrl)].filter(Boolean),
-      resumePoint: {
-        location: response.page?.url || tab.url,
-        commandLocationHash: workQueueEngine.signatureHash(commandLocation(response.page?.url || tab.url)),
-        pageSignature: response.navigationGate?.pageSignature || '',
-        pageSignatureHash: workQueueEngine.signatureHash(response.navigationGate?.pageSignature || ''),
-        capturedAt: new Date().toISOString(),
-      },
-      updatedAt: new Date().toISOString(),
-    });
-    const existing = state.apps.findIndex((item) => item.id === id);
-    if (existing >= 0) state.apps.splice(existing, 1, application);
-    else state.apps.unshift(application);
-    recordAudit('scan_completed', application, {
-      fieldCount: safeAnalysis.counts?.fields || 0,
-      gapCount: safeAnalysis.gaps?.length || 0,
-      modelRuntime: agentic?.runtime,
-      modelPromptCount: latestAgentUsage?.prompts || 0,
-      modelDurationMs: latestAgentUsage?.durationMs || 0,
-      modelInputCharacters: latestAgentUsage?.inputCharacters || 0,
-      modelOutputCharacters: latestAgentUsage?.outputCharacters || 0,
-      ...(Number.isFinite(latestAgentUsage?.contextUsageUnits) ? { modelContextUsageUnits: latestAgentUsage.contextUsageUnits } : {}),
-      ...(Number.isFinite(latestAgentUsage?.inputTokens) ? { modelInputTokens: latestAgentUsage.inputTokens } : {}),
-      ...(Number.isFinite(latestAgentUsage?.outputTokens) ? { modelOutputTokens: latestAgentUsage.outputTokens } : {}),
-      modelApiCostMicros: Math.round(Number(latestAgentUsage?.apiCostUsd || 0) * 1_000_000),
-      ...(Number.isFinite(latestAgentUsage?.providerReportedCostUsd)
-        ? { modelProviderReportedCostMicros: Math.round(Number(latestAgentUsage.providerReportedCostUsd) * 1_000_000) }
-        : {}),
-      checkpointKind: nextCheckpoint?.kind,
-      toStatus: application.status,
-    });
-    if (safeAnalysis.gaps?.length) {
-      recordAudit('questions_required', application, { gapCount: safeAnalysis.gaps.length, checkpointKind: 'human_input' });
-    }
-    state.currentAppId = id;
-    if (!quiet) state.view = 'dashboard';
-    assertApplicationRun(application, runToken);
-    if (uiToken !== null) assertUiGeneration(uiToken);
-    await persist({ applicationIds: [id], includeCurrentAppId: !quiet });
-    return application;
-  }
-
   async function openSelectedPrograms(values) {
     const known = values.filter((value) => value !== 'current');
     if (!known.length) return [];
@@ -1560,441 +1443,6 @@
     });
     pumpAutomaticRunQueue();
     return Promise.resolve();
-  }
-
-  async function fillCurrentPage(application, userAssignments = [], unresolved = [], { background = false, runToken = null } = {}) {
-    assertApplicationRun(application, runToken);
-    const tab = previewMode
-      ? { id: application.tabId, url: application.url }
-      : await chrome.tabs.get(application.tabId);
-    assertApprovedApplicationLocation(application, tab.url);
-    if (background) {
-      setApplicationProgress(application, `Filling and verifying page ${(application.completedPages?.length || 0) + 1}…`);
-    } else {
-      setBusy('Filling the page and checking every value…');
-    }
-    const assignments = [...(application.analysis?.assignments || []), ...userAssignments];
-    recordAudit('fill_started', application, { fieldCount: assignments.length, fromStatus: application.status });
-    const response = await sendToTab(tab, { type: 'NAVA_FILL', assignments }, { application, requireLease: true });
-    if (!response?.ok) throw new Error(response?.error || 'The page could not be filled.');
-    if (response.cancelled) throw runCancelledError();
-    assertApplicationRun(application, runToken);
-    if (response.presentationMode) await new Promise((resolve) => setTimeout(resolve, 1200));
-    application.provenance = mergeVerifiedProvenance(
-      application.provenance || [],
-      application.analysis?.observed || [],
-      response.provenance || [],
-    );
-    application.blocked = (response.results || []).filter((item) => item.status !== 'verified');
-    application.empty = [
-      ...unresolved.map((gap) => ({ label: gap.label, reason: 'No answer was provided.' })),
-      ...application.blocked.map((item) => ({ label: item.label, reason: item.reason })),
-    ];
-    application.submitGate = response.submitGate || application.submitGate;
-    application.navigationGate = response.navigationGate || application.navigationGate;
-    application.analysis.gaps = unresolved;
-    if (application.empty.length) {
-      const kind = application.blocked.length ? 'direct_entry' : 'human_input';
-      setCheckpoint(application, kind, application.blocked.length ? 'Direct caseworker entry required' : 'Caseworker answers required', 'needs_attention');
-    } else {
-      application.status = 'ready_to_fill';
-      application.checkpoint = null;
-    }
-    application.updatedAt = new Date().toISOString();
-    recordAudit('page_verified', application, {
-      verifiedCount: (response.results || []).filter((item) => item.status === 'verified').length,
-      blockedCount: application.blocked.length,
-      gapCount: unresolved.length,
-      pageCount: (application.completedPages?.length || 0) + 1,
-      toStatus: application.status,
-    });
-    state.currentAppId = application.id;
-    assertApplicationRun(application, runToken);
-    await persist({ applicationIds: [application.id] });
-    return response;
-  }
-
-  function archiveCurrentPage(application) {
-    const signature = application.navigationGate?.pageSignature || `${application.page?.url || application.url}|${application.page?.title || application.name}`;
-    if (application.completedPages?.some((page) => page.signature === signature)) return;
-    application.completedPages = [
-      ...(application.completedPages || []),
-      {
-        signature,
-        title: application.page?.title || application.name,
-        url: application.page?.url || application.url,
-        provenance: application.provenance || [],
-        empty: application.empty || [],
-        noFields: application.analysis?.noFields || [],
-        completedAt: new Date().toISOString(),
-      },
-    ];
-  }
-
-  async function navigationStatusFor(tab, application) {
-    const response = await sendToTab(tab, { type: 'NAVA_NAVIGATION_STATUS' }, { application, requireLease: true });
-    if (!response?.ok) throw new Error(response?.error || 'The next-step control could not be checked.');
-    return response.navigationGate;
-  }
-
-  async function waitForNextPage(application, previousSignature, runToken) {
-    const tabId = application.tabId;
-    if (previewMode) return { id: tabId, url: `https://benefitscal.com/ApplyForBenefits/step-${state.previewPage}` };
-    const startedAt = Date.now();
-    const previousLocation = commandLocation(application.page?.url || application.url);
-    const benefitsCalOverview = application.workflowId === 'benefitscal'
-      && urlPath(application.page?.url || application.url).toLowerCase() === '/applyforbenefits/begin/abovr';
-    let candidateSignature = '';
-    let candidateSince = 0;
-    while (Date.now() - startedAt < NAVIGATION_TIMEOUT_MS) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      assertApplicationRun(application, runToken);
-      try {
-        const tab = await chrome.tabs.get(tabId);
-        if (tab.status !== 'complete') continue;
-        if (benefitsCalOverview && commandLocation(tab.url) === previousLocation) {
-          if (Date.now() - startedAt >= 8_000) {
-            throw new Error('BenefitsCal returned to the same application overview after BEGIN. The assistant stopped after one attempt instead of reloading it again.');
-          }
-          continue;
-        }
-        const gate = await navigationStatusFor(tab, application);
-        if (!gate?.pageSignature || gate.pageSignature === previousSignature) {
-          candidateSignature = '';
-          candidateSince = 0;
-          continue;
-        }
-        if (gate.pageSignature !== candidateSignature) {
-          candidateSignature = gate.pageSignature;
-          candidateSince = Date.now();
-          continue;
-        }
-        if (Date.now() - candidateSince >= 500) return tab;
-      } catch {
-        candidateSignature = '';
-        candidateSince = 0;
-        // Full-page navigations briefly disconnect the content agent. Keep polling.
-      }
-    }
-    throw new Error('The site did not reach a stable new page within one minute after the approved continuation control was activated. The assistant stopped so the caseworker can inspect the application.');
-  }
-
-  async function rescanCurrentPageAfterFill(application, runToken) {
-    if (previewMode) return null;
-    assertApplicationRun(application, runToken);
-    const expectedLocation = commandLocation(application.page?.url || application.url);
-    const tab = await chrome.tabs.get(application.tabId);
-    assertApprovedApplicationLocation(application, tab.url);
-    assertSameDocumentLocation(application.page?.url || application.url, tab.url);
-    const rescanned = await scanTab(tab, {
-      quiet: true,
-      applicationId: application.id,
-      runToken,
-      expectedCommandLocation: expectedLocation,
-      preservePageProgress: true,
-    });
-    assertApplicationRun(rescanned, runToken);
-    rescanned.autoRun = true;
-    return rescanned;
-  }
-
-  async function runThroughApplication(application, userAssignments = [], unresolved = [], { background = false, runToken = null } = {}) {
-    assertApplicationRun(application, runToken);
-    application.autoRun = true;
-    application.runStopReason = '';
-    await persist({ applicationIds: [application.id] });
-    let current = application;
-    let suppliedAssignments = userAssignments;
-    let suppliedUnresolved = unresolved;
-    let samePageFillPasses = 0;
-
-    for (;;) {
-      assertApplicationRun(current, runToken);
-      await renewApplicationLease(current, runToken);
-      const scannedGaps = current.analysis?.gaps || [];
-      const hasSuppliedAnswers = suppliedAssignments.length > 0 || suppliedUnresolved.length > 0;
-      const unresolvedForFill = hasSuppliedAnswers ? suppliedUnresolved : scannedGaps;
-      const assignmentCount = (current.analysis?.assignments?.length || 0) + suppliedAssignments.length;
-
-      if (!assignmentCount && unresolvedForFill.length) {
-        setCheckpoint(current, 'human_input', 'Caseworker answers required', 'needs_attention');
-        state.currentAppId = current.id;
-        if (!background) state.view = 'questions';
-        await persist({ applicationIds: [current.id] });
-        return;
-      }
-
-      if (assignmentCount) {
-        await fillCurrentPage(current, suppliedAssignments, unresolvedForFill, { background, runToken });
-        suppliedAssignments = [];
-        suppliedUnresolved = [];
-        samePageFillPasses += 1;
-
-        if (current.empty.length || current.blocked.length) {
-          current.runStopReason = 'The automated run paused after filling the known values because at least one field needs a caseworker answer or direct entry.';
-          if (!background) state.view = 'dashboard';
-          await persist({ applicationIds: [current.id] });
-          return;
-        }
-
-        const rescanned = await rescanCurrentPageAfterFill(current, runToken);
-        if (rescanned) {
-          current = rescanned;
-          const hasConditionalWork = Boolean(
-            current.analysis?.assignments?.length || current.analysis?.gaps?.length,
-          );
-          if (hasConditionalWork) {
-            if (samePageFillPasses >= MAX_SAME_PAGE_FILL_PASSES) {
-              current.runStopReason = `The page revealed more fields after ${MAX_SAME_PAGE_FILL_PASSES} verified fill passes. The assistant stopped before advancing.`;
-              current.error = current.runStopReason;
-              setCheckpoint(current, 'navigation_unknown', 'Conditional fields require review', 'needs_attention');
-              state.currentAppId = current.id;
-              if (!background) state.view = 'dashboard';
-              await persist({ applicationIds: [current.id] });
-              return;
-            }
-            continue;
-          }
-        }
-      } else {
-        suppliedAssignments = [];
-        suppliedUnresolved = [];
-      }
-
-      const tab = previewMode
-        ? { id: current.tabId, url: current.url }
-        : await chrome.tabs.get(current.tabId);
-      assertApprovedApplicationLocation(current, tab.url);
-      assertApplicationRun(current, runToken);
-      current.navigationGate = await navigationStatusFor(tab, current);
-      assertApplicationRun(current, runToken);
-
-      if (current.navigationGate?.kind !== 'next') {
-        current.runStopReason = current.navigationGate?.reason || 'No approved continuation control is visible. Review the application before taking the next action.';
-        const signal = `${current.navigationGate?.text || ''} ${current.runStopReason}`;
-        const kind = current.submitGate?.oneTimeCodePresent && !current.submitGate?.oneTimeCodeComplete ? 'otp'
-          : current.submitGate?.botCheckPresent && !current.submitGate?.botCheckComplete ? 'captcha'
-            : /signature|sign\b/i.test(signal) ? 'signature'
-            : /certif|attest|declaration|affirm/i.test(signal) ? 'certification'
-              : current.navigationGate?.kind === 'final_review' ? 'final_review' : 'navigation_unknown';
-        const finalCheckpoint = ['signature', 'certification', 'final_review'].includes(kind);
-        const nextStatus = finalCheckpoint ? 'ready_for_review' : 'needs_attention';
-        setCheckpoint(current, kind, finalCheckpoint ? 'Human final review required' : 'Caseworker action required', nextStatus);
-        if (finalCheckpoint) recordAudit('review_reached', current, { checkpointKind: kind, pageCount: (current.completedPages?.length || 0) + 1, toStatus: nextStatus });
-        state.currentAppId = current.id;
-        if (!background) state.view = finalCheckpoint ? 'review' : 'dashboard';
-        assertApplicationRun(current, runToken);
-        await persist({ applicationIds: [current.id] });
-        return;
-      }
-
-      const pageLimit = automatedPageLimit(current);
-      if ((current.completedPages?.length || 0) >= pageLimit - 1) {
-        current.runStopReason = `The assistant reached this playbook’s ${pageLimit}-page safety limit and stopped.`;
-        current.error = current.runStopReason;
-        setCheckpoint(current, 'navigation_unknown', 'Automation page limit reached', 'needs_attention');
-        if (!background) state.view = 'dashboard';
-        await persist({ applicationIds: [current.id] });
-        return;
-      }
-
-      const signature = current.navigationGate.pageSignature;
-      if (current.visitedSignatures?.includes(signature)) {
-        current.runStopReason = 'The application returned to a page it already completed. The assistant stopped to avoid a navigation loop.';
-        current.error = current.runStopReason;
-        setCheckpoint(current, 'page_changed', 'Repeated application page detected', 'needs_attention');
-        if (!background) state.view = 'dashboard';
-        await persist({ applicationIds: [current.id] });
-        return;
-      }
-
-      const progressMessage = `Page ${(current.completedPages?.length || 0) + 1} verified. Moving to the next page…`;
-      if (background) setApplicationProgress(current, progressMessage);
-      else setBusy(progressMessage);
-      assertApplicationRun(current, runToken);
-      const advanced = await sendToTab(tab, { type: 'NAVA_ADVANCE' }, { application: current, requireLease: true });
-      assertApplicationRun(current, runToken);
-      if (!advanced?.ok || !advanced.advanced) {
-        throw new Error(advanced?.navigationGate?.reason || 'The approved continuation control was no longer available.');
-      }
-      recordAudit('safe_advance', current, { pageCount: (current.completedPages?.length || 0) + 1 });
-      const nextTab = await waitForNextPage(current, signature, runToken);
-      assertApplicationRun(current, runToken);
-      current.visitedSignatures = [...(current.visitedSignatures || []), signature];
-      archiveCurrentPage(current);
-      assertApplicationRun(current, runToken);
-      await persist({ applicationIds: [current.id] });
-      current = await scanTab(nextTab, { quiet: true, applicationId: current.id, runToken });
-      current.autoRun = true;
-      samePageFillPasses = 0;
-    }
-  }
-
-  async function fillApplication(application, userAssignments = [], unresolved = [], { runToken = null } = {}) {
-    assertApplicationRun(application, runToken);
-    application.autoRun = false;
-    application.runStopReason = '';
-    await fillCurrentPage(application, userAssignments, unresolved, { runToken });
-    assertApplicationRun(application, runToken);
-    if (application.empty.length) {
-      application.status = 'needs_attention';
-    } else {
-      const signal = `${application.navigationGate?.text || ''} ${application.navigationGate?.reason || ''}`;
-      const kind = application.submitGate?.oneTimeCodePresent && !application.submitGate?.oneTimeCodeComplete ? 'otp'
-        : application.submitGate?.botCheckPresent && !application.submitGate?.botCheckComplete ? 'captcha'
-          : /signature|sign\b/i.test(signal) ? 'signature'
-          : /certif|attest|declaration|affirm/i.test(signal) ? 'certification'
-            : application.navigationGate?.kind === 'final_review' ? 'final_review' : 'navigation_unknown';
-      const finalCheckpoint = ['signature', 'certification', 'final_review'].includes(kind);
-      const nextStatus = finalCheckpoint ? 'ready_for_review' : 'needs_attention';
-      setCheckpoint(application, kind, finalCheckpoint ? 'Human review required' : 'Caseworker action required', nextStatus);
-      if (finalCheckpoint) recordAudit('review_reached', application, { checkpointKind: kind, pageCount: (application.completedPages?.length || 0) + 1, toStatus: nextStatus });
-    }
-    application.runStopReason = application.navigationGate?.reason || '';
-    assertApplicationRun(application, runToken);
-    state.view = application.status === 'ready_for_review' ? 'review' : 'dashboard';
-    await persist({ applicationIds: [application.id] });
-  }
-
-  async function goToApplication(application) {
-    if (previewMode) return;
-    const tab = await chrome.tabs.get(application.tabId);
-    await chrome.tabs.update(application.tabId, { active: true });
-    if (tab.windowId) await chrome.windows.update(tab.windowId, { focused: true });
-  }
-
-  async function resumeApplication(application, useCurrentTab = false, { runToken = null } = {}) {
-    assertApplicationRun(application, runToken);
-    setBusy('Verifying the saved application page before resuming…');
-    let tab = null;
-    try {
-      tab = useCurrentTab ? await getActiveTab() : previewMode
-        ? { id: application.tabId || 7001, url: application.url }
-        : await chrome.tabs.get(application.tabId);
-    } catch {
-      tab = null;
-    }
-    assertApplicationRun(application, runToken);
-
-    if (tab?.id) {
-      try {
-        assertApprovedApplicationLocation(application, tab.url);
-        const expectedLocationHash = application.resumePoint?.locationHash;
-        if (expectedLocationHash && expectedLocationHash !== workQueueEngine.signatureHash(workQueueEngine.safeLocation(tab.url))) {
-          throw new Error('The open tab is not at the saved application location.');
-        }
-        const expectedCommandLocationHash = application.resumePoint?.commandLocationHash;
-        if (expectedCommandLocationHash && expectedCommandLocationHash !== workQueueEngine.signatureHash(commandLocation(tab.url))) {
-          throw new Error('The application query or page state changed since it was paused.');
-        }
-        if (!application.allowedPathPrefixes?.length) {
-          application.allowedOrigins = [urlOrigin(tab.url)].filter(Boolean);
-          application.allowedPathPrefixes = [urlPath(tab.url)].filter(Boolean);
-        }
-      } catch (error) {
-        assertApplicationRun(application, runToken);
-        application.error = error.message;
-        setCheckpoint(application, 'page_changed', 'Application tab changed', 'paused');
-        recordAudit('resume_rejected', application, { resumeOutcome: 'location_changed', checkpointKind: 'page_changed', toStatus: 'paused' });
-        state.view = 'dashboard';
-        await persist({ applicationIds: [application.id] });
-        return application;
-      }
-    }
-    assertApplicationRun(application, runToken);
-
-    let response = null;
-    if (tab?.id && state.participant && !state.participant?._connector?.stale) {
-      try {
-        response = await sendToTab(
-          tab,
-          { type: 'NAVA_SCAN', participant: participantForApplication(application) },
-          { application },
-        );
-      } catch {
-        response = null;
-      }
-    }
-    assertApplicationRun(application, runToken);
-    const decision = workQueueEngine.resumeDecision(application, response?.ok ? {
-      url: response.page?.url || tab?.url,
-      pageSignature: response.navigationGate?.pageSignature || '',
-    } : null, {
-      sourceAvailable: Boolean(state.participant),
-      sourceStale: Boolean(state.participant?._connector?.stale),
-    });
-
-    if (!decision.allowed) {
-      application.error = decision.reason;
-      setCheckpoint(application, decision.checkpointKind, decision.reason, decision.outcome === 'source_expired' ? 'source_expired' : 'paused');
-      recordAudit('resume_rejected', application, { resumeOutcome: decision.outcome, checkpointKind: decision.checkpointKind, toStatus: application.status });
-      state.view = 'dashboard';
-      await persist({ applicationIds: [application.id] });
-      return application;
-    }
-
-    application.tabId = tab.id;
-    const resumed = await scanTab(tab, { quiet: true, applicationId: application.id, runToken });
-    assertApplicationRun(resumed, runToken);
-    resumed.error = '';
-    recordAudit('resume_verified', resumed, { resumeOutcome: 'verified', toStatus: resumed.status });
-    state.currentAppId = resumed.id;
-    state.view = 'dashboard';
-    await persist({ applicationIds: [resumed.id] });
-    return resumed;
-  }
-
-  async function resumeHumanCheckpoint(application, { runToken = null } = {}) {
-    assertApplicationRun(application, runToken);
-    setBusy('Checking the human verification and resuming the application…');
-    const tab = previewMode
-      ? { id: application.tabId || 7001, url: application.page?.url || application.url }
-      : await chrome.tabs.get(application.tabId);
-    assertApprovedApplicationLocation(application, tab.url);
-    const expectedLocation = commandLocation(application.page?.url || application.url);
-    if (expectedLocation !== commandLocation(tab.url)) {
-      application.error = 'The application moved to a different page while waiting for human verification.';
-      setCheckpoint(application, 'page_changed', 'Application page changed', 'paused');
-      await persist({ applicationIds: [application.id] });
-      state.view = 'dashboard';
-      return application;
-    }
-
-    const rescanned = await scanTab(tab, {
-      quiet: true,
-      applicationId: application.id,
-      runToken,
-      expectedCommandLocation: expectedLocation,
-      preservePageProgress: true,
-    });
-    assertApplicationRun(rescanned, runToken);
-    const pendingKind = rescanned.submitGate?.oneTimeCodePresent && !rescanned.submitGate?.oneTimeCodeComplete
-      ? 'otp'
-      : rescanned.submitGate?.botCheckPresent && !rescanned.submitGate?.botCheckComplete
-        ? 'captcha'
-        : '';
-    if (pendingKind) {
-      const label = pendingKind === 'captcha' ? 'Human CAPTCHA still required' : 'One-time code still required';
-      rescanned.error = pendingKind === 'captcha'
-        ? 'Complete the CAPTCHA in the application tab, then try resuming again.'
-        : 'Enter the one-time code in the application tab, then try resuming again.';
-      rescanned.autoRun = false;
-      setCheckpoint(rescanned, pendingKind, label, 'needs_attention');
-      recordAudit('checkpoint_reached', rescanned, { checkpointKind: pendingKind, toStatus: 'needs_attention' });
-      state.currentAppId = rescanned.id;
-      state.view = 'dashboard';
-      await persist({ applicationIds: [rescanned.id] });
-      return rescanned;
-    }
-
-    rescanned.error = '';
-    rescanned.runStopReason = '';
-    rescanned.checkpoint = null;
-    rescanned.autoRun = true;
-    recordAudit('checkpoint_completed', rescanned, { checkpointKind: application.checkpoint?.kind, toStatus: rescanned.status });
-    await persist({ applicationIds: [rescanned.id] });
-    await runThroughApplication(rescanned, [], [], { runToken });
-    return rescanned;
   }
 
   function clientLinkPrograms(programIds) {
@@ -2648,246 +2096,6 @@
     }
     assertUiGeneration(uiToken);
     render();
-  }
-
-  function previewRuntime(message) {
-    if (message.type === 'GET_CONNECTOR_STATUS') {
-      return Promise.resolve({
-        ok: true,
-        connector: state.connector || {
-          mode: 'demo',
-          provider: 'bundled-demo-records',
-          organizationName: 'Nava fictional test data',
-          status: 'ready',
-        },
-      });
-    }
-    if (message.type === 'DISCOVER_CONNECTOR') {
-      try {
-        const config = connectorEngine.sanitizeConfig(message.config);
-        if (config.provider !== 'apricot360') {
-          return Promise.resolve({ ok: false, error: 'This simulated preview includes only the fictional Apricot-shaped adapter. Use a provisioned Nava connector service for this provider.' });
-        }
-        const schema = connectorEngine.normalizeSchemaFields(PREVIEW_CONNECTOR_SCHEMA);
-        return Promise.resolve({
-          ok: true,
-          health: { organizationName: config.organizationName, provider: config.provider },
-          config,
-          schema,
-          suggestions: connectorEngine.suggestMappings(schema, config.mappings),
-        });
-      } catch (error) {
-        return Promise.resolve({ ok: false, error: error.message });
-      }
-    }
-    if (message.type === 'SAVE_CONNECTOR') {
-      try {
-        const config = connectorEngine.validateMappings(message.config, message.schema);
-        state.connector = { ...config, status: 'ready', connectedAt: new Date().toISOString(), schemaFieldCount: message.schema.length };
-        return Promise.resolve({ ok: true, connector: state.connector });
-      } catch (error) {
-        return Promise.resolve({ ok: false, error: error.message });
-      }
-    }
-    if (message.type === 'RESET_CONNECTOR') {
-      state.connector = { mode: 'demo', provider: 'bundled-demo-records', organizationName: 'Nava fictional test data', status: 'ready' };
-      return Promise.resolve({ ok: true, connector: state.connector });
-    }
-    if (message.type === 'LOOKUP_RECORD') {
-      if (managedConnector()) {
-        if (String(message.recordId) !== '339619') return Promise.resolve({ ok: false, record: null, message: 'The preview connector includes record 339619.' });
-        try {
-          const mapped = connectorEngine.mapRecord(PREVIEW_RAW_RECORD, state.connector, PREVIEW_CONNECTOR_SCHEMA);
-          return Promise.resolve({
-            ok: mapped.found,
-            record: mapped.record,
-            provider: state.connector.provider,
-            connector: { organizationName: state.connector.organizationName, stale: mapped.stale, mappedFields: Object.keys(mapped.provenance).length },
-            message: 'Record loaded from the preview connector.',
-          });
-        } catch (error) {
-          return Promise.resolve({ ok: false, record: null, error: error.message });
-        }
-      }
-      const record = DEMO_RECORDS[String(message.recordId)] || null;
-      return Promise.resolve({
-        ok: Boolean(record),
-        record,
-        message: record ? 'Demo record loaded.' : 'Preview mode only includes demo ID 339619.',
-      });
-    }
-    if (message.type === 'LIST_RECERTIFICATIONS') {
-      const now = new Date();
-      const due = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 12)).toISOString().slice(0, 10);
-      return Promise.resolve({
-        ok: true,
-        source: 'fictional-demo',
-        connector: { organizationName: 'Nava fictional test data' },
-        cases: [{
-          id: 'preview-recert-339619-calfresh', recordId: '339619', displayName: 'Celeste Thomas II', firstName: 'Celeste',
-          programId: 'calfresh', programName: 'CalFresh', dueDate: due, preferredContact: 'Email',
-          requirements: {
-            contact: { status: 'current' }, household: { status: 'missing' }, income: { status: 'stale' },
-            expenses: { status: 'missing' }, documents: { status: 'missing' },
-          },
-          source: 'fictional-demo',
-        }],
-      });
-    }
-    if (message.type === 'OPEN_PROGRAMS') {
-      return Promise.resolve({
-        ok: true,
-        opened: programCatalog.planWorkflows(message.programs).map((workflow, index) => ({
-          ...workflow,
-          tabId: 8000 + index,
-        })),
-      });
-    }
-    return Promise.resolve({ ok: true });
-  }
-
-  function previewTabMessage(message) {
-    const previewResponse = (payload, delay = 0) => demoMode && delay
-      ? new Promise((resolve) => setTimeout(() => resolve(payload), delay))
-      : Promise.resolve(payload);
-    const pages = {
-      1: {
-        title: 'About the applicant',
-        fields: [
-          { fieldKey: 'page1:first', type: 'text', label: 'First Name', required: true, autocomplete: 'given-name', value: '' },
-          { fieldKey: 'page1:middle', type: 'text', label: 'Middle Name', autocomplete: 'additional-name', value: '' },
-          { fieldKey: 'page1:last', type: 'text', label: 'Last Name', required: true, autocomplete: 'family-name', value: '' },
-          { fieldKey: 'page1:dob', type: 'text', label: 'Date of Birth', required: true, id: 'birthDate', maxLength: 10, value: '' },
-        ],
-        gate: { kind: 'next', text: 'Next', pageSignature: 'preview:page-1', reason: 'A known safe “Next” control is ready.' },
-      },
-      2: {
-        title: 'Home address',
-        fields: [
-          { fieldKey: 'page2:street', type: 'text', label: 'Street address', required: true, autocomplete: 'address-line1', value: '' },
-          { fieldKey: 'page2:unit', type: 'text', label: 'Apartment or unit', autocomplete: 'address-line2', value: '' },
-          { fieldKey: 'page2:city', type: 'text', label: 'City', required: true, autocomplete: 'address-level2', value: '' },
-          { fieldKey: 'page2:state', type: 'text', label: 'State', required: true, autocomplete: 'address-level1', value: '' },
-          { fieldKey: 'page2:zip', type: 'text', label: 'ZIP code', required: true, autocomplete: 'postal-code', maxLength: 5, value: '' },
-        ],
-        gate: { kind: 'next', text: 'Save and continue', pageSignature: 'preview:page-2', reason: 'A known safe “Save and continue” control is ready.' },
-      },
-      3: {
-        title: 'Contact and final review',
-        fields: [
-          { fieldKey: 'page3:email', type: 'email', label: 'Email', required: true, autocomplete: 'email', value: '' },
-          { fieldKey: 'page3:phone', type: 'tel', label: 'Mobile Phone', required: true, autocomplete: 'tel', maxLength: 10, value: '' },
-          { fieldKey: 'page3:language', type: 'text', label: 'Primary language', autocomplete: 'language', value: '' },
-        ],
-        gate: { kind: 'final_review', text: 'Submit application', pageSignature: 'preview:page-3', reason: 'The application reached its final review step. Submission stays with the caseworker.' },
-      },
-    };
-    const page = pages[state.previewPage] || pages[3];
-    if (message.type === 'NAVA_SCAN') {
-      return previewResponse({
-        ok: true,
-        page: { title: page.title, url: `https://benefitscal.com/ApplyForBenefits/step-${state.previewPage}`, domain: 'benefitscal.com' },
-        playbook: { status: 'fresh', name: 'California benefits application', note: 'Bundled BenefitsCal playbook; automatic continuation is limited to exact Begin, Next, and Continue controls.' },
-        analysis: engine.buildAnalysis(page.fields, message.participant),
-        submitGate: { found: false, enabled: false, botCheckPresent: false, blockedReason: '' },
-        navigationGate: page.gate,
-      }, 240);
-    }
-    if (message.type === 'NAVA_FILL') {
-      const results = message.assignments.map((item) => ({ ...item, status: 'verified', actual: item.value, reason: '' }));
-      return previewResponse({
-        ok: true,
-        results,
-        provenance: results.map((item) => ({ ...item, value: item.sensitive ? '••••' : item.actual })),
-        submitGate: state.previewPage === 3
-          ? { found: true, enabled: true, botCheckPresent: false, blockedReason: 'The assistant never activates Submit application.' }
-          : { found: false, enabled: false, botCheckPresent: false, blockedReason: '' },
-        navigationGate: page.gate,
-      }, 650);
-    }
-    if (message.type === 'NAVA_NAVIGATION_STATUS') {
-      return previewResponse({ ok: true, navigationGate: page.gate }, 180);
-    }
-    if (message.type === 'NAVA_ADVANCE') {
-      if (page.gate.kind !== 'next') return previewResponse({ ok: true, advanced: false, navigationGate: page.gate });
-      state.previewPage = Math.min(3, state.previewPage + 1);
-      return previewResponse({ ok: true, advanced: true, navigationGate: page.gate }, 900);
-    }
-    return previewResponse({ ok: true });
-  }
-
-  function loadPreviewQueueFixture() {
-    if (!previewMode) return false;
-    const fixture = new URLSearchParams(location.search).get('queue');
-    if (!fixture) return false;
-    const capturedAt = new Date().toISOString();
-    state.previewPage = 2;
-    const paused = {
-      id: 'workflow:preview-benefits',
-      tabId: 7001,
-      name: 'California benefits application',
-      queueLabel: 'California benefits application',
-      url: 'https://benefitscal.com/ApplyForBenefits/step-2',
-      status: fixture === 'expired' ? 'source_expired' : 'paused',
-      completedPages: [{ title: 'About the applicant', provenance: [], completedAt: capturedAt }],
-      checkpoint: checkpoint(fixture === 'expired' ? 'source_expired' : 'voluntary_pause', fixture === 'expired' ? 'Reload client data' : 'Paused by caseworker'),
-      resumePoint: {
-        location: 'https://benefitscal.com/ApplyForBenefits/step-2',
-        pageSignatureHash: workQueueEngine.signatureHash('preview:page-2'),
-        capturedAt,
-      },
-      updatedAt: capturedAt,
-    };
-    const handedOff = {
-      id: 'workflow:preview-wic',
-      tabId: 8001,
-      name: 'WIC',
-      queueLabel: 'WIC',
-      url: 'https://www.ruhealth.org/appointments/apply-4-wic-form',
-      status: 'handoff_pending',
-      completedPages: [],
-      checkpoint: checkpoint('handoff', 'Assigned handoff awaiting acceptance'),
-      owner: { assignedTo: 'Intake team', state: 'pending', assignedAt: capturedAt },
-      handoff: { to: 'Intake team', reason: 'client_question', createdAt: capturedAt, acceptedAt: null },
-      resumePoint: {
-        location: 'https://www.ruhealth.org/appointments/apply-4-wic-form',
-        pageSignatureHash: '',
-        capturedAt,
-      },
-      updatedAt: capturedAt,
-    };
-    state.apps = [paused, handedOff];
-    state.participant = fixture === 'expired' ? null : DEMO_RECORDS['339619'];
-    state.audit = [workQueueEngine.auditEvent('checkpoint_reached', paused, {
-      checkpointKind: paused.checkpoint.kind,
-      toStatus: paused.status,
-    }, { at: capturedAt, id: 'preview-event' })];
-    state.view = 'dashboard';
-    return true;
-  }
-
-  async function loadPreviewDocumentFixture(uiToken = uiGeneration) {
-    if (!previewMode) return false;
-    const params = new URLSearchParams(location.search);
-    const fixtureKey = params.get('fixture');
-    const fixtures = {
-      pdf: { name: 'sample-client.pdf', type: 'application/pdf' },
-      docx: { name: 'sample-business.docx', type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
-      csv: { name: 'sample-business.csv', type: 'text/csv' },
-      ocr: { name: 'sample-client-scan.png', type: 'image/png' },
-      ocrpdf: { name: 'sample-client-scan.pdf', type: 'application/pdf' },
-    };
-    const fixture = fixtures[fixtureKey];
-    if (!fixture) return false;
-    const response = await fetch(`../demo/fixtures/${fixture.name}`);
-    if (!response.ok) throw new Error('The local preview document could not be loaded.');
-    const file = new File([await response.arrayBuffer()], fixture.name, { type: fixture.type });
-    const documentResult = await globalThis.NavaDocumentParser.parseDocument(file);
-    assertUiGeneration(uiToken);
-    state.documentResult = documentResult;
-    if (params.get('conflict') === '1') state.participant = DEMO_RECORDS['339619'];
-    state.view = 'document-review';
-    return true;
   }
 
   document.addEventListener('click', (event) => {

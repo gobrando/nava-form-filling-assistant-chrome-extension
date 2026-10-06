@@ -76,6 +76,33 @@
     return DEFAULT_AUTOMATED_PAGES;
   }
 
+  /** The human check still blocking the page: 'otp', then 'captcha', or '' when neither is pending. */
+  function pendingHumanCheck(submitGate) {
+    if (submitGate?.oneTimeCodePresent && !submitGate?.oneTimeCodeComplete) return 'otp';
+    if (submitGate?.botCheckPresent && !submitGate?.botCheckComplete) return 'captcha';
+    return '';
+  }
+
+  const FINAL_STOP_KINDS = new Set(['signature', 'certification', 'final_review']);
+
+  /**
+   * Why a run stopped on a page it may not continue from. `signal` is the caller's continuation text and reason;
+   * `finalLabel` is the caller's label for a signature, certification, or final-review stop.
+   */
+  function stopCheckpoint({ submitGate, navigationGate }, signal, finalLabel) {
+    const kind = pendingHumanCheck(submitGate)
+      || (/signature|sign\b/i.test(signal) ? 'signature'
+        : /certif|attest|declaration|affirm/i.test(signal) ? 'certification'
+          : navigationGate?.kind === 'final_review' ? 'final_review' : 'navigation_unknown');
+    const final = FINAL_STOP_KINDS.has(kind);
+    return {
+      kind,
+      final,
+      label: final ? finalLabel : 'Caseworker action required',
+      status: final ? 'ready_for_review' : 'needs_attention',
+    };
+  }
+
   /**
    * Binds the rules that need the program catalog and a host label for messages.
    * `programs` is the known-application list; `hostLabel(url)` names a host in errors.
@@ -130,6 +157,8 @@
     checkpoint,
     checkpointFromScan,
     automatedPageLimit,
+    pendingHumanCheck,
+    stopCheckpoint,
     create,
   };
 
