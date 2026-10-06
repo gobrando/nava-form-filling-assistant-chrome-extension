@@ -362,20 +362,31 @@
       || element.type === 'password';
   }
 
+  const IGNORED_INPUT_TYPES = new Set(['hidden', 'submit', 'button', 'reset', 'image', 'file', 'search']);
+
+  // Credentials, one-time codes, and payment data are never written. A
+  // password-masked SSN or birthdate field stays in scope.
+  function isCredentialOrPaymentField(type, autocomplete, signal) {
+    return /current-password|new-password|one-time-code|cc-number|cc-csc|cc-exp/.test(autocomplete)
+      || (type === 'password' && !/social security|\bssn\b|date of birth|birth date|birthdate/.test(signal))
+      || /credit card|card number|security code|\bcvv\b|routing number|bank account|payment account/.test(signal);
+  }
+
+  // Attestations stay with the caseworker; honeypots, site search, and CAPTCHA
+  // widgets are not application answers.
+  function isAttestationOrDecoyField(element, type, signal) {
+    return (type === 'checkbox' && /certif|attest|affirm|declaration|signature|terms and conditions|under penalty/.test(signal))
+      || /leave this field blank|do not fill|honeypot|website url|site search|search this site/.test(signal)
+      || Boolean(element.closest('[role="search"], .search-form, .site-search, .g-recaptcha'));
+  }
+
   function shouldIgnore(element, label) {
+    if (!fieldVisible(element) || element.disabled) return true;
     const type = String(element.type || '').toLowerCase();
+    if (IGNORED_INPUT_TYPES.has(type)) return true;
     const autocomplete = String(element.autocomplete || '').toLowerCase();
     const signal = engine.normalize(`${label} ${element.name || ''} ${element.id || ''} ${autocomplete}`);
-    if (!fieldVisible(element)) return true;
-    if (element.disabled) return true;
-    if (['hidden', 'submit', 'button', 'reset', 'image', 'file', 'search'].includes(type)) return true;
-    if (/current-password|new-password|one-time-code|cc-number|cc-csc|cc-exp/.test(autocomplete)) return true;
-    if (type === 'password' && !/social security|\bssn\b|date of birth|birth date|birthdate/.test(signal)) return true;
-    if (/credit card|card number|security code|\bcvv\b|routing number|bank account|payment account/.test(signal)) return true;
-    if (type === 'checkbox' && /certif|attest|affirm|declaration|signature|terms and conditions|under penalty/.test(signal)) return true;
-    if (/leave this field blank|do not fill|honeypot|website url|site search|search this site/.test(signal)) return true;
-    if (element.closest('[role="search"], .search-form, .site-search, .g-recaptcha')) return true;
-    return false;
+    return isCredentialOrPaymentField(type, autocomplete, signal) || isAttestationOrDecoyField(element, type, signal);
   }
 
   function requiredNodeSignal(node) {
@@ -424,6 +435,137 @@
     return element.value || '';
   }
 
+  function isChoiceControl(element) {
+    return ['radio', 'checkbox'].includes(element.type);
+  }
+
+  // Site-policy merge: the bundled adapter for this host may scope, relabel,
+  // regroup, or ignore a control. No adapter means an empty policy.
+  function sitePolicyFor(element, label, question) {
+    return globalThis.NavaSiteAdapters?.fieldPolicy?.(location.hostname, location.pathname, {
+      id: element.id || '',
+      name: element.name || '',
+      value: element.value || '',
+      className: typeof element.className === 'string' ? element.className : '',
+      type: String(element.type || '').toLowerCase(),
+      label,
+      question,
+    }) || {};
+  }
+
+  function sharesQuestionWithAnotherControl(element, question, elements) {
+    return Boolean(question) && elements.some((candidate) => candidate !== element
+      && candidate.type === element.type
+      && questionText(candidate, labelFor(candidate)) === question);
+  }
+
+  // Choice controls group by name; nameless ones group when another control of
+  // the same type asks the same question.
+  function inferredGroupKey(element, question, elements) {
+    if (!isChoiceControl(element)) return '';
+    if (!element.name && !sharesQuestionWithAnotherControl(element, question, elements)) return '';
+    return `group:${element.type}:${element.name || engine.compact(question)}`;
+  }
+
+  function groupKeyFor(policy, element, question, elements) {
+    if (Object.prototype.hasOwnProperty.call(policy, 'groupKey')) return String(policy.groupKey || '');
+    return inferredGroupKey(element, question, elements);
+  }
+
+  function optionValueFor(policy, element) {
+    return Object.prototype.hasOwnProperty.call(policy, 'optionValue')
+      ? String(policy.optionValue ?? '')
+      : String(element.value || '');
+  }
+
+  function describedType(element, policy) {
+    return policy.type || (element.tagName === 'SELECT' ? 'select-one' : String(element.type || 'text').toLowerCase());
+  }
+
+  function controlIdentity(element, policy) {
+    return {
+      tag: element.tagName.toLowerCase(),
+      type: describedType(element, policy),
+      id: element.id || '',
+      name: element.name || '',
+    };
+  }
+
+  function policyAnnotations(policy) {
+    return {
+      purpose: policy.purpose || '',
+      decisionGroupKey: String(policy.decisionGroupKey || ''),
+      decisionGroupQuestion: cleanText(policy.decisionGroupQuestion || ''),
+      unmapped: policy.unmapped === true,
+      allowRepeatedPurpose: policy.allowRepeatedPurpose === true,
+      exclusive: policy.exclusive === true,
+    };
+  }
+
+  function inputConstraints(element) {
+    return {
+      placeholder: element.placeholder || '',
+      autocomplete: element.autocomplete || '',
+      pattern: element.getAttribute('pattern') || '',
+      maxLength: element.maxLength > -1 ? element.maxLength : null,
+    };
+  }
+
+  function currentValueState(element, optionValue) {
+    return {
+      checked: Boolean(element.checked),
+      value: rawCurrentValue(element),
+      optionValue: isChoiceControl(element) ? optionValue : '',
+      options: element.tagName === 'SELECT' ? selectOptions(element) : [],
+    };
+  }
+
+  // The description is the scan's wire format; keys keep their published order.
+  function fieldDescription(element, { fieldKey, groupKey, optionLabel, question, policy, optionValue }) {
+    return {
+      fieldKey,
+      groupKey,
+      ...controlIdentity(element, policy),
+      label: optionLabel,
+      optionLabel,
+      question,
+      ...policyAnnotations(policy),
+      ...inputConstraints(element),
+      required: requiredField(element, optionLabel, question, policy),
+      disabled: element.disabled,
+      visible: true,
+      ...currentValueState(element, optionValue),
+      sensitive: policy.sensitive === true || looksSensitive(element, `${question} ${optionLabel}`),
+    };
+  }
+
+  // Describe-field pipeline: skip unavailable or out-of-scope controls, resolve
+  // label and question, merge the site policy, then derive group and option keys.
+  function describeField(element, fieldKey, elements) {
+    const optionLabel = labelFor(element);
+    if (shouldIgnore(element, optionLabel)) return null;
+    const inferredQuestion = isChoiceControl(element) ? questionText(element, optionLabel) : '';
+    const policy = sitePolicyFor(element, optionLabel, inferredQuestion);
+    if (policy.ignore) return null;
+    const question = cleanText(policy.question) || inferredQuestion;
+    const groupKey = groupKeyFor(policy, element, question, elements);
+    const optionValue = optionValueFor(policy, element);
+    return {
+      element,
+      optionValue,
+      description: fieldDescription(element, { fieldKey, groupKey, optionLabel, question, policy, optionValue }),
+    };
+  }
+
+  function registerField({ element, optionValue, description }) {
+    const { fieldKey, groupKey, optionLabel, exclusive } = description;
+    fieldMap.set(fieldKey, element);
+    if (!groupKey) return;
+    const members = groupMap.get(groupKey) || [];
+    members.push({ element, fieldKey, optionLabel, optionValue, exclusive });
+    groupMap.set(groupKey, members);
+  }
+
   function scanFields() {
     scanNumber += 1;
     fieldMap.clear();
@@ -432,78 +574,10 @@
     const descriptions = [];
 
     elements.forEach((element, index) => {
-      const optionLabel = labelFor(element);
-      if (shouldIgnore(element, optionLabel)) return;
-      const inferredQuestion = ['radio', 'checkbox'].includes(element.type)
-        ? questionText(element, optionLabel)
-        : '';
-      const policy = globalThis.NavaSiteAdapters?.fieldPolicy?.(location.hostname, location.pathname, {
-        id: element.id || '',
-        name: element.name || '',
-        value: element.value || '',
-        className: typeof element.className === 'string' ? element.className : '',
-        type: String(element.type || '').toLowerCase(),
-        label: optionLabel,
-        question: inferredQuestion,
-      }) || {};
-      if (policy.ignore) return;
-      const question = cleanText(policy.question) || inferredQuestion;
-      const fieldKey = `field:${scanNumber}:${index}`;
-      const sameTypeCount = elements.filter((candidate) =>
-        candidate !== element
-        && candidate.type === element.type
-        && ((element.name && candidate.name === element.name)
-          || (!element.name && question && questionText(candidate, labelFor(candidate)) === question)),
-      ).length;
-      const inferredGroupKey = ['radio', 'checkbox'].includes(element.type) && (element.name || sameTypeCount > 0)
-        ? `group:${element.type}:${element.name || engine.compact(question)}`
-        : '';
-      const groupKey = Object.prototype.hasOwnProperty.call(policy, 'groupKey')
-        ? String(policy.groupKey || '')
-        : inferredGroupKey;
-      const describedType = policy.type
-        || (element.tagName === 'SELECT' ? 'select-one' : String(element.type || 'text').toLowerCase());
-      const exclusive = policy.exclusive === true;
-      const optionValue = Object.prototype.hasOwnProperty.call(policy, 'optionValue')
-        ? String(policy.optionValue ?? '')
-        : String(element.value || '');
-
-      fieldMap.set(fieldKey, element);
-      if (groupKey) {
-        const members = groupMap.get(groupKey) || [];
-        members.push({ element, fieldKey, optionLabel, optionValue, exclusive });
-        groupMap.set(groupKey, members);
-      }
-
-      descriptions.push({
-        fieldKey,
-        groupKey,
-        tag: element.tagName.toLowerCase(),
-        type: describedType,
-        id: element.id || '',
-        name: element.name || '',
-        label: optionLabel,
-        optionLabel,
-        question,
-        purpose: policy.purpose || '',
-        decisionGroupKey: String(policy.decisionGroupKey || ''),
-        decisionGroupQuestion: cleanText(policy.decisionGroupQuestion || ''),
-        unmapped: policy.unmapped === true,
-        allowRepeatedPurpose: policy.allowRepeatedPurpose === true,
-        exclusive,
-        placeholder: element.placeholder || '',
-        autocomplete: element.autocomplete || '',
-        pattern: element.getAttribute('pattern') || '',
-        maxLength: element.maxLength > -1 ? element.maxLength : null,
-        required: requiredField(element, optionLabel, question, policy),
-        disabled: element.disabled,
-        visible: true,
-        checked: Boolean(element.checked),
-        value: rawCurrentValue(element),
-        optionValue: ['checkbox', 'radio'].includes(element.type) ? optionValue : '',
-        options: element.tagName === 'SELECT' ? selectOptions(element) : [],
-        sensitive: policy.sensitive === true || looksSensitive(element, `${question} ${optionLabel}`),
-      });
+      const field = describeField(element, `field:${scanNumber}:${index}`, elements);
+      if (!field) return;
+      registerField(field);
+      descriptions.push(field.description);
     });
 
     return descriptions;
@@ -704,62 +778,62 @@
       ));
   }
 
-  function navigationDecision() {
+  function visibleNavigationControls() {
     const interactionRoot = document.querySelector('main, [role="main"]') || document;
-    const controls = [...interactionRoot.querySelectorAll('button, input[type="submit"], input[type="button"], a[href], [role="button"]')]
+    return [...interactionRoot.querySelectorAll('button, input[type="submit"], input[type="button"], a[href], [role="button"]')]
       .filter((element) => visible(element) && isControlEnabled(element))
       .map((element) => ({ element, text: navigationControlText(element) }))
       .filter((item) => item.text);
-    const playbook = playbookForHost();
-    const safeNext = controls.find((item) => isPlaybookAdvanceControl(item.element, item.text, playbook) && !FINAL_ACTION_PATTERN.test(item.text));
-    const genericNext = controls.find((item) => isSafeAdvanceText(item.text) && !FINAL_ACTION_PATTERN.test(item.text));
-    const finalAction = controls.find((item) => FINAL_ACTION_PATTERN.test(item.text));
-    const demoFlow = trustedDemoFixture();
-    const allowed = Boolean(playbook?.autoAdvance || demoFlow);
-    const bot = botCheckStatus();
-    const oneTimeCode = oneTimeCodeStatus();
-    const signature = pageSignature();
+  }
 
-    if (oneTimeCode.present && !oneTimeCode.complete) {
-      return {
-        element: null,
-        gate: { kind: 'manual', text: '', pageSignature: signature, reason: 'A human must enter the one-time code before the assistant can continue.' },
-      };
-    }
-    if (bot.present && !bot.complete) {
-      return {
-        element: null,
-        gate: { kind: 'manual', text: '', pageSignature: signature, reason: 'A human must complete the bot check before the assistant can continue.' },
-      };
-    }
+  // A control whose label reads as a final action is never a continuation.
+  function navigationCandidates(playbook) {
+    const controls = visibleNavigationControls();
+    return {
+      safeNext: controls.find((item) => isPlaybookAdvanceControl(item.element, item.text, playbook) && !FINAL_ACTION_PATTERN.test(item.text)),
+      genericNext: controls.find((item) => isSafeAdvanceText(item.text) && !FINAL_ACTION_PATTERN.test(item.text)),
+      finalAction: controls.find((item) => FINAL_ACTION_PATTERN.test(item.text)),
+    };
+  }
+
+  function autoAdvanceAllowed(playbook) {
+    return Boolean(playbook?.autoAdvance || trustedDemoFixture());
+  }
+
+  function humanCheckpointReason() {
+    const oneTimeCode = oneTimeCodeStatus();
+    if (oneTimeCode.present && !oneTimeCode.complete) return 'A human must enter the one-time code before the assistant can continue.';
+    const bot = botCheckStatus();
+    if (bot.present && !bot.complete) return 'A human must complete the bot check before the assistant can continue.';
+    return '';
+  }
+
+  // Gate precedence: human checkpoint, final-page signal, authorized safe
+  // continuation, visible final action, unauthorized continuation, nothing.
+  function navigationDecision() {
+    const playbook = playbookForHost();
+    const { safeNext, genericNext, finalAction } = navigationCandidates(playbook);
+    const signature = pageSignature();
+    const stop = (kind, text, reason) => ({ element: null, gate: { kind, text, pageSignature: signature, reason } });
+
+    const checkpoint = humanCheckpointReason();
+    if (checkpoint) return stop('manual', '', checkpoint);
     if (hasFinalPageSignal()) {
-      return {
-        element: null,
-        gate: { kind: 'final_review', text: finalAction?.text || '', pageSignature: signature, reason: 'The application reached a certification, signature, or final review step. Submission stays with the caseworker.' },
-      };
+      return stop('final_review', finalAction?.text || '', 'The application reached a certification, signature, or final review step. Submission stays with the caseworker.');
     }
-    if (safeNext && allowed) {
+    if (safeNext && autoAdvanceAllowed(playbook)) {
       return {
         element: safeNext.element,
         gate: { kind: 'next', text: safeNext.text, pageSignature: signature, reason: `A known safe “${safeNext.text}” control is ready.` },
       };
     }
     if (finalAction) {
-      return {
-        element: null,
-        gate: { kind: 'final_review', text: finalAction.text, pageSignature: signature, reason: `The next visible action is “${finalAction.text}”. The assistant will not activate it.` },
-      };
+      return stop('final_review', finalAction.text, `The next visible action is “${finalAction.text}”. The assistant will not activate it.`);
     }
     if (genericNext) {
-      return {
-        element: null,
-        gate: { kind: 'manual', text: genericNext.text, pageSignature: signature, reason: 'This continuation control is not authorized for the current production route. Continue on the page, then resume the assistant.' },
-      };
+      return stop('manual', genericNext.text, 'This continuation control is not authorized for the current production route. Continue on the page, then resume the assistant.');
     }
-    return {
-      element: null,
-      gate: { kind: 'none', text: '', pageSignature: signature, reason: 'No safe continuation control is visible.' },
-    };
+    return stop('none', '', 'No safe continuation control is visible.');
   }
 
   function navigationStatus() {
@@ -889,89 +963,167 @@
     dispatchValueEvents(element);
   }
 
-  async function writeAssignment(assignment) {
-    const grouped = groupMap.get(assignment.fieldKey);
-    const entry = grouped?.find(({ optionLabel, optionValue }) => optionMatch(optionLabel, optionValue, assignment.value));
-    const element = entry?.element || fieldMap.get(assignment.fieldKey);
-    if (!element) return { ...assignment, status: 'blocked', reason: 'The field changed after the page scan. Scan the page again.' };
-    if (!fieldVisible(element)) return { ...assignment, status: 'blocked', reason: 'The field is hidden by an earlier question.' };
-    if (element.disabled) return { ...assignment, status: 'blocked', reason: 'The field is disabled by an earlier question.' };
-    if (Number(element.maxLength) > 0 && String(assignment.value).length > element.maxLength) {
-      return { ...assignment, status: 'blocked', reason: `The value is longer than the form allows (${element.maxLength} characters).` };
-    }
+  const CHECKED_ANSWER_PATTERN = /^(yes|true|1|on)$/i;
+  const NO_MATCHING_CHOICE = 'The answer does not match one of the choices on the form.';
 
-    const visualElement = entry?.element || element;
-    const previousOutline = visualElement.style.outline;
-    const previousOutlineOffset = visualElement.style.outlineOffset;
-    if (presentationMode()) {
-      visualElement.scrollIntoView({ block: 'center', behavior: 'auto' });
-      visualElement.style.outline = '3px solid #b14092';
-      visualElement.style.outlineOffset = '3px';
-      await nextAnimationFrame();
-      await nextAnimationFrame();
-    }
+  function checkboxAnswer(value) {
+    return CHECKED_ANSWER_PATTERN.test(String(value));
+  }
 
-    if (grouped) {
-      if (!entry) {
-        visualElement.style.outline = previousOutline;
-        visualElement.style.outlineOffset = previousOutlineOffset;
-        return { ...assignment, status: 'blocked', reason: 'The answer does not match one of the choices on the form.' };
-      }
-      if (element.type === 'radio' || grouped.some((member) => member.exclusive)) {
-        grouped.forEach((member) => setChecked(member.element, member.element === element));
-      } else {
-        setChecked(element, true);
-      }
-    } else if (element.type === 'checkbox') {
-      setChecked(element, /^(yes|true|1|on)$/i.test(String(assignment.value)));
-    } else if (element.tagName === 'SELECT') {
-      const option = [...element.options].find((candidate) => optionMatch(candidate.textContent, candidate.value, assignment.value));
-      if (!option) {
-        visualElement.style.outline = previousOutline;
-        visualElement.style.outlineOffset = previousOutlineOffset;
-        return { ...assignment, status: 'blocked', reason: 'The answer does not match one of the choices on the form.' };
-      }
-      setTextValue(element, option.value);
+  // The scanned control an assignment targets: the matching member of a choice
+  // group, or the single field registered under the assignment's key.
+  function assignmentTarget(fieldKey, value) {
+    const grouped = groupMap.get(fieldKey);
+    const entry = grouped?.find(({ optionLabel, optionValue }) => optionMatch(optionLabel, optionValue, value));
+    return { grouped, entry, element: entry?.element || fieldMap.get(fieldKey) };
+  }
+
+  function writeBlocker(element, value) {
+    if (!element) return 'The field changed after the page scan. Scan the page again.';
+    if (!fieldVisible(element)) return 'The field is hidden by an earlier question.';
+    if (element.disabled) return 'The field is disabled by an earlier question.';
+    if (Number(element.maxLength) > 0 && String(value).length > element.maxLength) {
+      return `The value is longer than the form allows (${element.maxLength} characters).`;
+    }
+    return '';
+  }
+
+  function captureOutline(element) {
+    const { outline, outlineOffset } = element.style;
+    return () => {
+      element.style.outline = outline;
+      element.style.outlineOffset = outlineOffset;
+    };
+  }
+
+  async function spotlight(element) {
+    element.scrollIntoView({ block: 'center', behavior: 'auto' });
+    element.style.outline = '3px solid #b14092';
+    element.style.outlineOffset = '3px';
+    await nextAnimationFrame();
+    await nextAnimationFrame();
+  }
+
+  // Writer strategies. Each write is synchronous, goes through the native
+  // setters and input/change events, and returns a refusal reason or ''.
+
+  // Radio groups and exclusive checkbox groups clear every other member; an
+  // inclusive checkbox group only checks the chosen box.
+  function writeChoiceGroup({ grouped, entry }) {
+    if (!entry) return NO_MATCHING_CHOICE;
+    if (entry.element.type === 'radio' || grouped.some((member) => member.exclusive)) {
+      grouped.forEach((member) => setChecked(member.element, member.element === entry.element));
     } else {
-      setTextValue(element, String(assignment.value));
+      setChecked(entry.element, true);
     }
+    return '';
+  }
 
-    if (typeof element.blur === 'function') element.blur();
+  function writeCheckbox({ element }, value) {
+    setChecked(element, checkboxAnswer(value));
+    return '';
+  }
 
-    const readCurrent = () => grouped
-      ? grouped.find((member) => member.element.checked)?.optionValue || ''
-      : rawCurrentValue(element);
-    let stability = await waitForStableRead(element, readCurrent);
-    let actual = stability.value;
-    let verified = grouped
-      ? Boolean(grouped.find((member) => member.element.checked && optionMatch(member.optionLabel, member.optionValue, assignment.value)))
-      : element.type === 'checkbox'
-        ? element.checked === /^(yes|true|1|on)$/i.test(String(assignment.value))
-        : engine.valuesEquivalent(assignment.value, actual, { type: element.type, label: labelFor(element) });
-    if (!grouped && element.tagName === 'SELECT') verified = verified && select2SelectionMatches(element);
-    verified = verified && stability.settled && !stability.problem;
-    if (!grouped && element.type === 'checkbox') actual = element.checked ? 'yes' : 'no';
+  function writeSelectOption({ element }, value) {
+    const option = [...element.options].find((candidate) => optionMatch(candidate.textContent, candidate.value, value));
+    if (!option) return NO_MATCHING_CHOICE;
+    setTextValue(element, option.value);
+    return '';
+  }
 
-    if (!verified && !grouped && element.tagName !== 'SELECT' && !['checkbox', 'radio'].includes(element.type)) {
-      await incrementalWrite(element, assignment.value);
-      stability = await waitForStableRead(element, () => rawCurrentValue(element));
-      actual = stability.value;
-      verified = stability.settled
-        && !stability.problem
-        && engine.valuesEquivalent(assignment.value, actual, { type: element.type, label: labelFor(element) });
+  function writeNativeValue({ element }, value) {
+    setTextValue(element, String(value));
+    return '';
+  }
+
+  const VALUE_WRITERS = Object.freeze({
+    choiceGroup: { write: writeChoiceGroup },
+    checkbox: { write: writeCheckbox },
+    // Native select (Select2 included): readback also confirms Select2's rendered selection.
+    select: { write: writeSelectOption, confirmsRenderedSelection: true },
+    // A radio outside any group keeps the native value write and is never typed into.
+    plainValue: { write: writeNativeValue },
+    // Text that a mask rejects as one value gets one keystroke-by-keystroke retry.
+    text: { write: writeNativeValue, retry: incrementalWrite },
+  });
+
+  function writerFor({ element, grouped }) {
+    if (grouped) return VALUE_WRITERS.choiceGroup;
+    if (element.type === 'checkbox') return VALUE_WRITERS.checkbox;
+    if (element.tagName === 'SELECT') return VALUE_WRITERS.select;
+    return element.type === 'radio' ? VALUE_WRITERS.plainValue : VALUE_WRITERS.text;
+  }
+
+  // Readback shared by write verification and page-level revalidation: what a
+  // control currently holds (read), what to report (report), and whether it
+  // holds the requested answer (holds).
+  const READBACKS = Object.freeze({
+    group: {
+      read: (_element, grouped) => grouped.find((member) => member.element.checked)?.optionValue || '',
+      report: (_element, observed) => observed,
+      holds: (_element, grouped, wanted) => grouped
+        .some((member) => member.element.checked && optionMatch(member.optionLabel, member.optionValue, wanted)),
+    },
+    checkbox: {
+      read: (element) => rawCurrentValue(element),
+      report: (element) => (element.checked ? 'yes' : 'no'),
+      holds: (element, _grouped, wanted) => element.checked === checkboxAnswer(wanted),
+    },
+    value: {
+      read: (element) => rawCurrentValue(element),
+      report: (_element, observed) => observed,
+      holds: (element, _grouped, wanted, observed) => engine.valuesEquivalent(wanted, observed, { type: element.type, label: labelFor(element) }),
+    },
+  });
+
+  function readbackFor(element, grouped) {
+    if (grouped) return READBACKS.group;
+    return element.type === 'checkbox' ? READBACKS.checkbox : READBACKS.value;
+  }
+
+  async function writeAssignment(assignment) {
+    const target = assignmentTarget(assignment.fieldKey, assignment.value);
+    const unavailable = writeBlocker(target.element, assignment.value);
+    if (unavailable) return { ...assignment, status: 'blocked', reason: unavailable };
+
+    const writer = writerFor(target);
+    const restoreOutline = captureOutline(target.element);
+    if (presentationMode()) await spotlight(target.element);
+    const refusal = writer.write(target, assignment.value);
+    if (refusal) {
+      restoreOutline();
+      return { ...assignment, status: 'blocked', reason: refusal };
     }
+    if (typeof target.element.blur === 'function') target.element.blur();
 
-    if (presentationMode()) {
-      visualElement.style.outline = previousOutline;
-      visualElement.style.outlineOffset = previousOutlineOffset;
-    }
-
+    const outcome = await verifyWrite(writer, target, assignment.value);
+    if (presentationMode()) restoreOutline();
     return {
       ...assignment,
-      status: verified ? 'verified' : 'blocked',
-      actual,
-      reason: verified ? '' : stability.problem || 'The form did not keep the value after two verified write methods. Enter this field directly.',
+      status: outcome.verified ? 'verified' : 'blocked',
+      actual: outcome.actual,
+      reason: outcome.verified ? '' : outcome.problem || 'The form did not keep the value after two verified write methods. Enter this field directly.',
     };
+  }
+
+  // Wait for the page to settle, then read the control back.
+  async function settledReadBack(writer, { element, grouped }, wanted) {
+    const readback = readbackFor(element, grouped);
+    const stability = await waitForStableRead(element, () => readback.read(element, grouped));
+    const holds = readback.holds(element, grouped, wanted, stability.value)
+      && (!writer.confirmsRenderedSelection || select2SelectionMatches(element));
+    return {
+      verified: holds && stability.settled && !stability.problem,
+      actual: readback.report(element, stability.value),
+      problem: stability.problem,
+    };
+  }
+
+  async function verifyWrite(writer, target, wanted) {
+    const first = await settledReadBack(writer, target, wanted);
+    if (first.verified || !writer.retry) return first;
+    await writer.retry(target.element, wanted);
+    return settledReadBack(writer, target, wanted);
   }
 
   function maskValue(value, sensitive) {
@@ -981,37 +1133,29 @@
     return digits.length >= 4 ? `••••${digits.slice(-4)}` : '••••';
   }
 
+  function revalidationFailure(problem, pageSettled) {
+    if (problem) return problem;
+    return pageSettled
+      ? 'The form changed this value during page validation. Enter it directly.'
+      : 'The page did not finish validating all values.';
+  }
+
+  // After page-level validation, re-read every verified field once more.
   function revalidateAssignment(result, pageSettled) {
     if (result.status !== 'verified') return result;
-    const grouped = groupMap.get(result.fieldKey);
-    const entry = grouped?.find(({ optionLabel, optionValue }) => optionMatch(optionLabel, optionValue, result.value));
-    const element = entry?.element || fieldMap.get(result.fieldKey) || grouped?.[0]?.element;
+    const { grouped, element: matched } = assignmentTarget(result.fieldKey, result.value);
+    const element = matched || grouped?.[0]?.element;
     if (!element || !fieldVisible(element) || element.disabled) {
       return { ...result, status: 'blocked', reason: 'The field changed or became unavailable while the page validated.' };
     }
-    const actual = grouped
-      ? grouped.find((member) => member.element.checked)?.optionValue || ''
-      : element.type === 'checkbox'
-        ? element.checked ? 'yes' : 'no'
-        : rawCurrentValue(element);
-    const matches = grouped
-      ? Boolean(grouped.find((member) => member.element.checked && optionMatch(member.optionLabel, member.optionValue, result.value)))
-      : element.type === 'checkbox'
-        ? element.checked === /^(yes|true|1|on)$/i.test(String(result.value))
-        : engine.valuesEquivalent(result.value, actual, { type: element.type, label: labelFor(element) });
-    const visiblyMatches = element.tagName !== 'SELECT' || select2SelectionMatches(element);
+    const readback = readbackFor(element, grouped);
+    const observed = readback.read(element, grouped);
+    const actual = readback.report(element, observed);
+    const holds = readback.holds(element, grouped, result.value, observed)
+      && (element.tagName !== 'SELECT' || select2SelectionMatches(element));
     const problem = validationProblem(element);
-    if (!pageSettled || !matches || !visiblyMatches || problem) {
-      return {
-        ...result,
-        status: 'blocked',
-        actual,
-        reason: problem || (!pageSettled
-          ? 'The page did not finish validating all values.'
-          : 'The form changed this value during page validation. Enter it directly.'),
-      };
-    }
-    return { ...result, actual };
+    if (pageSettled && holds && !problem) return { ...result, actual };
+    return { ...result, status: 'blocked', actual, reason: revalidationFailure(problem, pageSettled) };
   }
 
   async function fill(assignments) {
@@ -1114,9 +1258,6 @@
     }
     if (message?.type === 'NAVA_FILL') {
       return { ok: true, ...(await fill(message.assignments || [])) };
-    }
-    if (message?.type === 'NAVA_SUBMIT_STATUS') {
-      return { ok: true, submitGate: submitGateStatus() };
     }
     if (message?.type === 'NAVA_NAVIGATION_STATUS') {
       return { ok: true, navigationGate: navigationStatus() };
