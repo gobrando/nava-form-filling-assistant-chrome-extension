@@ -37,6 +37,10 @@
       "js": [
         "shared/form-engine.js",
         "shared/site-adapters.js",
+        "content/page-dom.js",
+        "content/field-inventory.js",
+        "content/navigation-gate.js",
+        "content/value-writers.js",
         "content/form-agent.js"
       ],
       "run_at": "document_idle",

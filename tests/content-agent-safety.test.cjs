@@ -5,9 +5,36 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const root = path.resolve(__dirname, '..');
+// The page-agent modules form-agent.js composes, by literal path in manifest order. Every harness loads them
+// into its vm context before form-agent.js, the way Chrome loads the manifest content scripts.
+const CONTENT_MODULES = [
+  'content/page-dom.js',
+  'content/field-inventory.js',
+  'content/navigation-gate.js',
+  'content/value-writers.js',
+];
+const moduleSources = CONTENT_MODULES.map((file) => [file, fs.readFileSync(path.join(root, file), 'utf8')]);
 const agentSource = fs.readFileSync(path.join(root, 'content/form-agent.js'), 'utf8');
+const navigationGateSource = fs.readFileSync(path.join(root, 'content/navigation-gate.js'), 'utf8');
+const valueWritersSource = fs.readFileSync(path.join(root, 'content/value-writers.js'), 'utf8');
 const formEngine = require(path.join(root, 'shared/form-engine.js'));
 const siteAdapters = require(path.join(root, 'shared/site-adapters.js'));
+
+/** Runs the content modules, then form-agent.js (or an instrumented copy of it), in one vm context. */
+function loadPageAgent(context, source = agentSource) {
+  vm.createContext(context);
+  for (const [file, moduleSource] of moduleSources) vm.runInContext(moduleSource, context, { filename: file });
+  vm.runInContext(source, context, { filename: 'content/form-agent.js' });
+}
+
+/** The source between two markers, which must both be present and in order. */
+function section(source, start, end) {
+  const startIndex = source.indexOf(start);
+  const endIndex = source.indexOf(end, startIndex + start.length);
+  assert.notEqual(startIndex, -1, `missing section start: ${start}`);
+  assert.notEqual(endIndex, -1, `missing section end: ${end}`);
+  return source.slice(startIndex, endIndex);
+}
 
 function control(text, selectors = [], attributes = {}) {
   return {
@@ -118,7 +145,7 @@ function agentHarness(url, {
     },
   };
   context.globalThis = context;
-  vm.runInNewContext(agentSource, context, { filename: 'content/form-agent.js' });
+  loadPageAgent(context);
 
   return {
     async send(message) {
@@ -243,7 +270,7 @@ function scanHarness(url, { fields = [], controls = [], labels = {}, nodes = {},
     /\}\)\(\);\s*$/,
     'globalThis.__NavaContentAgentTest = { scanFields, submitGateStatus, groupMap, fieldMap };\n})();',
   );
-  vm.runInNewContext(instrumentedSource, context, { filename: 'content/form-agent.js' });
+  loadPageAgent(context, instrumentedSource);
   return context.__NavaContentAgentTest;
 }
 
@@ -402,7 +429,7 @@ function fillHarness(url, { describedNodes = {}, adapter = siteAdapters } = {}) 
     /\}\)\(\);\s*$/,
     'globalThis.__NavaContentAgentTest = { fill, scanFields, fieldMap, groupMap };\n})();',
   );
-  vm.runInNewContext(instrumentedSource, context, { filename: 'content/form-agent.js' });
+  loadPageAgent(context, instrumentedSource);
 
   return {
     input(options) {
@@ -460,6 +487,32 @@ function routePolicy(url, overrides = {}) {
     ...overrides,
   };
 }
+
+test('the vm harness loads the manifest content modules in manifest order, form-agent.js last', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
+  const contentScripts = manifest.content_scripts[0].js.filter((file) => file.startsWith('content/'));
+  assert.deepEqual(contentScripts, [...CONTENT_MODULES, 'content/form-agent.js']);
+});
+
+test('content modules only install a factory at load, never touch the page, and tolerate re-injection', () => {
+  // No document, location, or engine: any DOM work at load would throw here.
+  const context = {};
+  context.globalThis = context;
+  vm.createContext(context);
+  for (const [file, moduleSource] of moduleSources) {
+    vm.runInContext(moduleSource, context, { filename: file });
+    vm.runInContext(moduleSource, context, { filename: file });
+  }
+  const globals = ['NavaPageDom', 'NavaPageFieldInventory', 'NavaPageNavigationGate', 'NavaPageValueWriters'];
+  const installed = Object.fromEntries(globals.map((name) => [name, Object.keys(context[name])]));
+  assert.deepEqual(JSON.parse(JSON.stringify(installed)), {
+    NavaPageDom: ['create'],
+    NavaPageFieldInventory: ['create'],
+    NavaPageNavigationGate: ['create'],
+    NavaPageValueWriters: ['create'],
+  });
+  for (const [, moduleSource] of moduleSources) assert.doesNotMatch(moduleSource, /function delay\b/);
+});
 
 test('route authorization binds commands to normalized search and hash state', async () => {
   const url = 'https://benefitscal.com/ApplyForBenefits/ABNAV?a=1&b=2#household';
@@ -612,7 +665,7 @@ test('the BenefitsCal overview authorizes only exact Begin on the exact ABOVR ro
   assert.equal(response.advanced, true);
   assert.equal(response.navigationGate.kind, 'next');
   assert.equal(begin.clicked, true);
-  assert.match(agentSource, /location\.assign\('\/ApplyForBenefits\/ABHLT'\)/);
+  assert.match(navigationGateSource, /location\.assign\('\/ApplyForBenefits\/ABHLT'\)/);
 
   const wrongUrl = 'https://benefitscal.com/ApplyForBenefits/ABHLT?lang=en';
   const wrongBegin = control('Begin', ['button[name="common_continue"]']);
@@ -733,10 +786,7 @@ test('reCAPTCHA, hCaptcha, and Turnstile checkpoints are detected without solvin
   assert.equal(completedResponse.submitGate.botCheckPresent, true);
   assert.equal(completedResponse.submitGate.botCheckComplete, true);
 
-  const implementation = agentSource.slice(
-    agentSource.indexOf('function botCheckStatus'),
-    agentSource.indexOf('function oneTimeCodeStatus'),
-  );
+  const implementation = section(navigationGateSource, 'function botCheckStatus', 'function oneTimeCodeStatus');
   assert.match(implementation, /h-captcha-response/);
   assert.match(implementation, /cf-turnstile-response/);
   assert.doesNotMatch(implementation, /click\(|solve|bypass/i);
@@ -761,9 +811,7 @@ test('generic continuation labels remain authorized only on exact trusted demo f
 });
 
 test('production playbooks support explicit safe labels, selectors, and route rules', () => {
-  const start = agentSource.indexOf('function isPlaybookAdvanceControl');
-  const end = agentSource.indexOf('function hasFinalPageSignal', start);
-  const implementation = agentSource.slice(start, end);
+  const implementation = section(navigationGateSource, 'function isPlaybookAdvanceControl', 'function hasFinalPageSignal');
 
   assert.match(implementation, /if \(trustedDemoFixture\(\)\) return isSafeAdvanceText\(text\)/);
   assert.match(implementation, /playbook\?\.safeAdvanceLabels/);
@@ -773,9 +821,7 @@ test('production playbooks support explicit safe labels, selectors, and route ru
 });
 
 test('masked fallback writes retain punctuation required by an explicit field pattern', () => {
-  const start = agentSource.indexOf('async function incrementalWrite');
-  const end = agentSource.indexOf('function optionMatch', start);
-  const implementation = agentSource.slice(start, end);
+  const implementation = section(valueWritersSource, 'async function incrementalWrite', 'function optionMatch');
 
   assert.match(implementation, /getAttribute\?\.\('pattern'\)/);
   assert.match(implementation, /!patternRequiresFormatting/);
@@ -1030,13 +1076,11 @@ test('Select2-backed selects remain scannable and placeholder choices are exclud
 });
 
 test('Select2 visible selection participates in write and page-level verification', () => {
-  const writeStart = agentSource.indexOf('async function writeAssignment');
-  const writeEnd = agentSource.indexOf('function maskValue', writeStart);
-  const revalidateStart = agentSource.indexOf('function revalidateAssignment');
-  const revalidateEnd = agentSource.indexOf('async function fill', revalidateStart);
+  const write = section(valueWritersSource, 'async function writeAssignment', 'function maskValue');
+  const revalidate = section(valueWritersSource, 'function revalidateAssignment', 'return { writeAssignment');
 
-  assert.match(agentSource.slice(writeStart, writeEnd), /select2SelectionMatches\(element\)/);
-  assert.match(agentSource.slice(revalidateStart, revalidateEnd), /select2SelectionMatches\(element\)/);
+  assert.match(write, /select2SelectionMatches\(element\)/);
+  assert.match(revalidate, /select2SelectionMatches\(element\)/);
 });
 
 test('ordinary aria-describedby help text does not block a verified fill', async () => {

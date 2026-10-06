@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const messaging = require('../sidepanel/extension-messaging.js');
 const policyRules = require('../sidepanel/application-policy.js');
@@ -76,10 +78,27 @@ test('a stale page agent is replaced in the bound document, engine and adapters 
 
   const injection = fake.calls.find((call) => call.api === 'scripting.executeScript');
   assert.deepEqual(injection.details.target, { tabId: 12, documentIds: ['doc-7'] });
-  assert.deepEqual(injection.details.files, ['shared/form-engine.js', 'shared/site-adapters.js', 'content/form-agent.js']);
+  assert.deepEqual(injection.details.files, [
+    'shared/form-engine.js',
+    'shared/site-adapters.js',
+    'content/page-dom.js',
+    'content/field-inventory.js',
+    'content/navigation-gate.js',
+    'content/value-writers.js',
+    'content/form-agent.js',
+  ]);
   const pings = fake.calls.filter((call) => call.message?.type === 'NAVA_PING');
   assert.equal(pings.length, 2);
   pings.forEach((ping) => assert.deepEqual(ping.options, { documentId: 'doc-7' }));
+});
+
+test('the dynamic injection list matches the manifest content scripts exactly, so a re-injected tab gets the whole agent', async () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'manifest.json'), 'utf8'));
+  const fake = fakeChrome({ pongs: [null, ready] });
+  await withChrome(fake, () => create().api.ensurePageAgent(tab));
+
+  const injection = fake.calls.find((call) => call.api === 'scripting.executeScript');
+  assert.deepEqual(injection.details.files, manifest.content_scripts[0].js);
 });
 
 test('a current page agent is reused, and an unreachable one is injected tab-wide', async () => {
