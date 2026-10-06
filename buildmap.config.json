@@ -41,11 +41,6 @@
       "owner": "BuildMap cleanup loop — review before merging"
     },
     {
-      "id": "hidden-coupling:background.js|shared/form-engine.js",
-      "reason": "This is historical co-change only: 4 of the 6 commits to form-engine.js were repo-wide feature commits that also touched the service worker (ecfd5d9 initial prototype, 0e331e0, c17e605, f98641e). This round's form-engine refactor, 6c849cf, changed it alone. background.js never imports, injects or duplicates form-engine logic; its imports are connector-engine, work-queue-engine, program-catalog and recertification-engine. The only shared literals are 'calfresh' and 'calworks'. In background.js they are demo program ids, which shared/program-catalog.js owns; in form-engine.js they are phrases for matching page labels. There is no hidden rule to extract, and history cannot be rewritten.",
-      "owner": "BuildMap cleanup loop — review before merging"
-    },
-    {
       "id": "hidden-coupling:background.js|connector-service/mock-server.mjs",
       "reason": "This proposal meets the condition set in 077f5f0. That commit kept the finding open only because both files hard-coded the CalFresh 339619 recertification case and their own isoDateOffset. Both copies are gone now. The service worker (background/connector-client.js) and the mock both build cases from shared/demo-connector-data.js (RECERTIFICATION_CASELOAD, recertificationCase), and a new test runs the mock and the service worker and checks they serve the same case. The finding now rests only on git history: 4 co-change commits, the last being this one, and history cannot be rewritten. A direct import would be wrong because one file runs in an MV3 service worker and the other is a Node dev server. The other link between them is the /v1/connectors/{id}/{resource} HTTP contract. That is a real client/server protocol, documented in connector-service/README.md, so nothing hidden is left to extract.",
       "owner": "BuildMap cleanup loop — review before merging"
