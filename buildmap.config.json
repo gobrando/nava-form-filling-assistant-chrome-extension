@@ -2,7 +2,7 @@
   "accept": [
     {
       "id": "unfinished:docs:README.md",
-      "reason": "All 8 flagged sentences are evidence-boundary disclosures about validation outside this repo, checked as accurate on 2026-10-06: (1) the BenefitsCal path-policy fix still needs an installed-extension rerun; evaluation/model-benchmark/runs.json ends with the 2026-09-25 navigation run and records no rerun. (2) This is not the deployed Eve/Vertex service and is not evidence of production accuracy. (3) The two-panel installed-Chrome lease validation has no recorded result. (4) A Plaid-like provider network needs provider partnerships. (5) OCR still needs pilot data. (6) The runner loop is still hosted in sidepanel/sidepanel.js (runQueuedApplication), so a durable service-worker or server job is still required. (7) By design, CAPTCHA, affirmation, certification and final submission always require a person. (8) A real organization still needs the Nava-controlled service, authentication and a security review. Softening any of these would overstate readiness to caseworkers and partners.",
+      "reason": "All 8 flagged sentences are evidence-boundary disclosures about validation outside this repo, checked as accurate on 2026-10-06: (1) the BenefitsCal path-policy fix still needs an installed-extension rerun; evaluation/model-benchmark/runs.json ends with the 2026-09-25 navigation run and records no rerun. (2) This is not the deployed Eve/Vertex service and is not evidence of production accuracy. (3) The two-panel installed-Chrome lease validation has no recorded result. (4) A Plaid-like provider network needs provider partnerships. (5) OCR still needs pilot data. (6) The runner loop is still hosted in the side panel (sidepanel/automatic-runs.js, runQueuedApplication with up to MAX_PARALLEL_APPLICATIONS workers, loaded at runtime only by sidepanel/index.html), so a durable service-worker or server job is still required. (7) By design, CAPTCHA, affirmation, certification and final submission always require a person. (8) A real organization still needs the Nava-controlled service, authentication and a security review. Softening any of these would overstate readiness to caseworkers and partners.",
       "owner": "BuildMap cleanup loop — review before merging"
     },
     {
@@ -12,7 +12,7 @@
     },
     {
       "id": "unfinished:docs:docs/PRODUCTION_READINESS.md",
-      "reason": "Required safety disclosure, checked as accurate against the repo. There is no production Apricot tenant. No real PII has been used; benchmarks use only fictional record 339619. No live BenefitsCal application has been completed end to end through review. The runner loop is hosted in sidepanel/sidepanel.js, so the side panel must stay open. The doc also states the build is not yet suitable for unattended use with real applicants. Removing any of this would misrepresent production readiness.",
+      "reason": "Required safety disclosure, checked as accurate against the repo. There is no production Apricot tenant. No real PII has been used; benchmarks use only fictional record 339619. No live BenefitsCal application has been completed end to end through review. The runner loop is hosted in the side panel (sidepanel/automatic-runs.js), so the side panel must stay open. The doc also states the build is not yet suitable for unattended use with real applicants. Removing any of this would misrepresent production readiness.",
       "owner": "BuildMap cleanup loop — review before merging"
     },
     {
@@ -22,7 +22,7 @@
     },
     {
       "id": "unfinished:docs:docs/IMPLEMENTATION_NOTES.md",
-      "reason": "Accurate constraints. Production OCR needs representative pilot data plus malware, accessibility and privacy/security review, which is organizational validation rather than code. The runner loop is still hosted in the side panel (sidepanel/sidepanel.js runQueuedApplication, up to MAX_PARALLEL_APPLICATIONS workers) until a durable service-worker or server job exists, which is a future product capability rather than cleanup.",
+      "reason": "Accurate constraints. Production OCR needs representative pilot data plus malware, accessibility and privacy/security review, which is organizational validation rather than code. The runner loop is still hosted in the side panel (sidepanel/automatic-runs.js runQueuedApplication, up to MAX_PARALLEL_APPLICATIONS workers) until a durable service-worker or server job exists, which is a future product capability rather than cleanup.",
       "owner": "BuildMap cleanup loop — review before merging"
     },
     {
@@ -37,12 +37,17 @@
     },
     {
       "id": "hidden-coupling:content/form-agent.js|shared/work-queue-engine.js",
-      "reason": "This is historical co-change from broad feature commits: 5 of the 7 commits to work-queue-engine.js also touched the content agent (f85d444, c17e605, 454c4de, 582cb47, cb2d25c). This round's work-queue refactor, c9c3a7a, changed it alone. The two files share no code and run in different contexts: content script versus service worker and side panel. Their only shared literals are 'final_review' and 'verified', and the side panel maps them explicitly (sidepanel/application-policy.js and the navigationGate handling in sidepanel.js) rather than either file depending on the other. There is no dependency to make explicit, and git history cannot be rewritten.",
+      "reason": "This is historical co-change from broad feature commits: 5 of the 7 commits to work-queue-engine.js also touched the content agent (f85d444, c17e605, 454c4de, 582cb47, cb2d25c). The other two, 4ffa058 (subscription runtimes) and the R1 work-queue refactor c9c3a7a, changed it without the content agent. The two files share no code and run in different contexts: content script versus service worker and side panel. The only status literals they overlap on are 'verified' (in form-agent.js) and 'final_review' (now emitted by content/navigation-gate.js, which the content agent loads), and the side panel maps them explicitly rather than either file depending on the other: sidepanel/application-policy.js maps 'final_review' (checkpointFromScan, stopCheckpoint), and sidepanel/application-runner.js maps 'verified' write results and resume outcomes and holds the navigationGate handling (with application-policy.js, scan-analysis.js, view-review.js and preview-runtime.js); sidepanel.js has no navigationGate code. There is no dependency to make explicit, and git history cannot be rewritten.",
       "owner": "BuildMap cleanup loop — review before merging"
     },
     {
       "id": "hidden-coupling:background.js|connector-service/mock-server.mjs",
       "reason": "This proposal meets the condition set in 077f5f0. That commit kept the finding open only because both files hard-coded the CalFresh 339619 recertification case and their own isoDateOffset. Both copies are gone now. The service worker (background/connector-client.js) and the mock both build cases from shared/demo-connector-data.js (RECERTIFICATION_CASELOAD, recertificationCase), and a new test runs the mock and the service worker and checks they serve the same case. The finding now rests only on git history: 4 co-change commits, the last being this one, and history cannot be rewritten. A direct import would be wrong because one file runs in an MV3 service worker and the other is a Node dev server. The other link between them is the /v1/connectors/{id}/{resource} HTTP contract. That is a real client/server protocol, documented in connector-service/README.md, so nothing hidden is left to extract.",
+      "owner": "BuildMap cleanup loop — review before merging"
+    },
+    {
+      "id": "hidden-coupling:content/form-agent.js|sidepanel/sidepanel.js",
+      "reason": "This finding comes only from git history: 9 co-changes, all before 1976044. I checked that base sidepanel.js held the panel's half of the page-agent protocol: NAVA_CANCEL at base line 389, in cancelApplicationRun. That message edge used to tie the two files together in code. That code moved, unchanged, into run-control.js. NAVA_SCAN, NAVA_FILL and NAVA_ADVANCE live in page-scan.js, application-runner.js and extension-messaging.js, and the atlas shows the side-panel→content message edges on those modules. The dependency is therefore explicit in code. History cannot be rewritten. Putting a protocol literal back into the composition root would game the metric. The re-examine condition is concrete: re-check if sidepanel.js and content/form-agent.js change together in any commit after 1976044.",
       "owner": "BuildMap cleanup loop — review before merging"
     }
   ]
