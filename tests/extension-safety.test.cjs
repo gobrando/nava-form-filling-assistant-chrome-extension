@@ -163,7 +163,8 @@ test('header home control and provider catalog are reachable', () => {
   assert.match(panel, /sameMappedSource/);
   assert.match(panel, /cancelPendingUiWork/);
   assert.match(panel, /async function cancelUiBoundRuns\(\)[\s\S]*await revokeApplicationRun\(application\)/);
-  assert.match(panel, /if \(action === 'home'\) \{\n\s*await cancelUiBoundRuns\(\)/);
+  assert.match(panel, /\['home', returnHome\]/);
+  assert.match(panel, /async function returnHome\(\) \{\n\s*await cancelUiBoundRuns\(\)/);
   assert.match(panel, /assertUiGeneration/);
   assert.match(html, /Simulated UI preview · no browser form or database is being used/);
   assert.match(panel, /value="current" \$\{currentAllowed \? '' : 'disabled'\}/);

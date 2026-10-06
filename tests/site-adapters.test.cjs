@@ -24,17 +24,17 @@ function demoRecord(recordId = '339619') {
   return structuredClone(demoConnectorData.CLIENT_RECORDS.find((record) => record.record_id === recordId));
 }
 
+/** The side panel's preview demo records, evaluated from sidepanel.js against the shared module. */
 function sidepanelDemoRecord(recordId = '339619') {
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'sidepanel', 'sidepanel.js'), 'utf8');
   const marker = 'const DEMO_RECORDS = ';
   const start = source.indexOf(marker);
-  const endMarker = '\n  };\n\n  const PREVIEW_CONNECTOR_SCHEMA';
+  const endMarker = '\n\n  const PREVIEW_CONNECTOR_SCHEMA';
   const end = source.indexOf(endMarker, start);
   assert.notEqual(start, -1, 'sidepanel demo records should be declared');
-  assert.notEqual(end, -1, 'sidepanel demo records should remain a pure object literal');
-  const literal = source.slice(start + marker.length, end + 4);
-  const context = {};
-  vm.runInNewContext(`records = ${literal}`, context);
+  assert.notEqual(end, -1, 'sidepanel demo records should be declared just before the preview connector fixture');
+  const context = { demoConnectorData, structuredClone };
+  vm.runInNewContext(`${source.slice(start, end)}\nrecords = DEMO_RECORDS;`, context);
   return structuredClone(context.records[recordId]);
 }
 
