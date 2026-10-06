@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { sidePanelSource, serviceWorkerSource, pageAgentSource } = require('./runtime-sources.cjs');
 
 const root = path.resolve(__dirname, '..');
 
@@ -13,7 +14,7 @@ test('manifest is valid MV3 and loads the side panel', () => {
 });
 
 test('page agent exposes no submit command and never invokes requestSubmit', () => {
-  const source = fs.readFileSync(path.join(root, 'content/form-agent.js'), 'utf8');
+  const source = pageAgentSource();
   assert.doesNotMatch(source, /requestSubmit\s*\(/);
   assert.doesNotMatch(source, /\.submit\s*\(/);
   assert.doesNotMatch(source, /NAVA_SUBMIT\b/);
@@ -28,8 +29,8 @@ test('page agent exposes no submit command and never invokes requestSubmit', () 
 });
 
 test('cross-page automation only exposes gated advance and stops on final actions', () => {
-  const agent = fs.readFileSync(path.join(root, 'content/form-agent.js'), 'utf8');
-  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
+  const agent = pageAgentSource();
+  const panel = sidePanelSource();
   assert.match(agent, /NAVA_ADVANCE/);
   assert.match(agent, /SAFE_ADVANCE_LABELS/);
   assert.match(agent, /FINAL_ACTION_PATTERN/);
@@ -79,15 +80,15 @@ test('public demo fixtures are passive and require the installed extension', () 
   assert.doesNotMatch(source, /record_id:\s*['"]339619/);
   assert.doesNotMatch(source, /URLSearchParams[\s\S]{0,120}autorun/);
 
-  const agent = fs.readFileSync(path.join(root, 'content/form-agent.js'), 'utf8');
+  const agent = pageAgentSource();
   assert.match(agent, /function trustedDemoFixture\(\)/);
   assert.match(agent, /http:\/\/127\.0\.0\.1:4173/);
   assert.doesNotMatch(agent, /NavaPageAgentTestApi/);
 });
 
 test('multi-application runs are tab-bound, automatic, and origin-checked', () => {
-  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
-  const agent = fs.readFileSync(path.join(root, 'content/form-agent.js'), 'utf8');
+  const panel = sidePanelSource();
+  const agent = pageAgentSource();
   assert.match(panel, /enqueueApplicationBatch\(applicationsToRun\.map/);
   assert.match(panel, /MAX_PARALLEL_APPLICATIONS = 3/);
   assert.match(panel, /assertApprovedApplicationLocation\(application, tab\.url\)/);
@@ -123,7 +124,7 @@ test('multi-application runs are tab-bound, automatic, and origin-checked', () =
 
 test('header home control and provider catalog are reachable', () => {
   const html = fs.readFileSync(path.join(root, 'sidepanel/index.html'), 'utf8');
-  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
+  const panel = sidePanelSource();
   assert.match(html, /data-action="home"/);
   assert.match(panel, /document\.addEventListener\('click'/);
   assert.match(panel, /renderProviderCatalog/);
@@ -150,7 +151,7 @@ test('extension contains no remote scripts or inline executable script', () => {
 test('document intake uses only bundled parsers and never persists the raw file', () => {
   const html = fs.readFileSync(path.join(root, 'sidepanel/index.html'), 'utf8');
   const parser = fs.readFileSync(path.join(root, 'sidepanel/document-parser.js'), 'utf8');
-  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
+  const panel = sidePanelSource();
 
   assert.match(html, /vendor\/fflate\.min\.js/);
   assert.match(parser, /vendor\/pdf\.min\.mjs/);
@@ -165,7 +166,7 @@ test('OCR uses only bundled assets, enforces resource limits, and requires field
   const html = fs.readFileSync(path.join(root, 'sidepanel/index.html'), 'utf8');
   const ocr = fs.readFileSync(path.join(root, 'sidepanel/ocr-engine.js'), 'utf8');
   const parser = fs.readFileSync(path.join(root, 'sidepanel/document-parser.js'), 'utf8');
-  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
+  const panel = sidePanelSource();
 
   assert.match(html, /ocr-engine\.js/);
   assert.match(ocr, /vendor\/tesseract\/tesseract\.esm\.min\.js/);
@@ -193,8 +194,8 @@ test('OCR uses only bundled assets, enforces resource limits, and requires field
 
 test('resumable work queue persists only sanitized metadata and verifies before resume', () => {
   const html = fs.readFileSync(path.join(root, 'sidepanel/index.html'), 'utf8');
-  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
-  const background = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
+  const panel = sidePanelSource();
+  const background = serviceWorkerSource();
   const persistSource = panel.slice(panel.indexOf('async function persist'), panel.indexOf('async function clearAssistantState'));
   const acquireSource = panel.slice(panel.indexOf('async function acquireApplicationLease'), panel.indexOf('async function releaseApplicationLease'));
   const releaseSource = panel.slice(panel.indexOf('async function releaseApplicationLease'), panel.indexOf('async function withApplicationLease'));
@@ -279,9 +280,9 @@ test('resumable work queue persists only sanitized metadata and verifies before 
 });
 
 test('managed connector is read-only and stores only validated configuration', () => {
-  const background = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
+  const background = serviceWorkerSource();
   const mock = fs.readFileSync(path.join(root, 'connector-service/mock-server.mjs'), 'utf8');
-  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
+  const panel = sidePanelSource();
 
   assert.match(background, /connectorEngine\.validateMappings\(message\.config, schema\)/);
   assert.match(background, /chrome\.storage\.local\.set/);
