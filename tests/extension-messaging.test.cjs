@@ -79,6 +79,9 @@ test('a stale page agent is replaced in the bound document, engine and adapters 
   const injection = fake.calls.find((call) => call.api === 'scripting.executeScript');
   assert.deepEqual(injection.details.target, { tabId: 12, documentIds: ['doc-7'] });
   assert.deepEqual(injection.details.files, [
+    'shared/form-purposes.js',
+    'shared/participant-record.js',
+    'shared/field-values.js',
     'shared/form-engine.js',
     'shared/site-adapters.js',
     'content/page-dom.js',
