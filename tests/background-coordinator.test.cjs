@@ -10,6 +10,22 @@ const workQueueEngine = require('../shared/work-queue-engine.js');
 const programCatalog = require('../shared/program-catalog.js');
 const recertificationEngine = require('../shared/recertification-engine.js');
 
+// Shared engines the harness hands to the service worker as required globals.
+const ENGINE_IMPORTS = [
+  'shared/connector-engine.js',
+  'shared/work-queue-engine.js',
+  'shared/program-catalog.js',
+  'shared/recertification-engine.js',
+];
+// The rest of background.js's imports, run in the harness context in background.js import order.
+const SERVICE_WORKER_SCRIPTS = [
+  'shared/demo-connector-data.js',
+  'background/coordinator-rules.js',
+  'background/client-session.js',
+  'background/application-runs.js',
+  'background/connector-client.js',
+];
+
 function clone(value) {
   return value === undefined ? undefined : structuredClone(value);
 }
@@ -75,9 +91,13 @@ function backgroundHarness() {
     NavaRecertificationEngine: recertificationEngine,
   };
   context.globalThis = context;
+  vm.createContext(context);
+  SERVICE_WORKER_SCRIPTS.forEach((script) => {
+    vm.runInContext(fs.readFileSync(path.join(root, script), 'utf8'), context, { filename: script });
+  });
   const source = fs.readFileSync(path.join(root, 'background.js'), 'utf8')
     .replace(/^import .*;\s*$/gm, '');
-  vm.runInNewContext(source, context, { filename: 'background.js' });
+  vm.runInContext(source, context, { filename: 'background.js' });
 
   return {
     local,
@@ -193,6 +213,21 @@ function leaseMessage(type, state, app, holder) {
     leaseMs: 60_000,
   };
 }
+
+test('the harness runs every service-worker import, in background.js import order', () => {
+  const source = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
+  const imports = [...source.matchAll(/^import\b.*$/gm)]
+    .map(([line]) => line.match(/^import '\.\/([^']+)';$/)?.[1] ?? line);
+  assert.deepEqual(imports, [...ENGINE_IMPORTS, ...SERVICE_WORKER_SCRIPTS]);
+});
+
+test('service-worker modules reach the coordinator only through injected dependencies', () => {
+  SERVICE_WORKER_SCRIPTS.filter((script) => script.startsWith('background/')).forEach((script) => {
+    const source = fs.readFileSync(path.join(root, script), 'utf8');
+    assert.doesNotMatch(source, /globalThis\.Nava/, `${script} must not read another module's global`);
+    assert.doesNotMatch(source, /coordinatorChain/, `${script} must not keep its own coordinator chain`);
+  });
+});
 
 test('a client-session claim is exclusive and persist can never replace its participant', async () => {
   const harness = backgroundHarness();
