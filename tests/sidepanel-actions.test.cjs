@@ -1,24 +1,21 @@
-// Side-panel click/submit dispatch and coordinator-merge helpers, evaluated from the panel source with recording stubs.
+// Side-panel click/submit dispatch and coordinator-merge helpers, loaded from the real action, dispatch and merge modules with recording stubs.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { sidePanelSource } = require('./runtime-sources.cjs');
 const workQueueEngine = require('../shared/work-queue-engine.js');
+const coordinatorMerge = require('../sidepanel/coordinator-merge.js');
 
-const panel = sidePanelSource();
-
-function section(start, end) {
-  const startIndex = panel.indexOf(start);
-  const endIndex = panel.indexOf(end, startIndex + start.length);
-  assert.notEqual(startIndex, -1, `missing section start: ${start}`);
-  assert.notEqual(endIndex, -1, `missing section end: ${end}`);
-  return panel.slice(startIndex, endIndex);
-}
-
-const dispatchSource = section('async function onClick', "document.addEventListener('click'");
-const coordinatorHelpersSource = section('function controlDiffersFromCoordinator', 'function adoptCoordinatorChanges');
+// The action tables in dispatcher order, then the dispatcher, as sidepanel/index.html loads them.
+const DISPATCH_SCRIPTS = [
+  'sidepanel/actions-agent.js',
+  'sidepanel/actions-recertification.js',
+  'sidepanel/actions-intake.js',
+  'sidepanel/actions-connector.js',
+  'sidepanel/actions-applications.js',
+  'sidepanel/ui-dispatch.js',
+].map((file) => ({ file, source: fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8') }));
 
 // Every data-action and form id the panel handled before the handler tables existed.
 const CLICK_ACTION_NAMES = [
@@ -55,7 +52,7 @@ class FakeFormData {
   }
 }
 
-/** Evaluates the dispatch section over recording stubs; `calls` lists every stubbed side effect in order. */
+/** Loads the action modules and the dispatcher into one context over recording stubs; `calls` lists every stubbed side effect in order. */
 function dispatchHarness(overrides = {}) {
   const calls = [];
   const note = (name, result) => (...args) => {
@@ -88,7 +85,7 @@ function dispatchHarness(overrides = {}) {
       ...overrides.state,
     },
     previewMode: true,
-    uiGeneration: 0,
+    currentUiGeneration: () => 0,
     DEMO_RECORDS: { 339619: { record_id: '339619', participant: { name: { first: 'Celeste' } } } },
     document: { getElementById: (id) => elements[id] || null },
     Event: class {
@@ -128,13 +125,46 @@ function dispatchHarness(overrides = {}) {
     },
     ...overrides.stubs,
   };
-  vm.runInNewContext(`${dispatchSource}
-result = {
-  onClick, onSubmit, answersFromQuestionsForm, CLICK_ACTIONS, SUBMIT_ACTIONS,
-  groupedClickActions: [AGENT_CLICK_ACTIONS, RECERTIFICATION_CLICK_ACTIONS, INTAKE_CLICK_ACTIONS, CONNECTOR_CLICK_ACTIONS, APPLICATION_CLICK_ACTIONS],
-  groupedSubmitActions: [AGENT_SUBMIT_ACTIONS, RECERTIFICATION_SUBMIT_ACTIONS, INTAKE_SUBMIT_ACTIONS, CONNECTOR_SUBMIT_ACTIONS, APPLICATION_SUBMIT_ACTIONS],
-};`, context);
-  return { ...context.result, state: context.state, calls, elements };
+  vm.createContext(context);
+  DISPATCH_SCRIPTS.forEach(({ file, source }) => vm.runInContext(source, context, { filename: file }));
+  const deps = { ...context, ...context.NavaUiDispatch.handlerContract(context.state) };
+  const agentActions = context.NavaAgentActions.create(deps);
+  const recertificationActions = context.NavaRecertificationActions.create(deps);
+  const intakeActions = context.NavaIntakeActions.create(deps);
+  const connectorActions = context.NavaConnectorActions.create(deps);
+  const applicationActions = context.NavaApplicationActions.create(deps);
+  const { onClick, onSubmit, CLICK_ACTIONS, SUBMIT_ACTIONS } = context.NavaUiDispatch.create({
+    ...deps,
+    agentActions,
+    recertificationActions,
+    intakeActions,
+    connectorActions,
+    applicationActions,
+  });
+  return {
+    onClick,
+    onSubmit,
+    answersFromQuestionsForm: applicationActions.answersFromQuestionsForm,
+    CLICK_ACTIONS,
+    SUBMIT_ACTIONS,
+    groupedClickActions: [
+      agentActions.AGENT_CLICK_ACTIONS,
+      recertificationActions.RECERTIFICATION_CLICK_ACTIONS,
+      intakeActions.INTAKE_CLICK_ACTIONS,
+      connectorActions.CONNECTOR_CLICK_ACTIONS,
+      applicationActions.APPLICATION_CLICK_ACTIONS,
+    ],
+    groupedSubmitActions: [
+      agentActions.AGENT_SUBMIT_ACTIONS,
+      recertificationActions.RECERTIFICATION_SUBMIT_ACTIONS,
+      intakeActions.INTAKE_SUBMIT_ACTIONS,
+      connectorActions.CONNECTOR_SUBMIT_ACTIONS,
+      applicationActions.APPLICATION_SUBMIT_ACTIONS,
+    ],
+    state: context.state,
+    calls,
+    elements,
+  };
 }
 
 function click(harness, action, data = {}, uiToken = 7) {
@@ -391,10 +421,7 @@ test('questions-form submission runs automatically from the dashboard or fills i
 });
 
 function coordinatorHelpers() {
-  const context = { workQueueEngine };
-  vm.runInNewContext(`${coordinatorHelpersSource}
-result = { controlDiffersFromCoordinator, mergeApplicationsWithCoordinator, mergeAuditWithCoordinator, currentApplicationAfterSync };`, context);
-  return context.result;
+  return coordinatorMerge.create({ workQueueEngine });
 }
 
 test('coordinator merge keeps unchanged local copies, takes changed ones, and appends locally unpersisted applications', () => {

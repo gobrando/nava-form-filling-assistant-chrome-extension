@@ -18,9 +18,27 @@ The runtime combines a selectable LLM planner with a deterministic execution and
 
 ```text
 sidepanel/
-  sidepanel.js        workflow, document review, questions, dashboard, provenance review
-  document-parser.js  local image/PDF/DOCX/text/delimited/JSON extraction and review policy
-  ocr-engine.js       bounded local OCR, rotation correction, confidence + region evidence
+  sidepanel.js                 composition root: engines, panel state, module wiring, render, start-up
+  run-control.js               run tokens, session and UI generations, stop errors, cancellation
+  coordinator-sync.js          keeps this window in step with the service-worker coordinator
+  coordinator-merge.js         which local applications and audit events survive a coordinator sync
+  coordinator-writes.js        session claims, checkpoint persistence, revokes, write leases, audit export
+  agent-runtime.js             planner provider or shared gateway, start-up progress, client links
+  automatic-runs.js            opens program tabs; bounded worker pool for tab-bound automatic runs
+  recertification-caseload.js  renewal caseload, session-only follow-up answers, case preparation
+  page-scan.js                 route approval → NAVA_SCAN → agentic plan → stored application
+  scan-analysis.js             scan participant, plan merge, scanned-application record
+  application-runner.js        fill → verify → rescan → advance across approved pages; never submits
+  application-policy.js        approved origins and paths, document binding, human checkpoints
+  extension-messaging.js       state recovery, page-agent injection, route-checked tab commands
+  actions-*.js                 click/submit/change handlers: agent, recertification, intake, connector, applications
+  ui-dispatch.js               own-property handler tables and the click, submit and change listeners
+  view-*.js                    screens: intake, connector, recertification, application dashboard, review
+  panel-format.js              escaping, masked values, provenance merges, labels, model-usage totals
+  preview-runtime.js           simulated service worker and page agent for the extension-free preview
+  document-parser.js           local image/PDF/DOCX/text/delimited/JSON extraction and review policy
+  document-readers.js          on-device readers: text, CSV/TSV rows, OCR pages, JSON records
+  ocr-engine.js                bounded local OCR, rotation correction, confidence + region evidence
         │
         ├── vendor/                    bundled PDF.js, fflate, Tesseract.js, WASM + English data
         ├── chrome.storage.session     participant values + live application details
