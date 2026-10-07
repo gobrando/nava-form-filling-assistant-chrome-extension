@@ -8,6 +8,23 @@ const root = path.resolve(__dirname, '..');
 const connectorEngine = require('../shared/connector-engine.js');
 const workQueueEngine = require('../shared/work-queue-engine.js');
 const programCatalog = require('../shared/program-catalog.js');
+const recertificationEngine = require('../shared/recertification-engine.js');
+
+// Shared engines the harness hands to the service worker as required globals.
+const ENGINE_IMPORTS = [
+  'shared/connector-engine.js',
+  'shared/work-queue-engine.js',
+  'shared/program-catalog.js',
+  'shared/recertification-engine.js',
+];
+// The rest of background.js's imports, run in the harness context in background.js import order.
+const SERVICE_WORKER_SCRIPTS = [
+  'shared/demo-connector-data.js',
+  'background/coordinator-rules.js',
+  'background/client-session.js',
+  'background/application-runs.js',
+  'background/connector-client.js',
+];
 
 function clone(value) {
   return value === undefined ? undefined : structuredClone(value);
@@ -71,11 +88,16 @@ function backgroundHarness() {
     NavaConnectorEngine: connectorEngine,
     NavaWorkQueueEngine: workQueueEngine,
     NavaProgramCatalog: programCatalog,
+    NavaRecertificationEngine: recertificationEngine,
   };
   context.globalThis = context;
+  vm.createContext(context);
+  SERVICE_WORKER_SCRIPTS.forEach((script) => {
+    vm.runInContext(fs.readFileSync(path.join(root, script), 'utf8'), context, { filename: script });
+  });
   const source = fs.readFileSync(path.join(root, 'background.js'), 'utf8')
     .replace(/^import .*;\s*$/gm, '');
-  vm.runInNewContext(source, context, { filename: 'background.js' });
+  vm.runInContext(source, context, { filename: 'background.js' });
 
   return {
     local,
@@ -104,7 +126,24 @@ function backgroundHarness() {
         }
       });
     },
+    // Calls the listener exactly as Chrome does and records what it returned and every response it sent.
+    dispatch(message) {
+      const responses = [];
+      const returned = messageListener(message, {}, (response) => responses.push(clone(response)));
+      return { returned, responses };
+    },
   };
+}
+
+async function settle(turns = 20) {
+  for (let turn = 0; turn < turns; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+async function waitForResponses(responses, count = 1) {
+  for (let turn = 0; turn < 500 && responses.length < count; turn += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  return responses;
 }
 
 function deferred() {
@@ -174,6 +213,21 @@ function leaseMessage(type, state, app, holder) {
     leaseMs: 60_000,
   };
 }
+
+test('the harness runs every service-worker import, in background.js import order', () => {
+  const source = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
+  const imports = [...source.matchAll(/^import\b.*$/gm)]
+    .map(([line]) => line.match(/^import '\.\/([^']+)';$/)?.[1] ?? line);
+  assert.deepEqual(imports, [...ENGINE_IMPORTS, ...SERVICE_WORKER_SCRIPTS]);
+});
+
+test('service-worker modules reach the coordinator only through injected dependencies', () => {
+  SERVICE_WORKER_SCRIPTS.filter((script) => script.startsWith('background/')).forEach((script) => {
+    const source = fs.readFileSync(path.join(root, script), 'utf8');
+    assert.doesNotMatch(source, /globalThis\.Nava/, `${script} must not read another module's global`);
+    assert.doesNotMatch(source, /coordinatorChain/, `${script} must not keep its own coordinator chain`);
+  });
+});
 
 test('a client-session claim is exclusive and persist can never replace its participant', async () => {
   const harness = backgroundHarness();
@@ -527,3 +581,268 @@ test('disconnecting a connector atomically expires connector-derived client data
   assert.equal(restored.session.apps[0].autoRun, false);
   assert.equal(restored.queue.applications[0].status, 'source_expired');
 });
+
+const LEASE_KEY = 'nava:application-leases';
+
+function executeMessage(state, app, overrides = {}) {
+  return {
+    type: 'EXECUTE_APPLICATION_COMMAND',
+    sessionEpoch: state.sessionEpoch,
+    participantSessionId: state.participantSessionId,
+    applicationId: app.id,
+    applicationGeneration: state.applicationGenerations[app.id],
+    applicationRevision: state.applicationRevisions[app.id],
+    holder: 'window-a',
+    tabId: app.tabId,
+    documentId: 'document-1',
+    command: {
+      type: 'NAVA_FILL',
+      assignments: [],
+      routePolicy: { origins: ['https://benefitscal.com'], exactPaths: ['/ApplyForBenefits/ABNMI'] },
+    },
+    ...overrides,
+  };
+}
+
+async function savedApplication(harness) {
+  const initial = await harness.send({ type: 'GET_ASSISTANT_STATE' });
+  const claimed = await claim(harness, initial);
+  const app = application();
+  const saved = await persist(harness, claimed, app);
+  return { app, saved };
+}
+
+test('unknown message types, including the removed GET_PROGRAMS, are never answered', async () => {
+  const harness = backgroundHarness();
+  const unknown = [undefined, null, {}, { type: 'GET_PROGRAMS' }, { type: 'NAVA_FILL' }, { type: 'get_assistant_state' }];
+  for (const message of unknown) {
+    const { returned, responses } = harness.dispatch(message);
+    assert.equal(returned, false, `${JSON.stringify(message)} must not hold the response channel open`);
+    await settle();
+    assert.deepEqual(responses, [], `${JSON.stringify(message)} must not be answered`);
+  }
+});
+
+test('every routed message type answers exactly once and holds the channel open for its async response', async () => {
+  const harness = backgroundHarness();
+  const routedTypes = [
+    'GET_ASSISTANT_STATE',
+    'CLAIM_CLIENT_SESSION',
+    'UPDATE_SESSION_PARTICIPANT',
+    'PERSIST_ASSISTANT_STATE',
+    'CLEAR_ASSISTANT_STATE',
+    'REVOKE_APPLICATION_RUN',
+    'EXECUTE_APPLICATION_COMMAND',
+    'ACQUIRE_APPLICATION_LEASE',
+    'RELEASE_APPLICATION_LEASE',
+    'GET_CONNECTOR_STATUS',
+    'DISCOVER_CONNECTOR',
+    'SAVE_CONNECTOR',
+    'RESET_CONNECTOR',
+    'LIST_RECERTIFICATIONS',
+    'OPEN_PROGRAMS',
+  ];
+  for (const type of routedTypes) {
+    const { returned, responses } = harness.dispatch({ type });
+    assert.equal(returned, true, `${type} should hold the response channel open`);
+    await waitForResponses(responses);
+    await settle();
+    assert.equal(responses.length, 1, `${type} should answer exactly once`);
+    assert.equal(typeof responses[0].ok, 'boolean', `${type} should answer with an ok flag`);
+  }
+});
+
+test('record lookups reject a malformed ID synchronously and otherwise answer from the demo connector', async () => {
+  const harness = backgroundHarness();
+  const invalid = harness.dispatch({ type: 'LOOKUP_RECORD', recordId: '../339619' });
+  assert.equal(invalid.returned, false);
+  assert.deepEqual(invalid.responses, [{ ok: false, record: null, message: 'Enter a valid client record ID.' }]);
+
+  const found = harness.dispatch({ type: 'LOOKUP_RECORD', recordId: ' 339619 ' });
+  assert.equal(found.returned, true);
+  const [record] = await waitForResponses(found.responses);
+  assert.equal(record.ok, true);
+  assert.equal(record.record.record_id, '339619');
+  assert.equal(record.provider, 'bundled-demo-records');
+  assert.equal(record.message, 'Fictional demo record loaded.');
+
+  const missing = await harness.send({ type: 'LOOKUP_RECORD', recordId: 'no-such-record' });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.record, null);
+  assert.match(missing.message, /No fictional record matched/);
+});
+
+test('connector status, recertifications, and program tabs fall back to bundled demo data', async () => {
+  const harness = backgroundHarness();
+  const status = await harness.send({ type: 'GET_CONNECTOR_STATUS' });
+  assert.equal(status.ok, true);
+  assert.equal(status.connector.mode, 'demo');
+
+  const caseload = await harness.send({ type: 'LIST_RECERTIFICATIONS' });
+  assert.equal(caseload.ok, true);
+  assert.equal(caseload.source, 'fictional-demo');
+  assert.equal(caseload.cases.length, 3);
+
+  const opened = await harness.send({ type: 'OPEN_PROGRAMS', programs: ['calfresh', 'wic'] });
+  assert.equal(opened.ok, true);
+  assert.ok(opened.opened.length >= 1);
+  assert.ok(opened.opened.every((workflow) => workflow.tabId === 100));
+
+  const discovered = await harness.send({ type: 'DISCOVER_CONNECTOR', config: {} });
+  assert.equal(discovered.ok, false);
+  assert.equal(typeof discovered.error, 'string');
+});
+
+test('persisting an unchanged snapshot writes nothing and keeps every revision', async () => {
+  const harness = backgroundHarness();
+  const { app, saved } = await savedApplication(harness);
+
+  const unchanged = await persist(harness, saved, app);
+  assert.equal(unchanged.ok, true);
+  assert.equal(unchanged.persisted, false);
+  assert.deepEqual(Array.from(unchanged.changedApplicationIds), []);
+  assert.equal(unchanged.stateRevision, saved.stateRevision);
+  assert.equal(unchanged.applicationRevisions[app.id], saved.applicationRevisions[app.id]);
+});
+
+test('a current-application change alone advances the state revision but no application revision', async () => {
+  const harness = backgroundHarness();
+  const { app, saved } = await savedApplication(harness);
+
+  const switched = await harness.send({
+    type: 'PERSIST_ASSISTANT_STATE',
+    sessionEpoch: saved.sessionEpoch,
+    participantSessionId: saved.participantSessionId,
+    stateRevision: saved.stateRevision,
+    session: { apps: [], currentAppId: null },
+    queue: { applications: [], audit: [] },
+  });
+  assert.equal(switched.ok, true);
+  assert.equal(switched.persisted, true);
+  assert.equal(switched.participantIgnored, false);
+  assert.equal(switched.stateRevision, saved.stateRevision + 1);
+  assert.equal(switched.applicationRevisions[app.id], saved.applicationRevisions[app.id]);
+
+  const restored = await harness.send({ type: 'GET_ASSISTANT_STATE' });
+  assert.equal(restored.session.currentAppId, null);
+  assert.equal(restored.session.apps.length, 1);
+  assert.equal(restored.queue.applications.length, 1);
+});
+
+test('persist drops an expired foreign lease while saving a changed application', async () => {
+  const harness = backgroundHarness();
+  const { app, saved } = await savedApplication(harness);
+  harness.local.data[LEASE_KEY] = {
+    [app.id]: { holder: 'window-b', acquiredAt: '2000-01-01T00:00:00.000Z', expiresAt: '2000-01-01T00:01:00.000Z' },
+  };
+
+  const changed = { ...app, status: 'needs_attention', updatedAt: '2026-09-17T12:01:00.000Z' };
+  const written = await persist(harness, saved, changed, { holder: 'window-a' });
+  assert.equal(written.ok, true);
+  assert.equal(written.persisted, true);
+  assert.deepEqual(Array.from(written.changedApplicationIds), [app.id]);
+  assert.equal(harness.local.data[LEASE_KEY][app.id], undefined);
+});
+
+test('a claim after a connector reset re-binds stored applications as source-expired with fresh counters', async () => {
+  const harness = backgroundHarness();
+  const initial = await harness.send({ type: 'GET_ASSISTANT_STATE' });
+  const connectorClient = { firstName: 'Fictional', _connector: { provider: 'apricot360' } };
+  const claimed = await claim(harness, initial, connectorClient, 'participant:first');
+  const app = application();
+  const saved = await persist(harness, claimed, app);
+  await harness.send(leaseMessage('ACQUIRE_APPLICATION_LEASE', saved, app, 'window-a'));
+  const reset = await harness.send({ type: 'RESET_CONNECTOR', sessionEpoch: saved.sessionEpoch });
+  assert.equal(reset.ok, true);
+
+  const reclaimed = await claim(harness, reset, { firstName: 'Fictional' }, 'participant:second');
+  assert.equal(reclaimed.ok, true);
+  assert.equal(reclaimed.claimed, true);
+  assert.equal(reclaimed.idempotent, false);
+  assert.equal(reclaimed.participantSessionId, 'participant:second');
+  assert.equal(reclaimed.sessionEpoch, reset.sessionEpoch + 1);
+  assert.equal(reclaimed.stateRevision, reset.stateRevision + 1);
+  assert.equal(reclaimed.applicationGenerations[app.id], 0);
+  assert.equal(reclaimed.applicationRevisions[app.id], 0);
+  assert.equal(harness.local.data[LEASE_KEY], undefined);
+
+  const restored = await harness.send({ type: 'GET_ASSISTANT_STATE' });
+  assert.deepEqual(restored.session.participant, { firstName: 'Fictional' });
+  assert.equal(restored.session.currentAppId, null);
+  assert.equal(restored.session.apps[0].status, 'source_expired');
+  assert.equal(restored.session.apps[0].autoRun, false);
+  assert.equal(restored.session.apps[0].checkpoint.label, 'Verify reloaded client data before resuming');
+  assert.equal(restored.queue.applications[0].status, 'source_expired');
+});
+
+test('application commands are rejected before dispatch when the input, target, or lease is wrong', async () => {
+  const harness = backgroundHarness();
+  const { app, saved } = await savedApplication(harness);
+  const fillCount = () => harness.tabMessages.filter((entry) => entry.message.type === 'NAVA_FILL').length;
+
+  const wrongTab = await harness.send(executeMessage(saved, app, { tabId: 7 }));
+  assert.equal(wrongTab.ok, false);
+  assert.equal(wrongTab.stale, true);
+  assert.equal(wrongTab.dispatched, false);
+  assert.equal(wrongTab.code, 'APPLICATION_TAB_MISMATCH');
+
+  const invalidInputs = [
+    [{ tabId: -1 }, 'A valid application tab is required.'],
+    [{ documentId: '' }, 'A bound application document is required.'],
+    [{ command: { type: 'NAVA_SUBMIT', routePolicy: {} } }, 'Unsupported application command.'],
+    [{ command: { type: 'NAVA_FILL', assignments: [] } }, 'The application command is missing its bound route policy.'],
+  ];
+  for (const [overrides, error] of invalidInputs) {
+    const rejected = await harness.send(executeMessage(saved, app, overrides));
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.stale, false);
+    assert.equal(rejected.dispatched, false);
+    assert.equal(rejected.code, 'COORDINATOR_ERROR');
+    assert.equal(rejected.error, error);
+  }
+
+  const withoutLease = await harness.send(executeMessage(saved, app));
+  assert.equal(withoutLease.ok, false);
+  assert.equal(withoutLease.dispatched, false);
+  assert.equal(withoutLease.code, 'LEASE_LOST');
+  assert.equal(fillCount(), 0);
+});
+
+test('a completed write command keeps the tab result, re-authorizes, and hands the lease back to the window', async () => {
+  const harness = backgroundHarness();
+  const { app, saved } = await savedApplication(harness);
+  await harness.send(leaseMessage('ACQUIRE_APPLICATION_LEASE', saved, app, 'window-a'));
+  harness.onTabMessage(async () => ({ ok: true, verifiedCount: 3 }));
+
+  const done = await harness.send(executeMessage(saved, app));
+  assert.equal(done.ok, true);
+  assert.equal(done.verifiedCount, 3);
+  assert.equal(done.dispatched, true);
+  assert.equal(done.sessionEpoch, saved.sessionEpoch);
+  assert.equal(done.applicationRevisions[app.id], saved.applicationRevisions[app.id]);
+  const fill = harness.tabMessages.find((entry) => entry.message.type === 'NAVA_FILL');
+  assert.equal(fill.tabId, app.tabId);
+  assert.deepEqual(fill.options, { documentId: 'document-1' });
+  const remaining = Date.parse(harness.local.data[LEASE_KEY][app.id].expiresAt) - Date.now();
+  assert.ok(remaining > 60_000 && remaining <= 2 * 60 * 1000, 'the 10-minute command lease returns to the 2-minute active lease');
+});
+
+test('a rejected tab dispatch shortens the command lease and reports TAB_COMMAND_FAILED', async () => {
+  const harness = backgroundHarness();
+  const { app, saved } = await savedApplication(harness);
+  await harness.send(leaseMessage('ACQUIRE_APPLICATION_LEASE', saved, app, 'window-a'));
+  harness.onTabMessage(async () => { throw new Error('Receiving end does not exist.'); });
+
+  const failed = await harness.send(executeMessage(saved, app));
+  assert.equal(failed.ok, false);
+  assert.equal(failed.dispatched, true);
+  assert.equal(failed.stale, false);
+  assert.equal(failed.code, 'TAB_COMMAND_FAILED');
+  assert.equal(failed.error, 'Receiving end does not exist.');
+  assert.equal(failed.sessionEpoch, saved.sessionEpoch);
+  const lease = harness.local.data[LEASE_KEY][app.id];
+  assert.equal(lease.holder, 'window-a');
+  const remaining = Date.parse(lease.expiresAt) - Date.now();
+  assert.ok(remaining > 60_000 && remaining <= 2 * 60 * 1000, 'the failed command lease is shortened, not left at 10 minutes');
+});
+

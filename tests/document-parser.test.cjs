@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 require('../shared/form-engine.js');
+require('../sidepanel/document-readers.js');
 const ocr = require('../sidepanel/ocr-engine.js');
 const parser = require('../sidepanel/document-parser.js');
 
@@ -192,4 +193,60 @@ test('does not let OCR overwrite a higher-confidence embedded value', () => {
   const ocrField = { ...embedded[0], value: 'Marta', confidence: 'medium', ocrConfidence: 99 };
   const merged = byKey(parser.mergeFields(embedded, [ocrField]));
   assert.equal(merged.firstName.value, 'Maria');
+});
+
+/** A File-shaped fake for parseDocument. */
+function fakeFile(name, type, content) {
+  return { name, type, size: content.length, text: async () => content, arrayBuffer: async () => new TextEncoder().encode(content).buffer };
+}
+
+test('parseDocument reads a CSV on this device and reports its method and missing-field warning', async () => {
+  const csv = await parser.parseDocument(fakeFile('client.csv', 'text/csv', 'First Name,Email\nMaria,maria@example.org'));
+  assert.deepEqual(csv.file, { name: 'client.csv', type: 'text/csv', size: 40 });
+  assert.deepEqual(csv.fields.map((field) => field.key), ['firstName', 'email']);
+  assert.deepEqual(csv.quality, { method: 'delimited-text', ocr: null });
+  assert.deepEqual(csv.warnings, []);
+  assert.equal(csv.textLength, 'First Name: Maria\nEmail: maria@example.org'.length);
+
+  const empty = await parser.parseDocument(fakeFile('notes.txt', '', 'Nothing labeled here'));
+  assert.equal(empty.file.type, 'txt');
+  assert.deepEqual(empty.warnings, ['No clearly labeled demographic, identity, contact, address, or business fields were found.']);
+
+  await assert.rejects(parser.parseDocument(null), /Choose a document first\./);
+  await assert.rejects(parser.parseDocument({ ...fakeFile('big.txt', 'text/plain', ''), size: 16 * 1024 * 1024 }), /smaller than 15 MB/);
+  await assert.rejects(parser.parseDocument(fakeFile('photo.heic', 'image/heic', '')), /HEIC, password-protected files, and legacy Word files are not supported/);
+});
+
+test('parseDocument keeps OCR values unchecked for review and explains what OCR withheld', async () => {
+  const previous = globalThis.NavaOcrEngine;
+  globalThis.NavaOcrEngine = {
+    imageFileSource: () => ({}),
+    recognizeSources: async () => ({
+      pages: [{
+        pageNumber: 1,
+        text: 'First Name: Maria\nSSN: 123-45-6789',
+        confidence: 93,
+        width: 800,
+        height: 600,
+        lines: [
+          { text: 'First Name: Maria', confidence: 96, bbox: null },
+          { text: 'SSN: 123-45-6789', confidence: 80, bbox: null },
+        ],
+      }],
+      warnings: [],
+      metrics: { pages: 1 },
+    }),
+  };
+  try {
+    const scan = await parser.parseDocument(fakeFile('scan.png', 'image/png', 'img'));
+    assert.deepEqual(scan.fields.map((field) => [field.key, field.reviewRequired, field.confidence]), [['firstName', true, 'medium']]);
+    assert.deepEqual(scan.quality, { method: 'ocr', ocr: { pages: 1, fieldsWithheld: 1 } });
+    assert.deepEqual(scan.warnings, [
+      'On-device OCR reviewed 1 page. Verify every proposed value against the source document.',
+      '1 low-confidence OCR candidate was withheld.',
+    ]);
+  } finally {
+    if (previous === undefined) delete globalThis.NavaOcrEngine;
+    else globalThis.NavaOcrEngine = previous;
+  }
 });

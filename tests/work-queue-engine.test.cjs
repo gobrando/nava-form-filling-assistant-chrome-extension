@@ -104,6 +104,23 @@ test('resume requires source data, the same sanitized location, and the same pag
   assert.equal(queue.resumeDecision(application, { url: sample.url, pageSignature: 'page-2' }, { sourceAvailable: true }).allowed, true);
 });
 
+test('re-normalizing a durable entry keeps its full-location hash, so verify-and-resume still matches', () => {
+  // The panel saves the entry, then the service worker normalizes the saved entry again on persist.
+  const once = queue.durableApplication({ ...sample, resumePoint: { location: sample.url, pageSignature: 'page-2' } });
+  const twice = queue.durableApplication(once);
+  const fromQueue = queue.buildQueue([once]).applications[0];
+  const expected = queue.signatureHash(queue.safeLocation(sample.url));
+  assert.equal(once.resumePoint.location, 'https://benefitscal.com');
+  assert.equal(once.resumePoint.locationHash, expected);
+  assert.equal(twice.resumePoint.locationHash, expected);
+  assert.equal(fromQueue.resumePoint.locationHash, expected);
+  assert.notEqual(twice.resumePoint.locationHash, queue.signatureHash('https://benefitscal.com/'));
+  assert.equal(queue.resumeDecision(twice, { url: sample.url, pageSignature: 'page-2' }, { sourceAvailable: true }).allowed, true);
+  // A fresh capture with a full location is still re-hashed, never pinned to an old hash.
+  const moved = queue.durableApplication({ ...twice, resumePoint: { ...twice.resumePoint, location: 'https://benefitscal.com/ApplyForBenefits/next' } });
+  assert.equal(moved.resumePoint.locationHash, queue.signatureHash('https://benefitscal.com/ApplyForBenefits/next'));
+});
+
 test('resume rejects stale connector data and an unaccepted handoff', () => {
   assert.equal(queue.resumeDecision(sample, { url: sample.url }, { sourceAvailable: true, sourceStale: true }).outcome, 'source_stale');
   const handedOff = { ...sample, handoff: { to: 'Eligibility Team', reason: 'client_question', createdAt: new Date().toISOString() } };
@@ -174,4 +191,185 @@ test('completed human checkpoints produce a PII-free audit event', () => {
   assert.equal(event.type, 'checkpoint_completed');
   assert.equal(event.details.checkpointKind, 'captcha');
   assert.equal(event.details.participantValue, undefined);
+});
+
+test('durable applications infer progress from status only when progress is missing', () => {
+  const base = { id: 'workflow:progress', url: 'https://benefitscal.com/ApplyForBenefits/step', updatedAt: '2026-09-15T12:00:00.000Z' };
+  assert.equal(queue.durableApplication({ ...base, status: 'not_started' }).progress, 8);
+  assert.equal(queue.durableApplication({ ...base, status: 'source_expired' }).progress, 8);
+  assert.equal(queue.durableApplication({ ...base, status: 'paused' }).progress, 20);
+  assert.equal(queue.durableApplication({ ...base, status: 'handoff_pending' }).progress, 20);
+  assert.equal(queue.durableApplication({ ...base, status: 'ready_to_fill' }).progress, 35);
+  assert.equal(queue.durableApplication({ ...base, status: 'needs_attention' }).progress, 55);
+  assert.equal(queue.durableApplication({ ...base, status: 'no_form' }).progress, 55);
+  assert.equal(queue.durableApplication({ ...base, status: 'ready_for_review' }).progress, 100);
+  assert.equal(queue.durableApplication({ ...base, status: 'not-a-status' }).status, 'not_started');
+  assert.equal(queue.durableApplication({ ...base, status: 'not-a-status' }).progress, 8);
+  assert.equal(queue.durableApplication({ ...base, status: 'paused', progress: 64 }).progress, 64);
+  assert.equal(queue.durableApplication({ ...base, status: 'paused', progress: 0 }).progress, 0);
+  assert.equal(queue.durableApplication({ ...base, status: 'paused', progress: 250 }).progress, 100);
+});
+
+test('durable resume points need an http location and keep only hashed page signatures', () => {
+  const base = { id: 'workflow:resume', status: 'paused', updatedAt: '2026-09-15T12:00:00.000Z' };
+  const noLocation = queue.durableApplication({ ...base, url: 'chrome://settings', resumePoint: { pageSignature: 'page-1' } });
+  assert.equal(noLocation.location, '');
+  assert.equal(noLocation.resumePoint, null);
+
+  const supplied = queue.durableApplication({
+    ...base,
+    url: 'https://benefitscal.com/ApplyForBenefits/step?record=123-45-6789',
+    resumePoint: { pageSignatureHash: 'fnv1a32:0badf00d', capturedAt: '2026-09-15T11:00:00.000Z' },
+  });
+  assert.deepEqual(supplied.resumePoint, {
+    location: 'https://benefitscal.com',
+    locationHash: queue.signatureHash('https://benefitscal.com/ApplyForBenefits/step'),
+    pageSignatureHash: 'fnv1a32:0badf00d',
+    capturedAt: '2026-09-15T11:00:00.000Z',
+  });
+
+  const savedLocation = queue.durableApplication({
+    ...base,
+    url: 'https://example.org/ignored',
+    resumePoint: { location: 'https://benefitscal.com/ApplyForBenefits/other#field', pageSignature: 'secret-value|page-7' },
+    navigationGate: { pageSignature: 'gate-signature' },
+  });
+  assert.equal(savedLocation.location, 'https://benefitscal.com');
+  assert.equal(savedLocation.resumePoint.locationHash, queue.signatureHash('https://benefitscal.com/ApplyForBenefits/other'));
+  assert.equal(savedLocation.resumePoint.pageSignatureHash, queue.signatureHash('secret-value|page-7'));
+  assert.equal(savedLocation.resumePoint.capturedAt, base.updatedAt);
+  assert.doesNotMatch(JSON.stringify(savedLocation), /secret-value|gate-signature|#field/);
+
+  const gateOnly = queue.durableApplication({ ...base, url: 'https://benefitscal.com/a', navigationGate: { pageSignature: 'gate-signature' } });
+  assert.equal(gateOnly.resumePoint.pageSignatureHash, queue.signatureHash('gate-signature'));
+
+  const malformed = queue.durableApplication({ ...base, url: 'https://benefitscal.com/a', resumePoint: { pageSignatureHash: 'not-a-hash' } });
+  assert.equal(malformed.resumePoint.pageSignatureHash, queue.signatureHash('not-a-hash'));
+
+  const unsigned = queue.durableApplication({ ...base, url: 'https://benefitscal.com/a' });
+  assert.equal(unsigned.resumePoint.pageSignatureHash, '');
+});
+
+test('restoring from a live session merges durable control state into the session copy', () => {
+  const saved = {
+    id: 'workflow:live',
+    name: 'Queued application',
+    workflowId: '',
+    allowedOrigins: [],
+    allowedPathPrefixes: ['/ApplyForBenefits/'],
+    location: 'https://benefitscal.com',
+    tabId: null,
+    status: 'paused',
+    progress: 20,
+    completedPages: 2,
+    checkpoint: null,
+    owner: { assignedTo: 'Intake Team', state: 'active', assignedAt: '2026-09-15T12:10:00.000Z' },
+    handoff: null,
+    lease: null,
+    resumePoint: { location: 'https://benefitscal.com', locationHash: 'fnv1a32:11111111', pageSignatureHash: '', capturedAt: '2026-09-15T12:20:00.000Z' },
+    updatedAt: '2026-09-15T12:30:00.000Z',
+  };
+  const session = {
+    id: 'workflow:live',
+    workflowId: 'benefitscal',
+    allowedOrigins: ['https://benefitscal.com'],
+    allowedPathPrefixes: ['/Old/'],
+    tabId: 42,
+    status: 'ready_to_fill',
+    autoRun: true,
+    programIds: ['calfresh', 'not-a-program'],
+    programSelectionRequired: true,
+    checkpoint: { kind: 'human_input', label: 'Session checkpoint' },
+    resumePoint: {
+      location: 'https://benefitscal.com/ApplyForBenefits/step',
+      locationHash: 'fnv1a32:22222222',
+      pageSignatureHash: 'fnv1a32:33333333',
+    },
+    sessionOnly: 'kept in session memory',
+    updatedAt: '2026-09-15T12:00:00.000Z',
+  };
+  const restored = queue.restoreApplications({ version: 2, applications: [saved] }, [session]);
+
+  assert.equal(restored.length, 1);
+  const [live] = restored;
+  assert.equal(live.workflowId, 'benefitscal');
+  assert.deepEqual(live.allowedOrigins, ['https://benefitscal.com']);
+  assert.deepEqual(live.allowedPathPrefixes, ['/ApplyForBenefits/']);
+  assert.equal(live.tabId, null);
+  assert.equal(live.status, 'paused');
+  assert.equal(live.checkpoint.label, 'Session checkpoint');
+  assert.equal(live.owner.assignedTo, 'Intake Team');
+  assert.deepEqual(live.resumePoint, {
+    location: 'https://benefitscal.com/ApplyForBenefits/step',
+    locationHash: 'fnv1a32:11111111',
+    pageSignatureHash: 'fnv1a32:33333333',
+  });
+  assert.deepEqual(live.programIds, ['calfresh']);
+  assert.equal(Object.prototype.hasOwnProperty.call(live, 'programSelectionRequired'), false);
+  assert.equal(live.autoRun, true);
+  assert.equal(live.sessionOnly, 'kept in session memory');
+  assert.equal(live.updatedAt, saved.updatedAt);
+});
+
+test('a live session without a resume point takes the durable one and drops unknown program metadata', () => {
+  const saved = queue.durableApplication({ ...sample, programIds: undefined });
+  delete saved.programIds;
+  const session = { id: sample.id, status: 'ready_to_fill', checkpoint: null };
+  const [live] = queue.restoreApplications({ version: 2, applications: [saved] }, [session]);
+
+  assert.deepEqual(live.resumePoint, saved.resumePoint);
+  assert.equal(Object.prototype.hasOwnProperty.call(live, 'programIds'), false);
+  assert.equal(live.checkpoint.kind, 'human_input');
+  assert.equal(live.checkpoint.label, 'Client answer needed');
+});
+
+test('durable-only restore keeps saved program metadata and appends unmatched live sessions', () => {
+  const durable = queue.buildQueue([{ ...sample, id: 'workflow:durable', programIds: ['wic'], programSelectionRequired: true }]);
+  const unmatched = { id: 'workflow:live-only', status: 'ready_to_fill' };
+  const restored = queue.restoreApplications(durable, [unmatched]);
+
+  assert.equal(restored.length, 2);
+  assert.equal(restored[0].id, 'workflow:durable');
+  assert.equal(restored[0].durableOnly, true);
+  assert.equal(restored[0].status, 'source_expired');
+  assert.equal(restored[0].checkpoint.kind, 'source_expired');
+  assert.deepEqual(restored[0].programIds, ['wic']);
+  assert.equal(restored[0].programSelectionRequired, true);
+  assert.equal(restored[0].queueLabel, restored[0].name);
+  assert.equal(restored[0].url, 'https://benefitscal.com');
+  assert.equal(restored[0].completedPages.length, 1);
+  assert.ok(restored[0].completedPages.every((page) => page.durablePlaceholder === true));
+  assert.equal(restored[1], unmatched);
+
+  const withoutPrograms = { ...sample, id: 'workflow:bare' };
+  delete withoutPrograms.programIds;
+  const [bare] = queue.restoreApplications(queue.buildQueue([withoutPrograms]), []);
+  assert.equal(Object.prototype.hasOwnProperty.call(bare, 'programIds'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(bare, 'programSelectionRequired'), false);
+});
+
+test('only legacy BenefitsCal entries without program metadata require program reselection', () => {
+  const legacyBenefitsCal = queue.durableApplication(sample);
+  delete legacyBenefitsCal.programIds;
+  const [durableOnly] = queue.restoreApplications({ version: 1, applications: [legacyBenefitsCal] }, []);
+  assert.equal(durableOnly.durableOnly, true);
+  assert.equal(durableOnly.programSelectionRequired, true);
+  assert.equal(Object.prototype.hasOwnProperty.call(durableOnly, 'programIds'), false);
+
+  const [current] = queue.restoreApplications({ version: 2, applications: [legacyBenefitsCal] }, []);
+  assert.equal(Object.prototype.hasOwnProperty.call(current, 'programSelectionRequired'), false);
+
+  const otherSite = queue.durableApplication({ ...sample, workflowId: 'wic', url: 'https://example.org/apply', allowedOrigins: [] });
+  delete otherSite.programIds;
+  const [other] = queue.restoreApplications({ version: 1, applications: [otherSite] }, []);
+  assert.equal(Object.prototype.hasOwnProperty.call(other, 'programSelectionRequired'), false);
+
+  const [byWorkflow] = queue.restoreApplications(
+    { applications: [{ ...otherSite, workflowId: '' }] },
+    [{ id: otherSite.id, workflowId: 'BenefitsCal', programIds: ['calfresh'], autoRun: true }],
+  );
+  assert.equal(byWorkflow.programSelectionRequired, true);
+  assert.equal(byWorkflow.status, 'paused');
+  assert.equal(byWorkflow.autoRun, false);
+  assert.equal(Object.prototype.hasOwnProperty.call(byWorkflow, 'programIds'), false);
 });

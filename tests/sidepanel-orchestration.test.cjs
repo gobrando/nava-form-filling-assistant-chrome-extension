@@ -1,11 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
+const { sidePanelSource } = require('./runtime-sources.cjs');
 
-const root = path.resolve(__dirname, '..');
-const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
+const panel = sidePanelSource();
 
 function section(start, end) {
   const startIndex = panel.indexOf(start);
@@ -76,17 +74,23 @@ test('assistant-state recovery retries service-worker startup and gives reload g
 
 test('CAPTCHA checkpoints expose a human-complete-and-resume path', () => {
   const card = section('function applicationCard', 'function renderDashboard');
-  const resume = section('async function resumeHumanCheckpoint', 'async function exportAuditLog');
-  const clickHandler = section('async function onClick', 'async function onSubmit');
+  const resume = section('async function resumeHumanCheckpoint', 'async function goToApplication');
+  const pending = section('function pendingHumanCheck', 'const FINAL_STOP_KINDS');
+  const clickHandler = section('const APPLICATION_CARD_ACTIONS', 'function backToDashboard');
 
   assert.match(card, /resume-human-checkpoint/);
   assert.match(card, /I completed the \$\{challenge\} — resume/);
   assert.match(resume, /expectedCommandLocation: expectedLocation/);
-  assert.match(resume, /botCheckPresent && !rescanned\.submitGate\?\.botCheckComplete/);
+  assert.match(resume, /const pendingKind = pendingHumanCheck\(rescanned\.submitGate\)/);
+  assert.match(pending, /botCheckPresent && !submitGate\?\.botCheckComplete/);
   assert.match(resume, /Complete the CAPTCHA in the application tab/);
   assert.match(resume, /await runThroughApplication\(rescanned/);
   assert.doesNotMatch(resume, /click\(|solve|bypass/i);
-  assert.match(clickHandler, /action === 'resume-human-checkpoint'/);
+  assert.match(clickHandler, /\['resume-human-checkpoint', resumeCardAfterHumanCheckpoint\]/);
+  assert.match(
+    section('async function resumeCardAfterHumanCheckpoint', 'async function openCardHandoff'),
+    /resumeHumanCheckpoint\(application, \{ runToken \}\)/,
+  );
 });
 
 test('automatic runs fill known assignments before pausing for unanswered fields', () => {
@@ -112,7 +116,8 @@ test('conditional same-page work is rescanned with a hard pass limit before adva
 
   assert.match(panel, /const MAX_SAME_PAGE_FILL_PASSES = 3/);
   assert.match(rescan, /assertApprovedApplicationLocation\(application, tab\.url\)/);
-  assert.match(rescan, /assertSameDocumentLocation\(application\.page\?\.url \|\| application\.url, tab\.url\)/);
+  assert.match(rescan, /assertSameDocumentLocation\(currentPageUrl\(application\), tab\.url\)/);
+  assert.match(section('function currentPageUrl', 'function pageNumber'), /return application\.page\?\.url \|\| application\.url;/);
   assert.match(rescan, /applicationId: application\.id/);
   assert.match(rescan, /expectedCommandLocation: expectedLocation/);
   assert.match(rescan, /preservePageProgress: true/);
@@ -135,20 +140,23 @@ test('BenefitsCal overview must reach a different route and cannot loop on reloa
 });
 
 test('a directly analyzed known site inherits its full approved workflow path', () => {
-  const scan = section('async function scanTab', 'async function openSelectedPrograms');
-  assert.match(scan, /const application = attachApplicationPolicy\(\{/);
-  assert.match(scan, /allowedPathPrefixes: previous\.allowedPathPrefixes\?\.length/);
+  const store = section('async function storeScannedApplication', 'return { scanTab }');
+  const scope = section('function approvedScope', 'function resumePointFor');
+  assert.match(store, /const application = attachApplicationPolicy\(scanRecord\.scannedApplication\(\{/);
+  assert.match(scope, /allowedPathPrefixes: previous\.allowedPathPrefixes\?\.length/);
 });
 
 test('manual autonomous runs keep the application dashboard and per-card progress visible', () => {
   const progress = section('function setApplicationProgress', 'function renderError');
   const card = section('function applicationCard', 'function renderDashboard');
-  const click = section('async function onClick', 'async function onSubmit');
-  const submit = section('async function onSubmit', 'function previewRuntime');
+  const click = section('async function runCardApplicationInDashboard', 'async function scanCardApplication');
+  const submit = section('async function submitQuestionAnswers', 'const APPLICATION_CLICK_ACTIONS');
   assert.match(progress, /application\.runProgress = message/);
   assert.match(card, /running \? application\.runProgress/);
-  assert.match(click, /action === 'run'[\s\S]*state\.view = 'dashboard'[\s\S]*background: true/);
+  assert.match(section('const APPLICATION_CARD_ACTIONS', 'function backToDashboard'), /\['run', runCardApplicationInDashboard\]/);
+  assert.match(click, /state\.view = 'dashboard'[\s\S]*background: true/);
   assert.match(submit, /if \(application\.autoRun\)[\s\S]*state\.view = 'dashboard'[\s\S]*background: true/);
+  assert.match(section('const APPLICATION_SUBMIT_ACTIONS', 'const CLICK_ACTIONS'), /\['questions-form', submitQuestionAnswers\]/);
 });
 
 test('zero-write scans retain observed evidence and conditional rescans merge it safely', () => {

@@ -15,6 +15,17 @@
     'ready_for_review',
     'source_expired',
   ]);
+  // Progress shown for an application that never reported its own, keyed by normalized status.
+  const INFERRED_PROGRESS = {
+    not_started: 8,
+    source_expired: 8,
+    paused: 20,
+    handoff_pending: 20,
+    ready_to_fill: 35,
+    needs_attention: 55,
+    no_form: 55,
+    ready_for_review: 100,
+  };
   const CHECKPOINT_VALUES = new Set([
     'human_input',
     'direct_entry',
@@ -205,21 +216,29 @@
     };
   }
 
+  const HASH_PATTERN = /^fnv1a32:[a-f0-9]{8}$/;
+
+  // The durable resume point keeps the origin plus hashes of the full location and page signature, never raw values.
+  function durableResumePoint(application, fullLocation, location) {
+    if (!location) return null;
+    const rawSignature = application.resumePoint?.pageSignature || application.navigationGate?.pageSignature || '';
+    const suppliedSignatureHash = String(application.resumePoint?.pageSignatureHash || '');
+    // A durable entry keeps only the origin, so its full-location hash cannot be recomputed from it.
+    // Re-normalizing one (the service worker does on every persist) must keep that hash, not hash the bare origin.
+    const suppliedLocationHash = String(application.resumePoint?.locationHash || '');
+    const alreadyDurable = application.resumePoint?.location === location && HASH_PATTERN.test(suppliedLocationHash);
+    return {
+      location,
+      locationHash: alreadyDurable ? suppliedLocationHash : signatureHash(fullLocation),
+      pageSignatureHash: HASH_PATTERN.test(suppliedSignatureHash) ? suppliedSignatureHash : signatureHash(rawSignature || suppliedSignatureHash),
+      capturedAt: safeIso(application.resumePoint?.capturedAt || application.updatedAt),
+    };
+  }
+
   function durableApplication(application) {
     const fullLocation = safeLocation(application.resumePoint?.location || application.url || application.page?.url);
     const location = safeOrigin(fullLocation);
-    const rawSignature = application.resumePoint?.pageSignature || application.navigationGate?.pageSignature || '';
-    const suppliedSignatureHash = String(application.resumePoint?.pageSignatureHash || '');
-    const inferredProgress = {
-      not_started: 8,
-      source_expired: 8,
-      paused: 20,
-      handoff_pending: 20,
-      ready_to_fill: 35,
-      needs_attention: 55,
-      no_form: 55,
-      ready_for_review: 100,
-    }[normalizedStatus(application.status)] || 0;
+    const inferredProgress = INFERRED_PROGRESS[normalizedStatus(application.status)] || 0;
     const durable = {
       id: cleanText(application.id, 100),
       name: cleanText(application.queueLabel || application.name || 'Application', 80),
@@ -235,12 +254,7 @@
       owner: normalizedOwner(application.owner),
       handoff: normalizedHandoff(application.handoff),
       lease: normalizedLease(application.lease),
-      resumePoint: location ? {
-        location,
-        locationHash: signatureHash(fullLocation),
-        pageSignatureHash: /^fnv1a32:[a-f0-9]{8}$/.test(suppliedSignatureHash) ? suppliedSignatureHash : signatureHash(rawSignature || suppliedSignatureHash),
-        capturedAt: safeIso(application.resumePoint?.capturedAt || application.updatedAt),
-      } : null,
+      resumePoint: durableResumePoint(application, fullLocation, location),
       updatedAt: safeIso(application.updatedAt),
     };
     if (hasOwn(application, 'programIds')) durable.programIds = safeProgramIds(application.programIds);
@@ -293,73 +307,83 @@
     };
   }
 
+  // Legacy (pre-v2) BenefitsCal entries never recorded their programs, so the caseworker must choose them again.
+  function needsProgramSelection(saved, session, legacyQueue) {
+    return saved.programSelectionRequired === true
+      || (legacyQueue && !hasOwn(saved, 'programIds') && isBenefitsCalApplication(saved, session));
+  }
+
+  // A live session copy keeps its in-memory client data; the durable entry supplies the control state.
+  function restoreFromSession(saved, session, programSelectionRequired) {
+    const restored = {
+      ...session,
+      workflowId: saved.workflowId || session.workflowId,
+      allowedOrigins: saved.allowedOrigins?.length ? saved.allowedOrigins : session.allowedOrigins,
+      allowedPathPrefixes: saved.allowedPathPrefixes?.length ? saved.allowedPathPrefixes : session.allowedPathPrefixes,
+      tabId: saved.tabId,
+      status: saved.status,
+      owner: saved.owner,
+      handoff: saved.handoff,
+      checkpoint: saved.checkpoint || session.checkpoint,
+      lease: saved.lease,
+      resumePoint: session.resumePoint ? {
+        ...session.resumePoint,
+        locationHash: saved.resumePoint?.locationHash || session.resumePoint.locationHash,
+        pageSignatureHash: saved.resumePoint?.pageSignatureHash || session.resumePoint.pageSignatureHash,
+      } : saved.resumePoint,
+      updatedAt: saved.updatedAt || session.updatedAt,
+    };
+    if (hasOwn(saved, 'programIds')) restored.programIds = safeProgramIds(saved.programIds);
+    else if (programSelectionRequired || !hasOwn(session, 'programIds')) delete restored.programIds;
+    else restored.programIds = safeProgramIds(session.programIds);
+    if (programSelectionRequired) {
+      restored.status = 'paused';
+      restored.checkpoint = { kind: 'human_input', label: 'Choose BenefitsCal programs', createdAt: new Date().toISOString() };
+      restored.programSelectionRequired = true;
+      restored.autoRun = false;
+      restored.error = 'Choose which BenefitsCal programs this application includes before resuming.';
+    } else {
+      delete restored.programSelectionRequired;
+    }
+    return restored;
+  }
+
+  // Without a live session the client data is gone: restore the queue entry as source-expired metadata only.
+  function restoreDurableOnly(saved, programSelectionRequired) {
+    const restored = {
+      id: saved.id,
+      name: saved.name,
+      queueLabel: saved.name,
+      workflowId: saved.workflowId,
+      allowedOrigins: saved.allowedOrigins || [],
+      allowedPathPrefixes: saved.allowedPathPrefixes || [],
+      url: saved.location,
+      tabId: saved.tabId,
+      status: 'source_expired',
+      error: 'Client source data expired when the browser session ended. Reload the client before resuming.',
+      checkpoint: { kind: 'source_expired', label: 'Reload client data', createdAt: new Date().toISOString() },
+      owner: saved.owner,
+      handoff: saved.handoff,
+      lease: saved.lease,
+      resumePoint: saved.resumePoint,
+      completedPages: Array.from({ length: saved.completedPages }, () => ({ durablePlaceholder: true })),
+      updatedAt: saved.updatedAt,
+      durableOnly: true,
+    };
+    if (hasOwn(saved, 'programIds')) restored.programIds = safeProgramIds(saved.programIds);
+    if (programSelectionRequired) restored.programSelectionRequired = true;
+    return restored;
+  }
+
   function restoreApplications(queue, sessionApplications = []) {
     const legacyQueue = !Number.isFinite(Number(queue?.version)) || Number(queue.version) < 2;
     const live = new Map((Array.isArray(sessionApplications) ? sessionApplications : []).map((application) => [application.id, application]));
     return (queue?.applications || []).map((saved) => {
       const session = live.get(saved.id);
-      const savedHasProgramIds = hasOwn(saved, 'programIds');
-      const programSelectionRequired = saved.programSelectionRequired === true
-        || (legacyQueue && !savedHasProgramIds && isBenefitsCalApplication(saved, session));
-      if (session) {
-        live.delete(saved.id);
-        const restored = {
-          ...session,
-          workflowId: saved.workflowId || session.workflowId,
-          allowedOrigins: saved.allowedOrigins?.length ? saved.allowedOrigins : session.allowedOrigins,
-          allowedPathPrefixes: saved.allowedPathPrefixes?.length ? saved.allowedPathPrefixes : session.allowedPathPrefixes,
-          tabId: saved.tabId,
-          status: programSelectionRequired ? 'paused' : saved.status,
-          owner: saved.owner,
-          handoff: saved.handoff,
-          checkpoint: programSelectionRequired ? {
-            kind: 'human_input',
-            label: 'Choose BenefitsCal programs',
-            createdAt: new Date().toISOString(),
-          } : saved.checkpoint || session.checkpoint,
-          lease: saved.lease,
-          resumePoint: session.resumePoint ? {
-            ...session.resumePoint,
-            locationHash: saved.resumePoint?.locationHash || session.resumePoint.locationHash,
-            pageSignatureHash: saved.resumePoint?.pageSignatureHash || session.resumePoint.pageSignatureHash,
-          } : saved.resumePoint,
-          updatedAt: saved.updatedAt || session.updatedAt,
-        };
-        if (savedHasProgramIds) restored.programIds = safeProgramIds(saved.programIds);
-        else if (programSelectionRequired || !hasOwn(session, 'programIds')) delete restored.programIds;
-        else restored.programIds = safeProgramIds(session.programIds);
-        if (programSelectionRequired) {
-          restored.programSelectionRequired = true;
-          restored.autoRun = false;
-          restored.error = 'Choose which BenefitsCal programs this application includes before resuming.';
-        } else {
-          delete restored.programSelectionRequired;
-        }
-        return restored;
-      }
-      const restored = {
-        id: saved.id,
-        name: saved.name,
-        queueLabel: saved.name,
-        workflowId: saved.workflowId,
-        allowedOrigins: saved.allowedOrigins || [],
-        allowedPathPrefixes: saved.allowedPathPrefixes || [],
-        url: saved.location,
-        tabId: saved.tabId,
-        status: 'source_expired',
-        error: 'Client source data expired when the browser session ended. Reload the client before resuming.',
-        checkpoint: { kind: 'source_expired', label: 'Reload client data', createdAt: new Date().toISOString() },
-        owner: saved.owner,
-        handoff: saved.handoff,
-        lease: saved.lease,
-        resumePoint: saved.resumePoint,
-        completedPages: Array.from({ length: saved.completedPages }, () => ({ durablePlaceholder: true })),
-        updatedAt: saved.updatedAt,
-        durableOnly: true,
-      };
-      if (savedHasProgramIds) restored.programIds = safeProgramIds(saved.programIds);
-      if (programSelectionRequired) restored.programSelectionRequired = true;
-      return restored;
+      const programSelectionRequired = needsProgramSelection(saved, session, legacyQueue);
+      if (!session) return restoreDurableOnly(saved, programSelectionRequired);
+      live.delete(saved.id);
+      return restoreFromSession(saved, session, programSelectionRequired);
     }).concat([...live.values()]);
   }
 

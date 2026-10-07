@@ -2,8 +2,25 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { sidePanelSource, serviceWorkerSource, pageAgentSource } = require('./runtime-sources.cjs');
 
 const root = path.resolve(__dirname, '..');
+
+/** The text from `start` to the next `end` after it; both markers must exist. */
+function between(source, start, end) {
+  const startIndex = source.indexOf(start);
+  const endIndex = source.indexOf(end, startIndex + start.length);
+  assert.notEqual(startIndex, -1, `missing start: ${start}`);
+  assert.notEqual(endIndex, -1, `missing end: ${end}`);
+  return source.slice(startIndex, endIndex);
+}
+
+/** The document parser and the readers it extracts from, as one source. */
+function documentIntakeSource() {
+  return ['sidepanel/document-parser.js', 'sidepanel/document-readers.js']
+    .map((file) => fs.readFileSync(path.join(root, file), 'utf8'))
+    .join('\n');
+}
 
 test('manifest is valid MV3 and loads the side panel', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
@@ -13,7 +30,7 @@ test('manifest is valid MV3 and loads the side panel', () => {
 });
 
 test('page agent exposes no submit command and never invokes requestSubmit', () => {
-  const source = fs.readFileSync(path.join(root, 'content/form-agent.js'), 'utf8');
+  const source = pageAgentSource();
   assert.doesNotMatch(source, /requestSubmit\s*\(/);
   assert.doesNotMatch(source, /\.submit\s*\(/);
   assert.doesNotMatch(source, /NAVA_SUBMIT\b/);
@@ -28,8 +45,8 @@ test('page agent exposes no submit command and never invokes requestSubmit', () 
 });
 
 test('cross-page automation only exposes gated advance and stops on final actions', () => {
-  const agent = fs.readFileSync(path.join(root, 'content/form-agent.js'), 'utf8');
-  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
+  const agent = pageAgentSource();
+  const panel = sidePanelSource();
   assert.match(agent, /NAVA_ADVANCE/);
   assert.match(agent, /SAFE_ADVANCE_LABELS/);
   assert.match(agent, /FINAL_ACTION_PATTERN/);
@@ -79,24 +96,35 @@ test('public demo fixtures are passive and require the installed extension', () 
   assert.doesNotMatch(source, /record_id:\s*['"]339619/);
   assert.doesNotMatch(source, /URLSearchParams[\s\S]{0,120}autorun/);
 
-  const agent = fs.readFileSync(path.join(root, 'content/form-agent.js'), 'utf8');
+  const agent = pageAgentSource();
   assert.match(agent, /function trustedDemoFixture\(\)/);
   assert.match(agent, /http:\/\/127\.0\.0\.1:4173/);
   assert.doesNotMatch(agent, /NavaPageAgentTestApi/);
 });
 
 test('multi-application runs are tab-bound, automatic, and origin-checked', () => {
-  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
-  const agent = fs.readFileSync(path.join(root, 'content/form-agent.js'), 'utf8');
+  const panel = sidePanelSource();
+  const agent = pageAgentSource();
   assert.match(panel, /enqueueApplicationBatch\(applicationsToRun\.map/);
   assert.match(panel, /MAX_PARALLEL_APPLICATIONS = 3/);
   assert.match(panel, /assertApprovedApplicationLocation\(application, tab\.url\)/);
-  const scanTabSource = panel.slice(panel.indexOf('async function scanTab'), panel.indexOf('async function openSelectedPrograms'));
+  const scanTabSource = between(panel, 'async function scanTab', 'function resolveScanTarget');
+  const scanSteps = ['resolveScanTarget(tab', 'requestPageScan(tab', 'checkScanResponse(tab', 'planScannedPage(response', 'storeScannedApplication(']
+    .map((call) => scanTabSource.indexOf(call));
   assert.ok(
-    scanTabSource.indexOf('assertApprovedApplicationLocation(requestedApplication, tab.url)')
-      < scanTabSource.indexOf("type: 'NAVA_SCAN'"),
+    scanSteps.every((index, step) => index >= 0 && (step === 0 || index > scanSteps[step - 1])),
+    'scanTab must resolve and approve its target, then send NAVA_SCAN, then check, plan, and store the scan',
+  );
+  const resolveStep = between(panel, 'function resolveScanTarget', 'function detachChangedTabApplication');
+  const sendStep = between(panel, 'function requestPageScan', 'function checkScanResponse');
+  assert.ok(
+    resolveStep.indexOf('assertApprovedApplicationLocation(requestedApplication, tab.url)') >= 0
+      && resolveStep.indexOf('assertApprovedApplicationLocation(requestedApplication, tab.url)')
+        < resolveStep.indexOf('assertApplicationRun(requestedApplication, runToken)'),
     'known application origin and path must be approved before client data is sent to the tab',
   );
+  assert.doesNotMatch(resolveStep, /sendToTab|NAVA_SCAN/);
+  assert.match(sendStep, /type: 'NAVA_SCAN'/);
   assert.match(panel, /activeRunTokens/);
   assert.match(panel, /async function beginApplicationRun[\s\S]*while \(activeRunTokens\.has\(application\.id\)\)[\s\S]*await existing\.settled/);
   assert.match(panel, /runToken = await beginApplicationRun\(application\)/);
@@ -123,7 +151,7 @@ test('multi-application runs are tab-bound, automatic, and origin-checked', () =
 
 test('header home control and provider catalog are reachable', () => {
   const html = fs.readFileSync(path.join(root, 'sidepanel/index.html'), 'utf8');
-  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
+  const panel = sidePanelSource();
   assert.match(html, /data-action="home"/);
   assert.match(panel, /document\.addEventListener\('click'/);
   assert.match(panel, /renderProviderCatalog/);
@@ -135,7 +163,8 @@ test('header home control and provider catalog are reachable', () => {
   assert.match(panel, /sameMappedSource/);
   assert.match(panel, /cancelPendingUiWork/);
   assert.match(panel, /async function cancelUiBoundRuns\(\)[\s\S]*await revokeApplicationRun\(application\)/);
-  assert.match(panel, /if \(action === 'home'\) \{\n\s*await cancelUiBoundRuns\(\)/);
+  assert.match(panel, /\['home', returnHome\]/);
+  assert.match(panel, /async function returnHome\(\) \{\n\s*await cancelUiBoundRuns\(\)/);
   assert.match(panel, /assertUiGeneration/);
   assert.match(html, /Simulated UI preview · no browser form or database is being used/);
   assert.match(panel, /value="current" \$\{currentAllowed \? '' : 'disabled'\}/);
@@ -149,8 +178,8 @@ test('extension contains no remote scripts or inline executable script', () => {
 
 test('document intake uses only bundled parsers and never persists the raw file', () => {
   const html = fs.readFileSync(path.join(root, 'sidepanel/index.html'), 'utf8');
-  const parser = fs.readFileSync(path.join(root, 'sidepanel/document-parser.js'), 'utf8');
-  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
+  const parser = documentIntakeSource();
+  const panel = sidePanelSource();
 
   assert.match(html, /vendor\/fflate\.min\.js/);
   assert.match(parser, /vendor\/pdf\.min\.mjs/);
@@ -164,8 +193,8 @@ test('document intake uses only bundled parsers and never persists the raw file'
 test('OCR uses only bundled assets, enforces resource limits, and requires field review', () => {
   const html = fs.readFileSync(path.join(root, 'sidepanel/index.html'), 'utf8');
   const ocr = fs.readFileSync(path.join(root, 'sidepanel/ocr-engine.js'), 'utf8');
-  const parser = fs.readFileSync(path.join(root, 'sidepanel/document-parser.js'), 'utf8');
-  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
+  const parser = documentIntakeSource();
+  const panel = sidePanelSource();
 
   assert.match(html, /ocr-engine\.js/);
   assert.match(ocr, /vendor\/tesseract\/tesseract\.esm\.min\.js/);
@@ -193,8 +222,8 @@ test('OCR uses only bundled assets, enforces resource limits, and requires field
 
 test('resumable work queue persists only sanitized metadata and verifies before resume', () => {
   const html = fs.readFileSync(path.join(root, 'sidepanel/index.html'), 'utf8');
-  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
-  const background = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
+  const panel = sidePanelSource();
+  const background = serviceWorkerSource();
   const persistSource = panel.slice(panel.indexOf('async function persist'), panel.indexOf('async function clearAssistantState'));
   const acquireSource = panel.slice(panel.indexOf('async function acquireApplicationLease'), panel.indexOf('async function releaseApplicationLease'));
   const releaseSource = panel.slice(panel.indexOf('async function releaseApplicationLease'), panel.indexOf('async function withApplicationLease'));
@@ -222,7 +251,6 @@ test('resumable work queue persists only sanitized metadata and verifies before 
   assert.match(background, /stateRevision/);
   assert.match(background, /EXECUTE_APPLICATION_COMMAND/);
   assert.match(background, /REVOKE_APPLICATION_RUN/);
-  assert.match(background, /CHECK_APPLICATION_RUN/);
   assert.match(background, /ACQUIRE_APPLICATION_LEASE/);
   assert.match(background, /RELEASE_APPLICATION_LEASE/);
   assert.match(background, /const COMMAND_LEASE_MS = 10 \* 60 \* 1000/);
@@ -279,9 +307,9 @@ test('resumable work queue persists only sanitized metadata and verifies before 
 });
 
 test('managed connector is read-only and stores only validated configuration', () => {
-  const background = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
+  const background = serviceWorkerSource();
   const mock = fs.readFileSync(path.join(root, 'connector-service/mock-server.mjs'), 'utf8');
-  const panel = fs.readFileSync(path.join(root, 'sidepanel/sidepanel.js'), 'utf8');
+  const panel = sidePanelSource();
 
   assert.match(background, /connectorEngine\.validateMappings\(message\.config, schema\)/);
   assert.match(background, /chrome\.storage\.local\.set/);
