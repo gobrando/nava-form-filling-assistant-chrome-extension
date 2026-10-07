@@ -632,7 +632,6 @@ test('every routed message type answers exactly once and holds the channel open 
     'PERSIST_ASSISTANT_STATE',
     'CLEAR_ASSISTANT_STATE',
     'REVOKE_APPLICATION_RUN',
-    'CHECK_APPLICATION_RUN',
     'EXECUTE_APPLICATION_COMMAND',
     'ACQUIRE_APPLICATION_LEASE',
     'RELEASE_APPLICATION_LEASE',
@@ -847,29 +846,3 @@ test('a rejected tab dispatch shortens the command lease and reports TAB_COMMAND
   assert.ok(remaining > 60_000 && remaining <= 2 * 60 * 1000, 'the failed command lease is shortened, not left at 10 minutes');
 });
 
-test('run checks report current counters and require a live lease only when asked', async () => {
-  const harness = backgroundHarness();
-  const { app, saved } = await savedApplication(harness);
-
-  const allowed = await harness.send(leaseMessage('CHECK_APPLICATION_RUN', saved, app, 'window-a'));
-  assert.equal(allowed.ok, true);
-  assert.equal(allowed.allowed, true);
-  assert.equal(allowed.applicationGeneration, saved.applicationGenerations[app.id]);
-  assert.equal(allowed.applicationRevision, saved.applicationRevisions[app.id]);
-
-  const leaseRequired = { ...leaseMessage('CHECK_APPLICATION_RUN', saved, app, 'window-a'), requireLease: true };
-  const lost = await harness.send(leaseRequired);
-  assert.equal(lost.ok, false);
-  assert.equal(lost.allowed, false);
-  assert.equal(lost.stale, true);
-  assert.equal(lost.code, 'LEASE_LOST');
-
-  await harness.send(leaseMessage('ACQUIRE_APPLICATION_LEASE', saved, app, 'window-a'));
-  const held = await harness.send(leaseRequired);
-  assert.equal(held.ok, true);
-  assert.equal(held.allowed, true);
-
-  const otherWindow = await harness.send({ ...leaseRequired, holder: 'window-b' });
-  assert.equal(otherWindow.ok, false);
-  assert.equal(otherWindow.code, 'LEASE_LOST');
-});

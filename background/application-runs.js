@@ -106,26 +106,6 @@
       };
     }
 
-    async function checkApplicationRun(message) {
-      const applicationId = validCoordinatorId(message.applicationId);
-      const coordinator = await coordinatorState();
-      const { applicationGeneration, applicationRevision } = assertCurrentApplicationRun(message, coordinator, applicationId);
-      if (message.requireLease) {
-        const holder = validCoordinatorId(message.holder);
-        const result = await chrome.storage.local.get(LEASE_STORAGE_KEY);
-        const lease = result[LEASE_STORAGE_KEY]?.[applicationId];
-        if (!lease || lease.holder !== holder || Date.parse(lease.expiresAt) <= Date.now()) {
-          throw coordinatorError(
-            'This application run no longer owns the write lease.',
-            'LEASE_LOST',
-            coordinator,
-            { applicationId },
-          );
-        }
-      }
-      return { ok: true, allowed: true, applicationGeneration, applicationRevision, ...coordinatorFields(coordinator) };
-    }
-
     // Command, step 1 (validate request): a known command bound to one tab, one document, and its route policy.
     function validatedApplicationCommand(message) {
       const applicationId = validCoordinatorId(message.applicationId);
@@ -287,10 +267,6 @@
       return respondCoordinated(() => revokeApplicationRun(message), sendResponse);
     }
 
-    function handleCheckApplicationRun(message, _sender, sendResponse) {
-      return respondCoordinated(() => checkApplicationRun(message), sendResponse, { allowed: false });
-    }
-
     function handleExecuteApplicationCommand(message, _sender, sendResponse) {
       coordinate(() => startApplicationCommand(message))
         .then(finishApplicationCommand)
@@ -310,7 +286,6 @@
     // Returns the handler's answer to Chrome (true = response pending), or undefined for a type this router does not own.
     function routeApplicationRunMessage(message, sender, sendResponse) {
       if (message?.type === 'REVOKE_APPLICATION_RUN') return handleRevokeApplicationRun(message, sender, sendResponse);
-      if (message?.type === 'CHECK_APPLICATION_RUN') return handleCheckApplicationRun(message, sender, sendResponse);
       if (message?.type === 'EXECUTE_APPLICATION_COMMAND') return handleExecuteApplicationCommand(message, sender, sendResponse);
       if (message?.type === 'ACQUIRE_APPLICATION_LEASE') return handleAcquireApplicationLease(message, sender, sendResponse);
       if (message?.type === 'RELEASE_APPLICATION_LEASE') return handleReleaseApplicationLease(message, sender, sendResponse);

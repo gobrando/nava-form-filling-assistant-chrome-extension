@@ -251,7 +251,6 @@ test('resumable work queue persists only sanitized metadata and verifies before 
   assert.match(background, /stateRevision/);
   assert.match(background, /EXECUTE_APPLICATION_COMMAND/);
   assert.match(background, /REVOKE_APPLICATION_RUN/);
-  assert.match(background, /CHECK_APPLICATION_RUN/);
   assert.match(background, /ACQUIRE_APPLICATION_LEASE/);
   assert.match(background, /RELEASE_APPLICATION_LEASE/);
   assert.match(background, /const COMMAND_LEASE_MS = 10 \* 60 \* 1000/);

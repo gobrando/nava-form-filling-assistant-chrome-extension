@@ -60,29 +60,6 @@
       });
     }
 
-    /**
-     * Asks the coordinator (CHECK_APPLICATION_RUN) whether this window may still run the application. Nothing in the panel
-     * calls it today; it stays as that message's only sender, and removing it is a product decision.
-     */
-    async function assertCoordinatorAuthorization(application, { requireLease = false } = {}) {
-      if (previewMode || !application?.id) return;
-      const response = await sendRuntime({
-        type: 'CHECK_APPLICATION_RUN',
-        sessionEpoch: state.sessionEpoch,
-        participantSessionId: state.participantSessionId,
-        applicationId: application.id,
-        applicationGeneration: Number(application.controlGeneration || 0),
-        applicationRevision: Number(application.controlRevision || 0),
-        holder: state.workerId,
-        requireLease,
-      });
-      if (!response?.ok || !response.allowed) {
-        cancelApplicationRun(application);
-        scheduleCoordinatorSync(application.id);
-        throw coordinatorStaleError(response?.error);
-      }
-    }
-
     function markSourceReloaded() {
       state.apps.forEach((application) => {
         if (application.status !== 'source_expired') return;
@@ -312,7 +289,6 @@
 
     return {
       revokeApplicationRun,
-      assertCoordinatorAuthorization,
       commitParticipant,
       persist,
       clearAssistantState,
