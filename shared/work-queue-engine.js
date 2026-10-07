@@ -216,15 +216,21 @@
     };
   }
 
+  const HASH_PATTERN = /^fnv1a32:[a-f0-9]{8}$/;
+
   // The durable resume point keeps the origin plus hashes of the full location and page signature, never raw values.
   function durableResumePoint(application, fullLocation, location) {
     if (!location) return null;
     const rawSignature = application.resumePoint?.pageSignature || application.navigationGate?.pageSignature || '';
     const suppliedSignatureHash = String(application.resumePoint?.pageSignatureHash || '');
+    // A durable entry keeps only the origin, so its full-location hash cannot be recomputed from it.
+    // Re-normalizing one (the service worker does on every persist) must keep that hash, not hash the bare origin.
+    const suppliedLocationHash = String(application.resumePoint?.locationHash || '');
+    const alreadyDurable = application.resumePoint?.location === location && HASH_PATTERN.test(suppliedLocationHash);
     return {
       location,
-      locationHash: signatureHash(fullLocation),
-      pageSignatureHash: /^fnv1a32:[a-f0-9]{8}$/.test(suppliedSignatureHash) ? suppliedSignatureHash : signatureHash(rawSignature || suppliedSignatureHash),
+      locationHash: alreadyDurable ? suppliedLocationHash : signatureHash(fullLocation),
+      pageSignatureHash: HASH_PATTERN.test(suppliedSignatureHash) ? suppliedSignatureHash : signatureHash(rawSignature || suppliedSignatureHash),
       capturedAt: safeIso(application.resumePoint?.capturedAt || application.updatedAt),
     };
   }

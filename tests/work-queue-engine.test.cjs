@@ -104,6 +104,23 @@ test('resume requires source data, the same sanitized location, and the same pag
   assert.equal(queue.resumeDecision(application, { url: sample.url, pageSignature: 'page-2' }, { sourceAvailable: true }).allowed, true);
 });
 
+test('re-normalizing a durable entry keeps its full-location hash, so verify-and-resume still matches', () => {
+  // The panel saves the entry, then the service worker normalizes the saved entry again on persist.
+  const once = queue.durableApplication({ ...sample, resumePoint: { location: sample.url, pageSignature: 'page-2' } });
+  const twice = queue.durableApplication(once);
+  const fromQueue = queue.buildQueue([once]).applications[0];
+  const expected = queue.signatureHash(queue.safeLocation(sample.url));
+  assert.equal(once.resumePoint.location, 'https://benefitscal.com');
+  assert.equal(once.resumePoint.locationHash, expected);
+  assert.equal(twice.resumePoint.locationHash, expected);
+  assert.equal(fromQueue.resumePoint.locationHash, expected);
+  assert.notEqual(twice.resumePoint.locationHash, queue.signatureHash('https://benefitscal.com/'));
+  assert.equal(queue.resumeDecision(twice, { url: sample.url, pageSignature: 'page-2' }, { sourceAvailable: true }).allowed, true);
+  // A fresh capture with a full location is still re-hashed, never pinned to an old hash.
+  const moved = queue.durableApplication({ ...twice, resumePoint: { ...twice.resumePoint, location: 'https://benefitscal.com/ApplyForBenefits/next' } });
+  assert.equal(moved.resumePoint.locationHash, queue.signatureHash('https://benefitscal.com/ApplyForBenefits/next'));
+});
+
 test('resume rejects stale connector data and an unaccepted handoff', () => {
   assert.equal(queue.resumeDecision(sample, { url: sample.url }, { sourceAvailable: true, sourceStale: true }).outcome, 'source_stale');
   const handedOff = { ...sample, handoff: { to: 'Eligibility Team', reason: 'client_question', createdAt: new Date().toISOString() } };
