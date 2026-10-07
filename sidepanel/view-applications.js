@@ -6,7 +6,8 @@
    * deps:
    * - state, appRoot: panel state and the screen root.
    * - format: NavaPanelFormat helpers.
-   * - isRunning(applicationId): whether an automated run currently owns the application.
+   * - isRunning(applicationId): whether an automated run currently owns the application (a cancelled run winding down
+   *   does not count, so a card stops saying "Running automatically" the moment the caseworker stops it).
    * - renderError(), renderAgentRuntime(), firstName(): shared panel helpers.
    */
   function create(deps) {

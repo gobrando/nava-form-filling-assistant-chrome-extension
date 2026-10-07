@@ -106,6 +106,7 @@
   const {
     currentUiGeneration,
     isRunning,
+    runActive,
     runCancelledError,
     coordinatorStaleError,
     assertUiGeneration,
@@ -321,7 +322,7 @@
   });
   const applicationViews = globalThis.NavaApplicationViews.create({
     ...viewBase,
-    isRunning,
+    isRunning: runActive,
     renderAgentRuntime: intakeViews.renderAgentRuntime,
     firstName,
   });

@@ -28,8 +28,15 @@
       return uiGeneration;
     }
 
+    // True from the start of a run until it settles, including while a cancelled run winds down (new runs wait for it).
     function isRunning(applicationId) {
       return activeRunTokens.has(applicationId);
+    }
+
+    // What the caseworker should see: a run that has been cancelled is no longer "running", even before it settles.
+    function runActive(applicationId) {
+      const token = activeRunTokens.get(applicationId);
+      return Boolean(token && !token.cancelled);
     }
 
     function activeRun(applicationId) {
@@ -182,6 +189,7 @@
     return {
       currentUiGeneration,
       isRunning,
+      runActive,
       activeRun,
       activeRunCount,
       runCancelledError,

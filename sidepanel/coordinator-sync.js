@@ -13,6 +13,18 @@
    *   the coordinator merge rules.
    * - canonicalHomeView(), render(): the home screen for the current session, and the screen renderer.
    */
+  /**
+   * Screens that stay put when the current application changes in the coordinator: the overviews, and the handoff form
+   * while its application still has no handoff (opening the form pauses the run, and that write echoes back here; the
+   * form re-reads its application on submit, so it never writes from a stale copy).
+   */
+  function viewSurvivesCoordinatorChange(state, view) {
+    if (['choice', 'programs', 'dashboard'].includes(view)) return true;
+    if (view !== 'handoff') return false;
+    const application = (state.apps || []).find((item) => item.id === state.handoffApplicationId);
+    return Boolean(application && !application.handoff);
+  }
+
   function create(deps) {
     const {
       state,
@@ -122,7 +134,7 @@
         .map((application) => application.id));
       state.audit = mergeAuditWithCoordinator(state.audit, authoritativeAudit, preservedIds);
       if (state.currentAppId && changedIds.has(state.currentAppId)
-        && !['choice', 'programs', 'dashboard'].includes(previousView)) {
+        && !viewSurvivesCoordinatorChange(state, previousView)) {
         state.view = 'dashboard';
       }
     }
@@ -211,7 +223,7 @@
       state.audit = Array.isArray(response.queue?.audit) ? response.queue.audit : [];
       if (!state.apps.some((application) => application.id === state.currentAppId)) state.currentAppId = null;
       applyCoordinatorMetadata(response);
-      if (targetedCurrentApplication && !['choice', 'programs', 'dashboard'].includes(state.view)) state.view = 'dashboard';
+      if (targetedCurrentApplication && !viewSurvivesCoordinatorChange(state, state.view)) state.view = 'dashboard';
       render();
     }
 
@@ -280,7 +292,7 @@
     };
   }
 
-  const api = { create };
+  const api = { create, viewSurvivesCoordinatorChange };
 
   root.NavaCoordinatorSync = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

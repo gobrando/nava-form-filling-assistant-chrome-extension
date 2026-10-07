@@ -707,3 +707,29 @@ test('change events reach only their own select handlers; prototype ids do nothi
   assert.equal(elements['model-companion-fields'].hidden, true);
   delete globalThis.document;
 });
+
+test('a coordinator echo of the pause does not throw the caseworker off the handoff form', () => {
+  const survives = coordinatorSyncModule.viewSurvivesCoordinatorChange;
+  const paused = { id: 'app-1', status: 'paused', handoff: null };
+  const state = { apps: [paused], handoffApplicationId: 'app-1' };
+  assert.equal(survives(state, 'handoff'), true);
+  assert.equal(survives(state, 'dashboard'), true);
+  assert.equal(survives(state, 'review'), false, 'detail screens of a changed application still close');
+  assert.equal(survives({ ...state, apps: [] }, 'handoff'), false, 'the application is gone');
+  const handedOff = { ...paused, handoff: { to: 'Eligibility Team', createdAt: '2026-10-07T00:00:00.000Z', acceptedAt: null } };
+  assert.equal(survives({ ...state, apps: [handedOff] }, 'handoff'), false, 'another window already handed it off');
+});
+
+test('a cancelled run stops counting as running for the card, but still holds the application until it settles', async () => {
+  const state = { apps: [{ id: 'app-1', controlGeneration: 0 }], sessionEpoch: 'epoch-1', workerId: 'window-a' };
+  const runs = runControlModule.create({ state, previewMode: true, checkpoint: () => ({}), revokeApplicationRun: async () => {}, onCancelAll: () => {} });
+  const application = state.apps[0];
+  const token = await runs.beginApplicationRun(application);
+  assert.equal(runs.isRunning('app-1'), true);
+  assert.equal(runs.runActive('app-1'), true);
+  runs.cancelApplicationRun(application);
+  assert.equal(runs.runActive('app-1'), false, 'the card shows the stop at once');
+  assert.equal(runs.isRunning('app-1'), true, 'automatic runs still wait for the old run to settle');
+  runs.endApplicationRun(application, token);
+  assert.equal(runs.isRunning('app-1'), false);
+});
