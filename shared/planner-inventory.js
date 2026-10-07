@@ -82,15 +82,32 @@
       }));
   }
 
+  // Values that identify the person: names, birth dates, SSNs, contact details, addresses, case and record numbers,
+  // and free-text health notes.
+  const IDENTIFYING_PURPOSE = /name|dateofbirth|ssn|email|phone|addressline|city|postalcode|alternatemailingaddress|casenumber|recordid|^dba$|^ein$|incorporationdate|history|limitations/i;
+
+  /**
+   * Only identifying values are redacted. Category answers (gender, language, contact method, relationship, statuses,
+   * yes/no) are the form's own vocabulary: redacting them garbles labels ("childcare" -> "[source value]care") and,
+   * in an option list, marks which option is the client's answer. Anything with a digit or "@", or 3+ words of free
+   * text, is treated as identifying whatever its purpose.
+   */
+  function identifyingTerm(purpose, value) {
+    if (typeof value !== 'string' && typeof value !== 'number') return '';
+    const text = String(value).trim();
+    if (text.length < 4) return '';
+    return IDENTIFYING_PURPOSE.test(purpose) || /[\d@]/.test(text) || text.split(/\s+/).length >= 3 ? text : '';
+  }
+
   function redactSourceValues(engine, participant, fields) {
     const values = engine.canonicalizeParticipant(participant || {}).values;
-    const terms = Object.values(values)
-      .flatMap((value) => Array.isArray(value) ? value : [value])
-      .map((value) => String(value ?? '').trim())
-      .filter((value) => value.length >= 4)
+    const terms = Object.entries(values)
+      .flatMap(([purpose, value]) => (Array.isArray(value) ? value : [value]).map((item) => identifyingTerm(purpose, item)))
+      .filter(Boolean)
       .sort((left, right) => right.length - left.length);
-    const redact = (text) => terms.reduce((result, term) =>
-      result.replace(new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '[source value]'), String(text || ''));
+    // Whole words only: a value never eats part of a longer word.
+    const patterns = terms.map((term) => new RegExp(`(?<![\\p{L}\\p{N}])${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'giu'));
+    const redact = (text) => patterns.reduce((result, pattern) => result.replace(pattern, '[source value]'), String(text || ''));
     return fields.map((field) => ({
       ...field,
       label: redact(field.label),

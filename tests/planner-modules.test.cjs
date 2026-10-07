@@ -200,3 +200,20 @@ test('side-panel script order loads the inventory, then the runtime, then the pl
   );
   assert.equal(withoutModules.NavaAgenticPlanner, undefined);
 });
+
+test('redaction keeps form vocabulary whole and never marks the client\'s choice among the options', () => {
+  // Fictional demo record 339619: preferred contact "Email", a household member whose relationship is "Child".
+  const { CLIENT_RECORDS } = require('../shared/demo-connector-data.js');
+  const participant = CLIENT_RECORDS.find((record) => JSON.stringify(record).includes('339619'));
+  const rawFields = [
+    { fieldKey: 'care', type: 'radio', label: 'Yes', question: 'Is the household paying for childcare?', optionLabel: 'Yes' },
+    { fieldKey: 'contact', type: 'select-one', label: 'Email', question: 'How should we contact Celeste?', options: [{ label: 'Email' }, { label: 'Phone' }, { label: 'Mail' }] },
+    { fieldKey: 'email', type: 'email', label: 'Email address (testnava@email.com on file)' },
+  ];
+  const { fields } = plannerInventory.planningInventory(engine, participant, rawFields);
+  assert.equal(fields[0].question, 'Is the household paying for childcare?', 'a relationship value never eats part of a word');
+  assert.equal(fields[1].label, 'Email');
+  assert.deepEqual(fields[1].options, ['Email', 'Phone', 'Mail'], 'no option is singled out as the client\'s answer');
+  assert.equal(fields[1].question, 'How should we contact [source value]?', 'names are still redacted');
+  assert.equal(fields[2].label, 'Email address ([source value] on file)', 'contact details are still redacted');
+});
